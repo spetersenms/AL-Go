@@ -1,0 +1,36 @@
+name: ' Job Summaries test'
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: powershell
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  pages: read
+
+env:
+  workflowDepth: 1
+  ALGoOrgSettings: ${{ vars.ALGoOrgSettings }}
+  ALGoRepoSettings: ${{ vars.ALGoRepoSettings }}
+
+jobs:
+  Initialization:
+    needs: [ ]
+    runs-on: [ windows-latest ]
+    steps:
+      - name: CreateSummary1
+        id: CreateSummary1
+        run: |
+          $s = "A" * 1MB
+          Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$s"
+
+      - name: CreateSummary2
+        id: CreateSummary2
+        run: |
+          $s = "B" * 1MB
+          Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$s"
