@@ -26,11 +26,17 @@ jobs:
       - name: CreateSummary1
         id: CreateSummary1
         run: |
-          $s = "A" * 1MB
+          $s = "A" * 1000KB
           Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$s"
 
       - name: CreateSummary2
         id: CreateSummary2
         run: |
-          $s = "B" * 1MB
+          $s = "B" * 1023KB
+          Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$s"
+
+      - name: CreateSummary3
+        id: CreateSummary3
+        run: |
+          $s = "C" * 1024KB
           Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$s"
