@@ -19,7 +19,11 @@ jobs:
     steps:   
       - name: Check if ACTIONS_RUNNER_DEBUG is enabled
         run: |
-          Write-Output ${{ runner.debug }}
+          try {
+            Write-Output "${{ runner.debug }}"
+          } catch {
+            Write-Output "Error: $($_.Exception.Message)"
+          }
           if (${{ runner.debug }} -eq 1) {
             Write-Output "Debug logging is enabled."
           } else {
