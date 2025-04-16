@@ -19,7 +19,8 @@ jobs:
     steps:   
       - name: Check if ACTIONS_RUNNER_DEBUG is enabled
         run: |
-          if ($env:ACTIONS_RUNNER_DEBUG -eq "true") {
+          Write-Output ${{ runner.debug }}
+          if (${{ runner.debug }} -eq 1) {
             Write-Output "Debug logging is enabled."
           } else {
             Write-Output "Debug logging is not enabled."
