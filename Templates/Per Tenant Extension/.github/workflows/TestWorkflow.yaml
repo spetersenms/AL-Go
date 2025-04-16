@@ -1,0 +1,26 @@
+name: 'Test Workflow'
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  Initialization:
+    needs: [ ]
+    runs-on: [ windows-latest ]
+    steps:   
+      - name: Check if ACTIONS_RUNNER_DEBUG is enabled
+        run: |
+          if ($env:ACTIONS_RUNNER_DEBUG -eq "true") {
+            Write-Output "Debug logging is enabled."
+          } else {
+            Write-Output "Debug logging is not enabled."
+          }
