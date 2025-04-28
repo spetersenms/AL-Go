@@ -733,6 +733,12 @@ function ReadSettings {
         $orgSettingsVariableObject = $orgSettingsVariableValue | ConvertFrom-Json
         $settingsObjects += @($orgSettingsVariableObject)
     }
+    if ($environmentDeployToVariableValue) {
+        # Read settings from environment variable (parameter)
+        $environmentVariableObject = $environmentDeployToVariableValue | ConvertFrom-Json
+        Write-Host "Debug: Environment variable object: $environmentVariableObject"
+        $settingsObjects += @($environmentVariableObject)
+    }
     # Read settings from repository settings file
     $repoSettingsObject = GetSettingsObject -Path (Join-Path $baseFolder $RepoSettingsFile)
     $settingsObjects += @($repoSettingsObject)
@@ -746,13 +752,6 @@ function ReadSettings {
         $projectFolder = Join-Path $baseFolder $project -Resolve
         $projectSettingsObject = GetSettingsObject -Path (Join-Path $projectFolder $ALGoSettingsFile)
         $settingsObjects += @($projectSettingsObject)
-    }
-    Write-Host "debug: $environmentDeployToVariableValue"
-    if ($environmentDeployToVariableValue) {
-        # Read settings from environment variable (parameter)
-        $environmentVariableObject = $environmentDeployToVariableValue | ConvertFrom-Json
-        Write-Host "Debug: Environment variable object: $environmentVariableObject"
-        $settingsObjects += @($environmentVariableObject)
     }
     if ($workflowName) {
         # Read settings from workflow settings file
