@@ -41,7 +41,7 @@ runs:
         _environmentDeployToVariableValue: ${{ inputs.environmentDeployToVariableValue }}
       run: |
         ${{ github.action_path }}/../Invoke-AlGoAction.ps1 -ActionName "ReadSettings" -Action {
-          ${{ github.action_path }}/ReadSettings.ps1 -project $ENV:_project -buildMode $ENV:_buildMode -get $ENV:_get -environmentName $ENV:_environmentDeployToVariableValue
+          ${{ github.action_path }}/ReadSettings.ps1 -project $ENV:_project -buildMode $ENV:_buildMode -get $ENV:_get -environmentDeployToVariableValue $ENV:_environmentDeployToVariableValue
         }
 branding:
   icon: terminal
