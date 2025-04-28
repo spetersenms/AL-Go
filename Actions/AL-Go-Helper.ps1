@@ -552,7 +552,7 @@ function ReadSettings {
         [string] $branchName = "$ENV:GITHUB_REF_NAME",
         [string] $orgSettingsVariableValue = "$ENV:ALGoOrgSettings",
         [string] $repoSettingsVariableValue = "$ENV:ALGoRepoSettings",
-        [string] $environmentName = "",
+        [string] $environmentDeployToVariableValue = "",
         [switch] $silent
     )
 
@@ -747,19 +747,10 @@ function ReadSettings {
         $projectSettingsObject = GetSettingsObject -Path (Join-Path $projectFolder $ALGoSettingsFile)
         $settingsObjects += @($projectSettingsObject)
     }
-    $temp = "$ENV:DEPLOYTOSPETERSEN_DEMO"
-    Write-Host "debug temp: $temp"
-    $environmentVariableName = ""
-    $environmentVariableValue = ""
-    if ($environmentName -ne "") { 
-        $environmentVariableName = "ENV:DeployTo$environmentName"
-        Write-Host "Debug: Environment variable name: $environmentVariableName"
-        $environmentVariableValue = (Get-Item $environmentVariableName).Value
-        Write-Host "Debug: Environment variable value: $environmentVariableValue"
-    } 
-    if ($environmentVariableValue) {
+    Write-Host "debug: $environmentDeployToVariableValue"
+    if ($environmentDeployToVariableValue) {
         # Read settings from environment variable (parameter)
-        $environmentVariableObject = $environmentVariableValue | ConvertFrom-Json
+        $environmentVariableObject = $environmentDeployToVariableValue | ConvertFrom-Json
         Write-Host "Debug: Environment variable object: $environmentVariableObject"
         $settingsObjects += @($environmentVariableObject)
     }

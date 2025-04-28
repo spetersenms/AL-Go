@@ -17,8 +17,8 @@ inputs:
     description: Specifies which properties to get from the settings file, default is all
     required: false
     default: ''
-  environmentName:
-    description: Environment name to use for the getting the enviroment variables
+  environmentDeployToVariableValue:
+    description: Deploy to settings variable defined in the github environment
     required: false
     default: ''
 outputs:
@@ -38,10 +38,10 @@ runs:
         _project: ${{ inputs.project }}
         _buildMode: ${{ inputs.buildMode }}
         _get: ${{ inputs.get }}
-        _environmentName: ${{ inputs.environmentName }}
+        _environmentDeployToVariableValue: ${{ inputs.environmentDeployToVariableValue }}
       run: |
         ${{ github.action_path }}/../Invoke-AlGoAction.ps1 -ActionName "ReadSettings" -Action {
-          ${{ github.action_path }}/ReadSettings.ps1 -project $ENV:_project -buildMode $ENV:_buildMode -get $ENV:_get -environmentName $ENV:_environmentName
+          ${{ github.action_path }}/ReadSettings.ps1 -project $ENV:_project -buildMode $ENV:_buildMode -get $ENV:_get -environmentName $ENV:_environmentDeployToVariableValue
         }
 branding:
   icon: terminal
