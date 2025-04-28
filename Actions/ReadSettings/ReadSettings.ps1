@@ -5,13 +5,15 @@
     [string] $buildMode = "Default",
     [Parameter(HelpMessage = "Specifies which properties to get from the settings file, default is all", Mandatory = $false)]
     [string] $get = "",
-    [Parameter(HelpMessage = "Environment name to use for the getting the enviroment variables", Mandatory = $false)]
+    [Parameter(HelpMessage = "Current environment name", Mandatory = $false)]
+    [string] $environmentName = "",
+    [Parameter(HelpMessage = "Environment deploy to variable", Mandatory = $false)]
     [string] $environmentDeployToVariableValue = ""
 )
 
 . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
 
-$settings = ReadSettings -project $project -buildMode $buildMode -environmentDeployToVariableValue $environmentDeployToVariableValue
+$settings = ReadSettings -project $project -buildMode $buildMode -environmentName $environmentName -environmentDeployToVariableValue $environmentDeployToVariableValue
 if ($get) {
     $getSettings = $get.Split(',').Trim()
 }
