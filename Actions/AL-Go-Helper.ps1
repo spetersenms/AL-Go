@@ -747,8 +747,11 @@ function ReadSettings {
         $projectSettingsObject = GetSettingsObject -Path (Join-Path $projectFolder $ALGoSettingsFile)
         $settingsObjects += @($projectSettingsObject)
     }
+    $environmentVariableName = ""
     $environmentVariableValue = ""
-    if ($environmentName -ne "") { $environmentVariableValue = "$ENV:DeployTo$environmentName"} 
+    if ($environmentName -ne "") { $environmentVariableName = "ENV:DeployTo$environmentName"} 
+    Write-Host "Debug: Environment variable name: $environmentVariableName"
+    $environmentVariableValue = (Get-Item $environmentVariableName).Value
     Write-Host "Debug: Environment variable value: $environmentVariableValue"
     if ($environmentVariableValue) {
         # Read settings from environment variable (parameter)
