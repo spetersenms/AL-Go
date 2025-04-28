@@ -747,8 +747,8 @@ function ReadSettings {
         $projectSettingsObject = GetSettingsObject -Path (Join-Path $projectFolder $ALGoSettingsFile)
         $settingsObjects += @($projectSettingsObject)
     }
-    $temp = "$ENV:DeployTospetersen_demo"
-    Write-Host $temp
+    $temp = "$ENV:DEPLOYTOSPETERSEN_DEMO"
+    Write-Host "debug temp: $temp"
     $environmentVariableName = ""
     $environmentVariableValue = ""
     if ($environmentName -ne "") { 
