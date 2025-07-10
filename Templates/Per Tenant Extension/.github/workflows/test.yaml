@@ -1,0 +1,50 @@
+name: ' Test...'
+
+on:
+  workflow_dispatch:
+    inputs:
+      atest:
+        description: abc123
+        required: false
+        default: 'current'
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  pull-requests: read
+  checks: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  envStatic:
+      name: Display env var static
+      runs-on: ubuntu-latest
+      environment: testEnv
+      env:
+        environmentVariable: ${{ vars.EnvVar }}
+      steps:
+      - name: Use variables
+        shell: pwsh
+        run: |
+          Write-Host "Test var is $($env:environmentVariable)"
+  
+  envStrategy:
+    strategy: 
+      matrix:
+        environment: [testEnv]
+    runs-on: ubuntu-latest
+    name: Display env var strategy
+    env:
+        environmentVariable: ${{ vars.EnvVar }}
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ steps.Deploy.outputs.environmentUrl }}
+    steps:
+    - name: Use variables
+      shell: pwsh
+      run: |
+        Write-Host "Test var is $($env:environmentVariable)"
