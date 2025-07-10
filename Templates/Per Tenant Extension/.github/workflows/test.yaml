@@ -20,6 +20,20 @@ defaults:
     shell: powershell
 
 jobs:
+  init:
+      name: init
+      runs-on: ubuntu-latest
+      outputs:
+        environmentsMatrixJson: ${{ steps.DetermineDeploymentEnvironments.outputs.EnvironmentsMatrixJson }}
+      steps:
+      - name: Set matrix
+        shell: pwsh
+        run: |
+          $json = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
+          $environmentsMatrixJson = $json | ConvertTo-Json -Depth 99 -compress
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "EnvironmentsMatrixJson=$environmentsMatrixJson"
+          Write-Host "EnvironmentsMatrixJson=$environmentsMatrixJson"
+
   envStatic:
       name: Display env var static
       runs-on: ubuntu-latest
@@ -42,9 +56,25 @@ jobs:
         environmentVariable: ${{ vars.EnvVar }}
     environment:
       name: ${{ matrix.environment }}
-      url: ${{ steps.Deploy.outputs.environmentUrl }}
     steps:
     - name: Use variables
       shell: pwsh
       run: |
         Write-Host "Test var is $($env:environmentVariable)"
+
+  envStrategyFromJson:
+    needs: [ init ]
+    strategy: ${{ fromJson(needs.init.outputs.environmentsMatrixJson) }}
+    runs-on: ubuntu-latest
+    name: Display env var strategy from JSON
+    env:
+        environmentVariable: ${{ vars.EnvVar }}
+    environment:
+      name: ${{ matrix.environment }}
+    steps:
+    - name: Use variables
+      shell: pwsh
+      run: |
+        Write-Host "Test var is $($env:environmentVariable)"
+
+    
