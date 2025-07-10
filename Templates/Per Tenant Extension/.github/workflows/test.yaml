@@ -27,6 +27,7 @@ jobs:
         environmentsMatrixJson: ${{ steps.SetMatrix.outputs.EnvironmentsMatrixJson }}
       steps:
       - name: SetMatrix
+        id: SetMatrix
         shell: pwsh
         run: |
           $environmentsMatrixJson = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
