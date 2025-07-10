@@ -24,9 +24,9 @@ jobs:
       name: init
       runs-on: ubuntu-latest
       outputs:
-        environmentsMatrixJson: ${{ steps.DetermineDeploymentEnvironments.outputs.EnvironmentsMatrixJson }}
+        environmentsMatrixJson: ${{ steps.SetMatrix.outputs.EnvironmentsMatrixJson }}
       steps:
-      - name: Set matrix
+      - name: SetMatrix
         shell: pwsh
         run: |
           $environmentsMatrixJson = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
