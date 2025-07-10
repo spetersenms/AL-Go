@@ -7,6 +7,8 @@
     [string] $get = ""
 )
 
+Write-Host "Debug $($ENV:testVar)"
+
 . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
 
 $settings = ReadSettings -project $project -buildMode $buildMode
