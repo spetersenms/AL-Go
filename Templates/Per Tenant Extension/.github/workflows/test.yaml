@@ -29,8 +29,7 @@ jobs:
       - name: Set matrix
         shell: pwsh
         run: |
-          $json = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
-          $environmentsMatrixJson = $json | ConvertTo-Json -Depth 99 -compress
+          $environmentsMatrixJson = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
           Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "EnvironmentsMatrixJson=$environmentsMatrixJson"
           Write-Host "EnvironmentsMatrixJson=$environmentsMatrixJson"
 
