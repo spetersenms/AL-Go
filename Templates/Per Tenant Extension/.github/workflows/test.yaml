@@ -28,7 +28,13 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "Regular message"  
-        Write-Host "::Error::Error message"
-        Write-Host "::Warning::Warning message"
-        Write-Host "::Notice::Notice message"
-        Write-Host "::Debug::Debug message"
+        Write-Host "::group::Some group title"
+        Write-Host "Regular message in group"  
+        Write-Host "::Warning::Warning message in group"
+        Write-Host "::Debug::Debug message in group"
+        Write-Host "::groupend::"
+        Write-Host "::group::$([char] 27)[35m[AL-Go-Debug]$([char] 27)[0m Another group start"
+        Write-Host "Regular message in group" 
+        Write-Host "$([char] 27)[35m[AL-Go-Debug]$([char] 27)[0m Custom debug in group"
+        Write-Host "::warning::$([char] 27)[35m[AL-Go-Debug]$([char] 27)[0m Custom warning debug in group"
+        Write-Host "::groupend::"
