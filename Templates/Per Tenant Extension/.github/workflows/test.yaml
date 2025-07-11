@@ -20,61 +20,15 @@ defaults:
     shell: powershell
 
 jobs:
-  init:
-      name: init
-      runs-on: ubuntu-latest
-      outputs:
-        environmentsMatrixJson: ${{ steps.SetMatrix.outputs.EnvironmentsMatrixJson }}
-      steps:
-      - name: SetMatrix
-        id: SetMatrix
-        shell: pwsh
-        run: |
-          $environmentsMatrixJson = '{"matrix":{"include":[{"environment":"testEnv","os":"[\"windows-latest\"]","shell":"powershell"}]},"fail-fast":false}'
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "EnvironmentsMatrixJson=$environmentsMatrixJson"
-          Write-Host "EnvironmentsMatrixJson=$environmentsMatrixJson"
-
-  envStatic:
-      name: Display env var static
-      runs-on: ubuntu-latest
-      environment: testEnv
-      env:
-        environmentVariable: ${{ vars.EnvVar }}
-      steps:
-      - name: Use variables
-        shell: pwsh
-        run: |
-          Write-Host "Test var is $($env:environmentVariable)"
-  
-  envStrategy:
-    strategy: 
-      matrix:
-        environment: [testEnv]
+  test:
+    name: Test write
     runs-on: ubuntu-latest
-    name: Display env var strategy
-    env:
-        environmentVariable: ${{ vars.EnvVar }}
-    environment:
-      name: ${{ matrix.environment }}
     steps:
     - name: Use variables
       shell: pwsh
       run: |
-        Write-Host "Test var is $($env:environmentVariable)"
-
-  envStrategyFromJson:
-    needs: [ init ]
-    strategy: ${{ fromJson(needs.init.outputs.environmentsMatrixJson) }}
-    runs-on: ubuntu-latest
-    name: Display env var strategy from JSON
-    env:
-        environmentVariable: ${{ vars.EnvVar }}
-    environment:
-      name: ${{ matrix.environment }}
-    steps:
-    - name: Use variables
-      shell: pwsh
-      run: |
-        Write-Host "Test var is $($env:environmentVariable)"
-
-    
+        Write-Host "Regular message"  
+        Write-Host "::Error::Error message"
+        Write-Host "::Warning::Warning message"
+        Write-Host "::Notice::Notice message"
+        Write-Host "::Debug::Debug message"
