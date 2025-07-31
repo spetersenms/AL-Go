@@ -40,4 +40,4 @@ $errorLogFiles | ForEach-Object {
 }
 
 $logTable = Build-MarkdownTable -Headers $logHeaders -Rows $logRows
-Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$logTable"
+Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$($logTable.Replace("\n","`n"))"
