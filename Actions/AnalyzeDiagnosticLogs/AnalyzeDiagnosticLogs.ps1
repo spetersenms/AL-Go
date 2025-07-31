@@ -10,7 +10,7 @@ $errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "$project\.buildartifacts\Err
 $errorLogFiles = Get-ChildItem -Path $errorLogsFolder -Filter "*.errorLog.json" -File -Recurse
 
 $logHeaders = @('FileName', 'Warnings', 'Errors')
-$logRows = @()
+$logRows = [System.Collections.ArrayList]@()
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
     try {
@@ -31,7 +31,8 @@ $errorLogFiles | ForEach-Object {
         else {
             OutputDebug -message "No issues found in error log file: $($_.FullName)"
         }
-        $logRows += @($_.Name, $numWarnings, $numErrors)
+        $logRow = @($_.Name, $numWarnings, $numErrors)
+        $logRows.Add($logRow) | Out-Null
     }
     catch {
         OutputDebug -message "Failed to read error log file: $($_.FullName)"
