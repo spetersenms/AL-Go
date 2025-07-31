@@ -312,6 +312,14 @@ jobs:
           project: ${{ inputs.project }}
           testType: "pageScripting"
 
+      - name: Analyze Diagnostic Logs
+        id: analyzeDiagnosticLogs
+        if: (success() || failure())
+        uses: microsoft/AL-Go-Actions/AnalyzeDiagnosticLogs@main
+        with:
+          shell: ${{ inputs.shell }}
+          project: ${{ inputs.project }}
+
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
         uses: microsoft/AL-Go-Actions/PipelineCleanup@main
