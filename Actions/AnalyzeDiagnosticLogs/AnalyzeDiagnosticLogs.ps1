@@ -31,7 +31,7 @@ $errorLogFiles | ForEach-Object {
         else {
             OutputDebug -message "No issues found in error log file: $($_.FullName)"
         }
-        $appName = $_.Replace('.errorLog.json', '')
+        $appName = ($_.Name).Replace('.errorLog.json', '')
         $logRow = @($appName, $numWarnings, $numErrors)
         $logRows.Add($logRow) | Out-Null
     }
