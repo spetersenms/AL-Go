@@ -9,7 +9,7 @@ Import-Module $mdHelperPath
 $errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "$project\.buildartifacts\ErrorLogs"
 $errorLogFiles = Get-ChildItem -Path $errorLogsFolder -Filter "*.errorLog.json" -File -Recurse
 
-$logHeaders = @('FileName', 'Warnings', 'Errors')
+$logHeaders = @('App', 'Warnings', 'Errors')
 $logRows = [System.Collections.ArrayList]@()
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
@@ -31,7 +31,8 @@ $errorLogFiles | ForEach-Object {
         else {
             OutputDebug -message "No issues found in error log file: $($_.FullName)"
         }
-        $logRow = @($_.Name, $numWarnings, $numErrors)
+        $appName = $_.Replace('.errorLog.json', '')
+        $logRow = @($appName, $numWarnings, $numErrors)
         $logRows.Add($logRow) | Out-Null
     }
     catch {
