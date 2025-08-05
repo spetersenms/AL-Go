@@ -45,13 +45,20 @@ function GenerateSARIFJson {
             }
         }
 
+        # Convert absolute path to relative path from repository root
+        $absolutePath = $issue.locations[0].analysisTarget[0].uri
+        $workspacePath = $ENV:GITHUB_WORKSPACE
+        $relativePath = $absolutePath
+        $relativePath = [System.IO.Path]::GetRelativePath($workspacePath, $absolutePath)
+        $relativePath = $relativePath.Replace('\', '/')
+
         # Add result
         $sarif.runs[0].results += @{
             ruleId = $issue.ruleId
             message = @{ text = $issue.fullMessage }
             locations = @(@{
                 physicalLocation = @{
-                    artifactLocation = @{ uri = $issue.locations[0].analysisTarget[0].uri }
+                    artifactLocation = @{ uri = $relativePath }
                     region = $issue.locations[0].analysisTarget[0].region
                 }
             })
