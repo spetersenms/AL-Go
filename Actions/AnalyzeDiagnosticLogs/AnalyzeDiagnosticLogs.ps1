@@ -27,10 +27,10 @@ $sarif = @{
 
 function GenerateSARIFJson {
     param(
-        [OrderedHashtable] $errorLogContent
+        [PSCustomObject] $errorLogContent
     )
 
-    foreach ($issue in $customJson.issues) {
+    foreach ($issue in $errorLogContent.issues) {
         # Add rule if not already added
         if (-not ($sarif.runs[0].tool.driver.rules | Where-Object { $_.id -eq $issue.ruleId })) {
             $sarif.runs[0].tool.driver.rules += @{
@@ -89,7 +89,7 @@ $errorLogFiles | ForEach-Object {
         $logRows.Add($logRow) | Out-Null
     }
     catch {
-        OutputDebug -message "Failed to read error log file: $($_.FullName)"
+        OutputDebug -message "Failed to read error log file: $_"
     }
 }
 
