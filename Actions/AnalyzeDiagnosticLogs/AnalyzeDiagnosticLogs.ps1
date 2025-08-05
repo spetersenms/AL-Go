@@ -9,12 +9,64 @@ Import-Module $mdHelperPath
 $errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "$project\.buildartifacts\ErrorLogs"
 $errorLogFiles = Get-ChildItem -Path $errorLogsFolder -Filter "*.errorLog.json" -File -Recurse
 
+$sarif = @{
+    version = "2.1.0"
+    $schema = "https://json.schemastore.org/sarif-2.1.0.json"
+    runs = @(@{
+        tool = @{
+            driver = @{
+                name = 'AL Code Analysis'
+                informationUri = 'https://aka.ms/AL-Go'
+                rules = @()
+            }
+        }
+        results = @()
+    })
+}
+
+
+function GenerateSARIFJson {
+    param(
+        [OrderedHashtable] $errorLogContent
+    )
+
+    foreach ($issue in $customJson.issues) {
+        # Add rule if not already added
+        if (-not ($sarif.runs[0].tool.driver.rules | Where-Object { $_.id -eq $issue.ruleId })) {
+            $sarif.runs[0].tool.driver.rules += @{
+                id = $issue.ruleId
+                shortDescription = @{ text = $issue.shortMessage }
+                fullDescription = @{ text = $issue.fullMessage }
+                helpUri = $issue.properties.helpLink
+                properties = @{
+                    category = $issue.properties.category
+                    severity = $issue.properties.severity
+                }
+            }
+        }
+
+        # Add result
+        $sarif.runs[0].results += @{
+            ruleId = $issue.ruleId
+            message = @{ text = $issue.fullMessage }
+            locations = @(@{
+                physicalLocation = @{
+                    artifactLocation = @{ uri = $issue.locations[0].analysisTarget[0].uri }
+                    region = $issue.locations[0].analysisTarget[0].region
+                }
+            })
+            level = "warning"
+        }
+    }
+}
+
 $logHeaders = @('App', 'Warnings', 'Errors')
 $logRows = [System.Collections.ArrayList]@()
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
     try {
         $errorLogContent = Get-Content -Path $_.FullName -Raw | ConvertFrom-Json
+        GenerateSARIFJson -errorLogContent $errorLogContent
         $numWarnings = 0
         $numErrors = 0
         if ($errorLogContent -and $errorLogContent.issues) {
@@ -42,3 +94,7 @@ $errorLogFiles | ForEach-Object {
 
 $logTable = Build-MarkdownTable -Headers $logHeaders -Rows $logRows
 Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$($logTable.Replace("\n","`n"))"
+
+$sarifJson = $sarif | ConvertTo-Json -Depth 10
+Write-Host ($sarifJson)
+Set-Content -Path "output.sarif.json" -Value $sarifJson

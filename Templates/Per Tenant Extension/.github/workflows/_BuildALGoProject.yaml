@@ -82,6 +82,7 @@ permissions:
   actions: read
   contents: read
   id-token: write
+  security-events: write
 
 env:
   ALGoOrgSettings: ${{ vars.ALGoOrgSettings }}
@@ -319,6 +320,32 @@ jobs:
         with:
           shell: ${{ inputs.shell }}
           project: ${{ inputs.project }}
+
+      - name: Upload SARIF file to GitHub
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $owner = "${{ github.repository_owner }}"
+          $repo = "${{ github.event.repository.name }}"
+          $token = "${{ env.GITHUB_TOKEN }}"
+          $sarifPath = "output.sarif.json"
+          $commitSha = "${{ github.event.pull_request.head.sha }}"
+          $ref = "${{ github.ref }}"
+
+          $sarifContent = Get-Content -Raw -Path $sarifPath
+          $body = @{
+              commit_sha = $commitSha
+              ref = $ref
+              sarif = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sarifContent))
+              tool_name = "AL Code Analysis"
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod -Method POST `
+              -Uri "https://api.github.com/repos/$owner/$repo/code-scanning/sarifs" `
+              -Headers @{ Authorization = "Bearer $token"; "Accept" = "application/vnd.github+json" } `
+              -Body $body `
+              -ContentType "application/json"
 
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
