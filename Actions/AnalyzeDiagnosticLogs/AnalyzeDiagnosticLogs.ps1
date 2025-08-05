@@ -62,6 +62,7 @@ function GenerateSARIFJson {
 
 $logHeaders = @('App', 'Warnings', 'Errors')
 $logRows = [System.Collections.ArrayList]@()
+Write-Host ($errorLogFiles | ConvertTo-Json)
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
     try {
