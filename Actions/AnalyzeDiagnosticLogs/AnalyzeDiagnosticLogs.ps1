@@ -69,9 +69,10 @@ function GenerateSARIFJson {
 
 $logHeaders = @('App', 'Warnings', 'Errors')
 $logRows = [System.Collections.ArrayList]@()
-Write-Host ($errorLogFiles | ConvertTo-Json)
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
+    $fileName = $_.Name
+    Write-Host "Processing error log file: $fileName"
     try {
         $errorLogContent = Get-Content -Path $_.FullName -Raw | ConvertFrom-Json
         GenerateSARIFJson -errorLogContent $errorLogContent
@@ -89,19 +90,29 @@ $errorLogFiles | ForEach-Object {
             }
         }
         else {
+            Write-Host "No issues found in error log file: $($_.FullName)"
             OutputDebug -message "No issues found in error log file: $($_.FullName)"
+            Write-Host ($errorLogContent | ConvertTo-Json -Depth 10)
         }
         $appName = ($_.Name).Replace('.errorLog.json', '')
         $logRow = @($appName, $numWarnings, $numErrors)
         $logRows.Add($logRow) | Out-Null
     }
     catch {
+        Write-Host "Failed to process $fileName"
         OutputDebug -message "Failed to read error log file: $_"
     }
 }
 
-$logTable = Build-MarkdownTable -Headers $logHeaders -Rows $logRows
-Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$($logTable.Replace("\n","`n"))"
+try {
+    Write-Host ($logRows | ConvertTo-Json -Depth 10)
+    $logTable = Build-MarkdownTable -Headers $logHeaders -Rows $logRows
+    Add-Content -Encoding UTF8 -path $ENV:GITHUB_STEP_SUMMARY -value "$($logTable.Replace("\n","`n"))"
+} catch {
+    Write-Host "Failed to build markdown table for error logs"
+    OutputDebug -message "Failed to build markdown table: $_"
+}
+
 
 $sarifJson = $sarif | ConvertTo-Json -Depth 10
 Write-Host ($sarifJson)
