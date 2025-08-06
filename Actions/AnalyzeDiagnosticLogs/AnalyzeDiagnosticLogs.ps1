@@ -48,9 +48,8 @@ function GenerateSARIFJson {
         # Convert absolute path to relative path from repository root
         $absolutePath = $issue.locations[0].analysisTarget[0].uri
         $workspacePath = $ENV:GITHUB_WORKSPACE
-        $relativePath = $absolutePath
-        $relativePath = [System.IO.Path]::GetRelativePath($workspacePath, $absolutePath)
-        $relativePath = $relativePath.Replace('\', '/')
+        $relativePath = $absolutePath.Replace('\', '/')
+        $relativePath = $relativePath.Replace($workspacePath, '').TrimStart('/')
 
         # Add result
         $sarif.runs[0].results += @{
