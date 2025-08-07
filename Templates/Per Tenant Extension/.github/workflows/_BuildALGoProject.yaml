@@ -315,7 +315,7 @@ jobs:
 
       - name: Analyze Diagnostic Logs
         id: analyzeDiagnosticLogs
-        if: (success() || failure())
+        if: (success() || failure()) && github.event_name == 'pull_request'
         uses: microsoft/AL-Go-Actions/AnalyzeDiagnosticLogs@main
         with:
           shell: ${{ inputs.shell }}
@@ -323,7 +323,7 @@ jobs:
 
       - name: Upload SARIF file to GitHub
         uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('output.sarif.json') != ''
+        if: github.event_name == 'pull_request' && always() && hashFiles('output.sarif.json') != ''
         with:
           sarif_file: output.sarif.json
           category: "AL Code Analysis - ${{ inputs.project }}"
