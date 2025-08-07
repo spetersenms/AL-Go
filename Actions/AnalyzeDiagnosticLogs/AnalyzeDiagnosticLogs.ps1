@@ -48,8 +48,10 @@ function GenerateSARIFJson {
         # Convert absolute path to relative path from repository root
         $absolutePath = $issue.locations[0].analysisTarget[0].uri
         $workspacePath = $ENV:GITHUB_WORKSPACE
+        Write-Host $workspacePath
         $relativePath = $absolutePath.Replace('\', '/')
         $relativePath = $relativePath.Replace($workspacePath, '').TrimStart('/')
+        $relativePath = $relativePath.Replace('D:/a/Al-Go_MultiProjectTest/Al-Go_MultiProjectTest/', '')
 
         # Add result
         $sarif.runs[0].results += @{
