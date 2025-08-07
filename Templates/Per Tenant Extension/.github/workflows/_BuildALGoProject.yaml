@@ -327,7 +327,7 @@ jobs:
         with:
           sarif_file: output.sarif.json
           category: "AL Code Analysis - ${{ inputs.project }}"
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ref: ${{ format('refs/heads/{0}', github.event.pull_request.head.ref) || github.ref }}
           sha: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Cleanup
