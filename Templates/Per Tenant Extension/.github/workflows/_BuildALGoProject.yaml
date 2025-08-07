@@ -326,7 +326,7 @@ jobs:
         if: always() && hashFiles('output.sarif.json') != ''
         with:
           sarif_file: output.sarif.json
-          category: "AL Code Analysis"
+          category: "AL Code Analysis - ${{ inputs.project }}"
 
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
