@@ -115,6 +115,6 @@ try {
 }
 
 
-$sarifJson = $sarif | ConvertTo-Json -Depth 10
+$sarifJson = $sarif | ConvertTo-Json -Depth 10 -Compress
 Write-Host ($sarifJson)
 Set-Content -Path "output.sarif.json" -Value $sarifJson
