@@ -327,6 +327,9 @@ jobs:
         with:
           sarif_file: output.sarif.json
           category: "AL Code Analysis - ${{ inputs.project }}"
+          ref: refs/heads/${{ github.head_ref || github.ref_name }}
+          sha: ${{ github.event.pull_request.head.sha || github.sha }}
+
 
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
