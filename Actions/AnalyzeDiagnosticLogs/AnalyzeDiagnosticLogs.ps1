@@ -28,7 +28,7 @@ function GenerateSARIFJson {
         if (-not ($sarif.runs[0].tool.driver.rules | Where-Object { $_.id -eq $issue.ruleId })) {
             $sarif.runs[0].tool.driver.rules += @{
                 id = $issue.ruleId
-                shortDescription = @{ text = $issue.shortMessage }
+                shortDescription = @{ text = $issue.fullMessage }
                 fullDescription = @{ text = $issue.fullMessage }
                 helpUri = $issue.properties.helpLink
                 properties = @{
@@ -41,24 +41,19 @@ function GenerateSARIFJson {
         # Convert absolute path to relative path from repository root
         $absolutePath = $issue.locations[0].analysisTarget[0].uri
         $workspacePath = $ENV:GITHUB_WORKSPACE
-        Write-Host "Workspace path: $workspacePath"
-        Write-Host "Absolute path: $absolutePath"
-        #$relativePath = $absolutePath.Replace('\', '/')
         $relativePath = $absolutePath.Replace($workspacePath, '').TrimStart('\').Replace('\', '/')
-        Write-Host "Relative path: $relativePath"
-        #$relativePath = $relativePath.Replace('D:/a/Al-Go_MultiProjectTest/Al-Go_MultiProjectTest/', '')
 
         # Add result
         $sarif.runs[0].results += @{
             ruleId = $issue.ruleId
-            message = @{ text = $issue.fullMessage }
+            message = @{ text = $issue.shortMessage }
             locations = @(@{
                 physicalLocation = @{
                     artifactLocation = @{ uri = $relativePath }
                     region = $issue.locations[0].analysisTarget[0].region
                 }
             })
-            level = "warning"
+            level = $issue.properties.severity
         }
     }
 }
@@ -66,7 +61,6 @@ function GenerateSARIFJson {
 $errorLogFiles | ForEach-Object {
     OutputDebug -message "Found error log file: $($_.FullName)"
     $fileName = $_.Name
-    Write-Host "Processing error log file: $fileName"
     try {
         $errorLogContent = Get-Content -Path $_.FullName -Raw | ConvertFrom-Json
         GenerateSARIFJson -errorLogContent $errorLogContent
