@@ -11,8 +11,8 @@ runs:
     - name: run
       shell: ${{ inputs.shell }}
       run: |
-        ${{ github.action_path }}/../Invoke-AlGoAction.ps1 -ActionName "AnalyzeDiagnosticLogs" -Action {
-          ${{ github.action_path }}/AnalyzeDiagnosticLogs.ps1
+        ${{ github.action_path }}/../Invoke-AlGoAction.ps1 -ActionName "ProcessALCodeAnalysisLogs" -Action {
+          ${{ github.action_path }}/ProcessALCodeAnalysisLogs.ps1
         }
 branding:
   icon: terminal
