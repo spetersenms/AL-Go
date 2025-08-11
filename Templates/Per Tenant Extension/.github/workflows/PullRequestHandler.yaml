@@ -114,23 +114,30 @@ jobs:
     runs-on: [ windows-latest ]
     name: Code Analysis Processing
     steps:
+      - name: Read settings
+        uses: microsoft/AL-Go-Actions/ReadSettings@main
+        with:
+          shell: powershell
+          get: trackCodeCopIssuesInGitHub
+
       - name: Download artifacts - ErrorLogs
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: (success() || failure()) && env.trackCodeCopIssuesInGitHub == 'True'
         with:
           pattern: '*-ErrorLogs-*'
           path: '${{ github.workspace }}/ErrorLogs/'
           merge_multiple: true
 
-      - name: Analyze Diagnostic Logs
-        id: analyzeDiagnosticLogs
-        if: (success() || failure())
-        uses: microsoft/AL-Go-Actions/AnalyzeDiagnosticLogs@main
+      - name: Process AL Code Analysis Logs
+        id: ProcessALCodeAnalysisLogs
+        if: (success() || failure()) && env.trackCodeCopIssuesInGitHub == 'True'
+        uses: microsoft/AL-Go-Actions/ProcessALCodeAnalysisLogs@main
         with:
           shell: ${{ inputs.shell }}
 
       - name: Upload SARIF file to GitHub
         uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('${{ github.workspace }}/ErrorLogs/output.sarif.json') != ''
+        if: always() && hashFiles('${{ github.workspace }}/ErrorLogs/output.sarif.json') != '' && env.trackCodeCopIssuesInGitHub == 'True'
         with:
           sarif_file: '${{ github.workspace }}/ErrorLogs/output.sarif.json'
           category: "AL Code Analysis"
