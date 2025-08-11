@@ -129,7 +129,7 @@ Describe 'ProcessALCodeAnalysisLogs Action Tests' {
 
     AfterEach {
         $errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "ErrorLogs"
-        
+
         if (Test-Path $errorLogsFolder) {
             Remove-Item -Path "$errorLogsFolder\*" -Recurse -Force
         }
@@ -141,8 +141,8 @@ Describe 'ProcessALCodeAnalysisLogs Action Tests' {
         $baseIssueContent = $alErrorLogSchema
         $baseIssueContent.issues += $sampleIssue1
         $baseIssueContent | ConvertTo-Json -Depth 10 | Set-Content -Path $errorLogFile
-        
-        & $scriptPath 
+
+        & $scriptPath
 
         $sarifFile = Join-Path $errorLogsFolder "output.sarif.json"
         $sarifFile | Should -Exist
@@ -155,8 +155,8 @@ Describe 'ProcessALCodeAnalysisLogs Action Tests' {
         $baseIssueContent.issues += $sampleIssue1
         $baseIssueContent.issues += $sampleIssue3
         $baseIssueContent | ConvertTo-Json -Depth 10 | Set-Content -Path $errorLogFile
-        
-        & $scriptPath 
+
+        & $scriptPath
 
         $sarifFile = Join-Path $errorLogsFolder "output.sarif.json"
         $sarifContent = Get-Content -Path $sarifFile -Raw | ConvertFrom-Json
@@ -175,7 +175,7 @@ Describe 'ProcessALCodeAnalysisLogs Action Tests' {
         $baseIssueContent2.issues += $sampleIssue3
         $baseIssueContent2 | ConvertTo-Json -Depth 10 | Set-Content -Path $errorLogFile2
 
-        & $scriptPath 
+        & $scriptPath
 
         $sarifFile = Join-Path $errorLogsFolder "output.sarif.json"
         $sarifContent = Get-Content -Path $sarifFile -Raw | ConvertFrom-Json
@@ -191,7 +191,7 @@ Describe 'ProcessALCodeAnalysisLogs Action Tests' {
         $baseIssueContent.issues += $sampleIssue3
         $baseIssueContent | ConvertTo-Json -Depth 10 | Set-Content -Path $errorLogFile
 
-        & $scriptPath 
+        & $scriptPath
 
         $sarifFile = Join-Path $errorLogsFolder "output.sarif.json"
         $sarifContent = Get-Content -Path $sarifFile -Raw | ConvertFrom-Json
