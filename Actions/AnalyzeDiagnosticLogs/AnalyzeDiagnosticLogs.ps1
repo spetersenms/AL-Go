@@ -53,7 +53,7 @@ function GenerateSARIFJson {
                     region = $issue.locations[0].analysisTarget[0].region
                 }
             })
-            level = $issue.properties.severity
+            level = ($issue.properties.severity).ToLower()
         }
     }
 }
