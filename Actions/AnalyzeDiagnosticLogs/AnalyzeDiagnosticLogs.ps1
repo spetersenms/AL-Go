@@ -6,7 +6,7 @@ Param(
 $mdHelperPath = Join-Path -Path $PSScriptRoot -ChildPath "..\MarkDownHelper.psm1"
 Import-Module $mdHelperPath
 
-$errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "$project\.buildartifacts\ErrorLogs"
+$errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "ErrorLogs"
 $errorLogFiles = Get-ChildItem -Path $errorLogsFolder -Filter "*.errorLog.json" -File -Recurse
 
 $sarif = @{
