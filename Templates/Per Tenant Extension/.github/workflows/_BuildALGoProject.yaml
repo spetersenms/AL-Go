@@ -313,23 +313,6 @@ jobs:
           project: ${{ inputs.project }}
           testType: "pageScripting"
 
-      # - name: Analyze Diagnostic Logs
-      #   id: analyzeDiagnosticLogs
-      #   if: (success() || failure())
-      #   uses: microsoft/AL-Go-Actions/AnalyzeDiagnosticLogs@main
-      #   with:
-      #     shell: ${{ inputs.shell }}
-      #     project: ${{ inputs.project }}
-
-      # - name: Upload SARIF file to GitHub
-      #   uses: github/codeql-action/upload-sarif@v3
-      #   if: always() && hashFiles('output.sarif.json') != ''
-      #   with:
-      #     sarif_file: output.sarif.json
-      #     category: "AL Code Analysis - ${{ inputs.project }}"
-      #     ref: ${{ github.event.pull_request.number && format('refs/heads/{0}', github.event.pull_request.head.ref) || format('refs/heads/{0}', github.ref_name) }}
-      #     sha: ${{ github.event.pull_request.head.sha || github.sha }}
-
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
         uses: microsoft/AL-Go-Actions/PipelineCleanup@main
