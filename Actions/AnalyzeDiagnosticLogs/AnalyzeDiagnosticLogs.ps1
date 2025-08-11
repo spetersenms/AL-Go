@@ -44,7 +44,7 @@ function GenerateSARIFJson {
         Write-Host "Workspace path: $workspacePath"
         Write-Host "Absolute path: $absolutePath"
         #$relativePath = $absolutePath.Replace('\', '/')
-        $relativePath = $absolutePath.Replace($workspacePath, '').TrimStart('/').Replace('\', '/')
+        $relativePath = $absolutePath.Replace($workspacePath, '').TrimStart('\').Replace('\', '/')
         Write-Host "Relative path: $relativePath"
         #$relativePath = $relativePath.Replace('D:/a/Al-Go_MultiProjectTest/Al-Go_MultiProjectTest/', '')
 
