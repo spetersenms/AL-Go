@@ -8,7 +8,7 @@ $sarif = @{
     runs = @(@{
         tool = @{
             driver = @{
-                name = 'AL Code Analysis'
+                name = 'ALCodeAnalysis'
                 informationUri = 'https://aka.ms/AL-Go'
                 rules = @()
             }
