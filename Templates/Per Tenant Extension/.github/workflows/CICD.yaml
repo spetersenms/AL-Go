@@ -247,7 +247,7 @@ jobs:
         if: always() && env.trackCodeCopIssuesInGitHub == 'True'
         with:
           sarif_file: '${{ github.workspace }}/ErrorLogs/output.sarif.json'
-          category: "AL Code Analysis"
+          category: "ALCodeAnalysis"
 
   DeployALDoc:
     needs: [ Initialization, Build ]
