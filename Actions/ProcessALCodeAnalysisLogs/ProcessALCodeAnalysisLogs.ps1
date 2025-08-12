@@ -1,6 +1,11 @@
 $errorLogsFolder = Join-Path $ENV:GITHUB_WORKSPACE "ErrorLogs"
 $errorLogFiles = Get-ChildItem -Path $errorLogsFolder -Filter "*.errorLog.json" -File -Recurse
 
+
+$runId = $env:GITHUB_RUN_ID
+$attemptId = $env:GITHUB_RUN_ATTEMPT
+$automationId = "al-code-analysis-run-$runId-$attemptId"
+
 # Base SARIF structure
 $sarif = @{
     version = "2.1.0"
@@ -12,6 +17,11 @@ $sarif = @{
                 informationUri = 'https://aka.ms/AL-Go'
                 rules = @()
             }
+        }     
+        runAutomationDetails = @{
+            id = $automationId
+            category = "ALCodeAnalysis"
+            description = "AL Code Analysis SARIF upload for GitHub Advanced Security"    
         }
         results = @()
     })
