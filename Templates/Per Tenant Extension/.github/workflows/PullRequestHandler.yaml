@@ -147,6 +147,8 @@ jobs:
         with:
           sarif_file: '${{ github.workspace }}/ErrorLogs/output.sarif.json'
           category: "ALCodeAnalysis"
+          ref: ${{ format('refs/heads/{0}', github.event.pull_request.head.ref) }}
+          sha: ${{ github.sha }}
         #  ref: ${{ github.event.pull_request.number && format('refs/heads/{0}', github.event.pull_request.head.ref) || format('refs/heads/{0}', github.ref_name) }}
         #  sha: ${{ github.event.pull_request.head.sha || github.sha }}
 
