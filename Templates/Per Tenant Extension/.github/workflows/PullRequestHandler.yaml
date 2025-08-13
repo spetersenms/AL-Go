@@ -148,8 +148,6 @@ jobs:
           category: "ALCodeAnalysis"
           ref: ${{ format('refs/pull/{0}/head', github.event.pull_request.number) }}
           sha: ${{ github.event.pull_request.head.sha }}
-        #  ref: ${{ github.event.pull_request.number && format('refs/heads/{0}', github.event.pull_request.head.ref) || format('refs/heads/{0}', github.ref_name) }}
-        #  sha: ${{ github.event.pull_request.head.sha || github.sha }}
 
   StatusCheck:
     needs: [ Initialization, Build, CodeAnalysisUpload ]
