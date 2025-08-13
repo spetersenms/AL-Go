@@ -117,8 +117,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          lfs: true
-          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
+          ref: ${{ format('refs/pull/{0}/head', github.event.pull_request.number) }}
 
       - name: Read settings
         uses: microsoft/AL-Go-Actions/ReadSettings@main
@@ -147,8 +146,8 @@ jobs:
         with:
           sarif_file: '${{ github.workspace }}/ErrorLogs/output.sarif.json'
           category: "ALCodeAnalysis"
-          ref: ${{ format('refs/heads/{0}', github.event.pull_request.head.ref) }}
-          sha: ${{ github.sha }}
+          ref: ${{ format('refs/pull/{0}/head', github.event.pull_request.number) }}
+          sha: ${{ github.event.pull_request.head.sha }}
         #  ref: ${{ github.event.pull_request.number && format('refs/heads/{0}', github.event.pull_request.head.ref) || format('refs/heads/{0}', github.ref_name) }}
         #  sha: ${{ github.event.pull_request.head.sha || github.sha }}
 
