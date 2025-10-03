@@ -2,7 +2,7 @@
     if ("$ENV:aldocPath" -eq "") {
         $ENV:aldocCommand = ''
         Write-Host "Locating aldoc"
-        $artifactUrl = Get-BCArtifactUrl -type sandbox -country core -select Latest -accept_insiderEula
+        $artifactUrl = Get-BCArtifactUrl -type sandbox -country core -version 26.5 -accept_insiderEula
         Write-Host "Downloading aldoc"
         $folder = Download-Artifacts $artifactUrl
         $alLanguageVsix = Join-Path $folder '*.vsix' -Resolve
