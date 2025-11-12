@@ -2193,3 +2193,150 @@ function RunAndCheck {
         throw "$($args[0]) $($rest | ForEach-Object { $_ }) failed with exit code $LASTEXITCODE"
     }
 }
+
+<#
+.SYNOPSIS
+Cross platform Test-Path function that handles long paths
+.DESCRIPTION
+By default, Windows has a max path length of 260 chars. On PowerShell 5, using Test-Path on a path longer than that will return false, even if the path exists.
+This function handles long paths on Windows by using the \\?\ prefix when needed, while remaining cross-platform compatible.
+.PARAMETER Path
+The path to test. Can be a string or string array.
+.PARAMETER LiteralPath
+Specifies a path to one or more locations. Unlike Path, the value of LiteralPath is used exactly as it is typed.
+.PARAMETER Filter
+Specifies a filter to qualify the Path parameter.
+.PARAMETER Include
+Specifies, as a string array, an item or items that this cmdlet includes in the operation.
+.PARAMETER Exclude
+Specifies, as a string array, an item or items that this cmdlet excludes in the operation.
+.PARAMETER PathType
+The type of path to test: Any, Container, or Leaf.
+.PARAMETER IsValid
+Returns true if the syntax of the path is valid, otherwise returns false.
+.PARAMETER Credential
+Specifies a user account that has permission to perform this action.
+.PARAMETER OlderThan
+Returns true when the LastWriteTime of the item is older than the specified DateTime.
+.PARAMETER NewerThan
+Returns true when the LastWriteTime of the item is newer than the specified DateTime.
+#>
+function Global:TestPath {
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(ParameterSetName='Path', Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string[]] $Path,
+        
+        [Parameter(ParameterSetName='LiteralPath', Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias('PSPath')]
+        [string[]] $LiteralPath,
+        
+        [Parameter(Mandatory=$false)]
+        [string] $Filter,
+        
+        [Parameter(Mandatory=$false)]
+        [string[]] $Include,
+        
+        [Parameter(Mandatory=$false)]
+        [string[]] $Exclude,
+        
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('Any','Container','Leaf')]
+        [string] $PathType,
+        
+        [Parameter(Mandatory=$false)]
+        [switch] $IsValid,
+        
+        [Parameter(Mandatory=$false)]
+        [System.Management.Automation.PSCredential] $Credential,
+        
+        [Parameter(Mandatory=$false)]
+        [datetime] $OlderThan,
+        
+        [Parameter(Mandatory=$false)]
+        [datetime] $NewerThan
+    )    
+    
+    begin {
+        $isWindows = $PSVersionTable.PSVersion.Major -le 5 -or $IsWindows
+        
+        # Helper function to add long path prefix for Windows
+        function Add-LongPathPrefix {
+            param([string]$PathToConvert)
+            
+            # Don't modify if not Windows
+            if (-not $isWindows) {
+                return $PathToConvert
+            }
+            
+            # Don't modify if already has prefix or is UNC path
+            if ($PathToConvert -match '^\\\\[\?\\]' -or $PathToConvert -match '^\\\\[^\\?]') {
+                return $PathToConvert
+            }
+            
+            # Don't modify if path is too short to need long path support
+            if ($PathToConvert.Length -le 248) {
+                return $PathToConvert
+            }
+            
+            # Convert relative path to absolute
+            $absolutePath = $PathToConvert
+            if (-not [System.IO.Path]::IsPathRooted($PathToConvert)) {
+                $absolutePath = Join-Path (Get-Location).Path $PathToConvert
+            }
+            
+            # Add long path prefix for local paths
+            return "\\?\$absolutePath"
+        }
+    }
+    
+    process {
+        # Determine which path parameter was used
+        $pathsToTest = if ($PSCmdlet.ParameterSetName -eq 'LiteralPath') {
+            $LiteralPath
+        } else {
+            $Path
+        }
+        
+        foreach ($pathItem in $pathsToTest) {
+            # Build Test-Path parameters
+            $testPathParams = @{}
+            
+            # Add the path with long path prefix if needed on Windows
+            if ($PSCmdlet.ParameterSetName -eq 'LiteralPath') {
+                $testPathParams['LiteralPath'] = Add-LongPathPrefix -PathToConvert $pathItem
+            } else {
+                $testPathParams['Path'] = Add-LongPathPrefix -PathToConvert $pathItem
+            }
+            
+            # Add optional parameters if specified
+            if ($PSBoundParameters.ContainsKey('PathType')) {
+                $testPathParams['PathType'] = $PathType
+            }
+            if ($PSBoundParameters.ContainsKey('Filter')) {
+                $testPathParams['Filter'] = $Filter
+            }
+            if ($PSBoundParameters.ContainsKey('Include')) {
+                $testPathParams['Include'] = $Include
+            }
+            if ($PSBoundParameters.ContainsKey('Exclude')) {
+                $testPathParams['Exclude'] = $Exclude
+            }
+            if ($PSBoundParameters.ContainsKey('IsValid')) {
+                $testPathParams['IsValid'] = $IsValid.IsPresent
+            }
+            if ($PSBoundParameters.ContainsKey('NewerThan')) {
+                $testPathParams['NewerThan'] = $NewerThan
+            }
+            if ($PSBoundParameters.ContainsKey('OlderThan')) {
+                $testPathParams['OlderThan'] = $OlderThan
+            }
+            if ($PSBoundParameters.ContainsKey('Credential')) {
+                $testPathParams['Credential'] = $Credential
+            }
+            
+            # Call Test-Path with the constructed parameters
+            Test-Path @testPathParams
+        }
+    }
+}

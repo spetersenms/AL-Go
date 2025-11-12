@@ -156,7 +156,7 @@ function GetDependencies {
 
                     $downloadName = Join-Path $saveToPath "$project-$branchName-$mask-*"
 
-                    if (Test-Path $downloadName -PathType Container) {
+                    if (TestPath $downloadName -PathType Container) {
                         $folder = Get-Item $downloadName
                         Get-ChildItem -Path $folder | ForEach-Object {
                             if ($mask -like '*TestApps') {
