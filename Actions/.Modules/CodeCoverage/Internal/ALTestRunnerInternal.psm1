@@ -725,35 +725,37 @@ function Convert-ResultStringToDateTimeSafe([string] $DateTimeString)
 function Install-WcfDependencies {
     <#
     .SYNOPSIS
-    Downloads and extracts WCF NuGet packages required for .NET Core/5+/6+ environments.
-    These are needed because Microsoft.Dynamics.Framework.UI.Client.dll depends on WCF types
+    Downloads and extracts NuGet packages required for .NET Core/5+/6+ environments.
+    These are needed because Microsoft.Dynamics.Framework.UI.Client.dll depends on types
     that are not included in modern .NET runtimes (only in full .NET Framework).
     #>
     param(
         [string]$TargetPath = $PSScriptRoot
     )
 
-    $wcfPackages = @(
+    $requiredPackages = @(
         @{ Name = "System.ServiceModel.Primitives"; Version = "6.0.0" },
         @{ Name = "System.ServiceModel.Http"; Version = "6.0.0" },
-        @{ Name = "System.Private.ServiceModel"; Version = "4.10.3" }
+        @{ Name = "System.Private.ServiceModel"; Version = "4.10.3" },
+        @{ Name = "System.Threading.Tasks.Extensions"; Version = "4.5.4" },
+        @{ Name = "System.Runtime.CompilerServices.Unsafe"; Version = "6.0.0" }
     )
 
-    $tempFolder = Join-Path ([System.IO.Path]::GetTempPath()) "WcfPackages_$([Guid]::NewGuid().ToString().Substring(0,8))"
+    $tempFolder = Join-Path ([System.IO.Path]::GetTempPath()) "BcClientPackages_$([Guid]::NewGuid().ToString().Substring(0,8))"
     
     try {
-        foreach ($package in $wcfPackages) {
+        foreach ($package in $requiredPackages) {
             $packageName = $package.Name
             $packageVersion = $package.Version
             $expectedDll = Join-Path $TargetPath "$packageName.dll"
             
             # Skip if already exists
             if (Test-Path $expectedDll) {
-                Write-Host "WCF dependency $packageName already exists"
+                Write-Host "Dependency $packageName already exists"
                 continue
             }
 
-            Write-Host "Downloading WCF dependency: $packageName v$packageVersion"
+            Write-Host "Downloading dependency: $packageName v$packageVersion"
             
             $nugetUrl = "https://www.nuget.org/api/v2/package/$packageName/$packageVersion"
             $packageZip = Join-Path $tempFolder "$packageName.zip"
@@ -811,16 +813,18 @@ if(!$script:TypesLoaded)
     
     if ($isNetCore) {
         # On .NET Core/5+/6+, we need to install WCF packages as they're not included by default
-        Write-Host "Running on .NET Core/.NET 5+, ensuring WCF dependencies are installed..."
+        Write-Host "Running on .NET Core/.NET 5+, ensuring dependencies are installed..."
         Install-WcfDependencies -TargetPath $PSScriptRoot
         
-        # Load WCF dependencies first
-        $wcfDlls = @(
+        # Load dependencies first (order matters)
+        $dependencyDlls = @(
+            "System.Runtime.CompilerServices.Unsafe.dll",
+            "System.Threading.Tasks.Extensions.dll",
             "System.Private.ServiceModel.dll",
             "System.ServiceModel.Primitives.dll", 
             "System.ServiceModel.Http.dll"
         )
-        foreach ($dll in $wcfDlls) {
+        foreach ($dll in $dependencyDlls) {
             $dllPath = Join-Path $PSScriptRoot $dll
             if (Test-Path $dllPath) {
                 try {
