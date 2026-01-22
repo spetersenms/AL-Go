@@ -724,9 +724,16 @@ function Convert-ResultStringToDateTimeSafe([string] $DateTimeString)
 
 if(!$script:TypesLoaded)
 {
-    Add-type -Path "$PSScriptRoot\Microsoft.Dynamics.Framework.UI.Client.dll"
-    Add-type -Path "$PSScriptRoot\Microsoft.Internal.AntiSSRF.dll"
-    Add-type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
+    # Load order matters - dependencies must be loaded before the client DLL
+    # See: https://github.com/microsoft/navcontainerhelper/blob/main/AppHandling/PsTestFunctions.ps1
+    # On GitHub runners, WCF types aren't in the GAC like on local Windows machines with full .NET Framework
+    Add-Type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
+    $wcfPrimitivesPath = "$PSScriptRoot\System.ServiceModel.Primitives.dll"
+    if (Test-Path $wcfPrimitivesPath) {
+        Add-Type -Path $wcfPrimitivesPath
+    }
+    Add-Type -Path "$PSScriptRoot\Microsoft.Internal.AntiSSRF.dll"
+    Add-Type -Path "$PSScriptRoot\Microsoft.Dynamics.Framework.UI.Client.dll"
     
     $clientContextScriptPath = Join-Path $PSScriptRoot "ClientContext.ps1"
     . "$clientContextScriptPath"
