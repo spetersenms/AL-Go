@@ -722,16 +722,118 @@ function Convert-ResultStringToDateTimeSafe([string] $DateTimeString)
     return $parsedDateTime
 }
 
+function Install-WcfDependencies {
+    <#
+    .SYNOPSIS
+    Downloads and extracts WCF NuGet packages required for .NET Core/5+/6+ environments.
+    These are needed because Microsoft.Dynamics.Framework.UI.Client.dll depends on WCF types
+    that are not included in modern .NET runtimes (only in full .NET Framework).
+    #>
+    param(
+        [string]$TargetPath = $PSScriptRoot
+    )
+
+    $wcfPackages = @(
+        @{ Name = "System.ServiceModel.Primitives"; Version = "6.0.0" },
+        @{ Name = "System.ServiceModel.Http"; Version = "6.0.0" },
+        @{ Name = "System.Private.ServiceModel"; Version = "4.10.3" }
+    )
+
+    $tempFolder = Join-Path ([System.IO.Path]::GetTempPath()) "WcfPackages_$([Guid]::NewGuid().ToString().Substring(0,8))"
+    
+    try {
+        foreach ($package in $wcfPackages) {
+            $packageName = $package.Name
+            $packageVersion = $package.Version
+            $expectedDll = Join-Path $TargetPath "$packageName.dll"
+            
+            # Skip if already exists
+            if (Test-Path $expectedDll) {
+                Write-Host "WCF dependency $packageName already exists"
+                continue
+            }
+
+            Write-Host "Downloading WCF dependency: $packageName v$packageVersion"
+            
+            $nugetUrl = "https://www.nuget.org/api/v2/package/$packageName/$packageVersion"
+            $packageZip = Join-Path $tempFolder "$packageName.zip"
+            $packageExtract = Join-Path $tempFolder $packageName
+
+            if (-not (Test-Path $tempFolder)) {
+                New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
+            }
+
+            # Download the package
+            Invoke-WebRequest -Uri $nugetUrl -OutFile $packageZip -UseBasicParsing
+
+            # Extract
+            Expand-Archive -Path $packageZip -DestinationPath $packageExtract -Force
+
+            # Find the appropriate DLL (prefer net6.0, then netstandard2.0)
+            $dllPath = $null
+            $searchPaths = @(
+                (Join-Path $packageExtract "lib\net6.0\$packageName.dll"),
+                (Join-Path $packageExtract "lib\netstandard2.1\$packageName.dll"),
+                (Join-Path $packageExtract "lib\netstandard2.0\$packageName.dll"),
+                (Join-Path $packageExtract "lib\netcoreapp3.1\$packageName.dll")
+            )
+            
+            foreach ($searchPath in $searchPaths) {
+                if (Test-Path $searchPath) {
+                    $dllPath = $searchPath
+                    break
+                }
+            }
+
+            if ($dllPath -and (Test-Path $dllPath)) {
+                Copy-Item -Path $dllPath -Destination $TargetPath -Force
+                Write-Host "Installed $packageName to $TargetPath"
+            } else {
+                Write-Warning "Could not find DLL for $packageName in package"
+            }
+        }
+    }
+    finally {
+        # Cleanup temp folder
+        if (Test-Path $tempFolder) {
+            Remove-Item -Path $tempFolder -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 if(!$script:TypesLoaded)
 {
     # Load order matters - dependencies must be loaded before the client DLL
     # See: https://github.com/microsoft/navcontainerhelper/blob/main/AppHandling/PsTestFunctions.ps1
-    # On GitHub runners, WCF types aren't in the GAC like on local Windows machines with full .NET Framework
-    Add-Type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
-    $wcfPrimitivesPath = "$PSScriptRoot\System.ServiceModel.Primitives.dll"
-    if (Test-Path $wcfPrimitivesPath) {
-        Add-Type -Path $wcfPrimitivesPath
+    
+    # Check if we're running on .NET Core/5+/6+ (PowerShell 7+) vs .NET Framework (Windows PowerShell 5.1)
+    $isNetCore = $PSVersionTable.PSVersion.Major -ge 6
+    
+    if ($isNetCore) {
+        # On .NET Core/5+/6+, we need to install WCF packages as they're not included by default
+        Write-Host "Running on .NET Core/.NET 5+, ensuring WCF dependencies are installed..."
+        Install-WcfDependencies -TargetPath $PSScriptRoot
+        
+        # Load WCF dependencies first
+        $wcfDlls = @(
+            "System.Private.ServiceModel.dll",
+            "System.ServiceModel.Primitives.dll", 
+            "System.ServiceModel.Http.dll"
+        )
+        foreach ($dll in $wcfDlls) {
+            $dllPath = Join-Path $PSScriptRoot $dll
+            if (Test-Path $dllPath) {
+                try {
+                    Add-Type -Path $dllPath -ErrorAction SilentlyContinue
+                } catch {
+                    # Ignore errors for already loaded assemblies
+                }
+            }
+        }
     }
+    
+    # Now load the BC client dependencies in the correct order
+    Add-Type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
     Add-Type -Path "$PSScriptRoot\Microsoft.Internal.AntiSSRF.dll"
     Add-Type -Path "$PSScriptRoot\Microsoft.Dynamics.Framework.UI.Client.dll"
     

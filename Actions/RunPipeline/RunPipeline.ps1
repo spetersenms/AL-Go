@@ -502,7 +502,7 @@ try {
                     $resultsFilePath = $parameters.XUnitResultFileName
                 }
 
-                # Get container web client URL
+                # Get container web client URL for connecting from host
                 $containerConfig = Get-BcContainerServerConfiguration -ContainerName $containerName
                 $publicWebBaseUrl = $containerConfig.PublicWebBaseUrl
                 if (-not $publicWebBaseUrl) {
@@ -519,7 +519,8 @@ try {
                 }
                 Write-Host "Code coverage output path: $codeCoverageOutputPath"
 
-                # Run tests with ALTestRunner
+                # Run tests with ALTestRunner from the host
+                # The module will automatically download WCF dependencies if running on .NET Core/5+/6+
                 $testRunParams = @{
                     ServiceUrl = $serviceUrl
                     Credential = $credential
