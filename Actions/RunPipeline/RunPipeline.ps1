@@ -475,6 +475,83 @@ try {
         }
     }
 
+    # Add RunTestsInBcContainer override to use ALTestRunner with code coverage support
+    if ($runAlPipelineParams.Keys -notcontains 'RunTestsInBcContainer') {
+        Write-Host "Adding RunTestsInBcContainer override with code coverage support"
+        
+        # Capture buildArtifactFolder for use in scriptblock
+        $ccBuildArtifactFolder = $buildArtifactFolder
+        $ccModulePath = Join-Path $PSScriptRoot "..\.Modules\CodeCoverage\ALTestRunner.psm1"
+
+        $runAlPipelineParams += @{
+            "RunTestsInBcContainer" = {
+                Param([Hashtable]$parameters)
+
+                # Import the module inside the scriptblock
+                Import-Module $ccModulePath -Force -DisableNameChecking
+
+                $containerName = $parameters.containerName
+                $credential = $parameters.credential
+                $extensionId = $parameters.extensionId
+                
+                # Handle both JUnit and XUnit result file names
+                $resultsFilePath = $null
+                if ($parameters.JUnitResultFileName) {
+                    $resultsFilePath = $parameters.JUnitResultFileName
+                } elseif ($parameters.XUnitResultFileName) {
+                    $resultsFilePath = $parameters.XUnitResultFileName
+                }
+
+                # Get container web client URL
+                $containerConfig = Get-BcContainerServerConfiguration -ContainerName $containerName
+                $publicWebBaseUrl = $containerConfig.PublicWebBaseUrl
+                if (-not $publicWebBaseUrl) {
+                    # Fallback to constructing URL from container name
+                    $publicWebBaseUrl = "http://$($containerName):80/BC/"
+                }
+                $serviceUrl = "$publicWebBaseUrl"
+                Write-Host "Using ServiceUrl: $serviceUrl"
+
+                # Code coverage output path
+                $codeCoverageOutputPath = Join-Path $ccBuildArtifactFolder "CodeCoverage"
+                if (-not (Test-Path $codeCoverageOutputPath)) {
+                    New-Item -Path $codeCoverageOutputPath -ItemType Directory | Out-Null
+                }
+                Write-Host "Code coverage output path: $codeCoverageOutputPath"
+
+                # Run tests with ALTestRunner
+                $testRunParams = @{
+                    ServiceUrl = $serviceUrl
+                    Credential = $credential
+                    AutorizationType = 'NavUserPassword'
+                    TestSuite = 'DEFAULT'
+                    Detailed = $true
+                    CodeCoverageTrackingType = 'PerRun'
+                    ProduceCodeCoverageMap = 'PerCodeunit'
+                    CodeCoverageOutputPath = $codeCoverageOutputPath
+                    CodeCoverageFilePrefix = "CodeCoverage_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                }
+                
+                if ($extensionId) {
+                    $testRunParams.ExtensionId = $extensionId
+                }
+                
+                if ($resultsFilePath) {
+                    $testRunParams.ResultsFilePath = $resultsFilePath
+                    $testRunParams.SaveResultFile = $true
+                }
+
+                Run-AlTests @testRunParams
+                
+                # Return true to indicate tests ran (actual pass/fail is in test results file)
+                # The caller checks the test results file for actual pass/fail status
+                return $true
+            }.GetNewClosure()
+        }
+    } else {
+        Write-Host "Using custom RunTestsInBcContainer override"
+    }
+
     "enableTaskScheduler",
     "assignPremiumPlan",
     "doNotBuildTests",

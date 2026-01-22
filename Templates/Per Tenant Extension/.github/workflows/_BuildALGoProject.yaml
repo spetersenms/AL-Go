@@ -253,6 +253,14 @@ jobs:
           path: '${{ inputs.project }}/.buildartifacts/TestResults.xml'
           if-no-files-found: ignore
 
+      - name: Publish artifacts - code coverage
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: (success() || failure()) && (hashFiles(format('{0}/.buildartifacts/CodeCoverage/*',inputs.project)) != '')
+        with:
+          name: ${{ steps.calculateArtifactsNames.outputs.CodeCoverageArtifactsName }}
+          path: '${{ inputs.project }}/.buildartifacts/CodeCoverage/'
+          if-no-files-found: ignore
+
       - name: Publish artifacts - bcpt test results
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: (success() || failure()) && (hashFiles(format('{0}/.buildartifacts/bcptTestResults.json',inputs.project)) != '')
