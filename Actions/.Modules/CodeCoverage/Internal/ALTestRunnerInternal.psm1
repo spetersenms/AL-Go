@@ -833,9 +833,31 @@ if(!$script:TypesLoaded)
     }
     
     # Now load the BC client dependencies in the correct order
-    Add-Type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
-    Add-Type -Path "$PSScriptRoot\Microsoft.Internal.AntiSSRF.dll"
-    Add-Type -Path "$PSScriptRoot\Microsoft.Dynamics.Framework.UI.Client.dll"
+    # Wrap in try/catch to get detailed LoaderExceptions if it fails
+    try {
+        Add-Type -Path "$PSScriptRoot\NewtonSoft.Json.dll"
+        Add-Type -Path "$PSScriptRoot\Microsoft.Internal.AntiSSRF.dll"
+        Add-Type -Path "$PSScriptRoot\Microsoft.Dynamics.Framework.UI.Client.dll"
+    }
+    catch [System.Reflection.ReflectionTypeLoadException] {
+        Write-Host "ReflectionTypeLoadException occurred while loading DLLs:"
+        Write-Host "Exception Message: $($_.Exception.Message)"
+        Write-Host "LoaderExceptions:"
+        foreach ($loaderException in $_.Exception.LoaderExceptions) {
+            if ($loaderException) {
+                Write-Host "  - $($loaderException.Message)"
+            }
+        }
+        throw
+    }
+    catch {
+        Write-Host "Error loading DLLs: $($_.Exception.Message)"
+        Write-Host "Exception Type: $($_.Exception.GetType().FullName)"
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner Exception: $($_.Exception.InnerException.Message)"
+        }
+        throw
+    }
     
     $clientContextScriptPath = Join-Path $PSScriptRoot "ClientContext.ps1"
     . "$clientContextScriptPath"
