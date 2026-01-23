@@ -666,6 +666,50 @@ try {
         Copy-Item -Path $containerEventLogFile -Destination $destFolder -Force -ErrorAction SilentlyContinue
     }
 
+    # Process code coverage files to Cobertura format
+    $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
+    if (Test-Path $codeCoveragePath) {
+        $coverageFiles = Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue
+        if ($coverageFiles.Count -gt 0) {
+            Write-Host "Processing $($coverageFiles.Count) code coverage file(s) to Cobertura format..."
+            try {
+                $coverageProcessorModule = Join-Path $PSScriptRoot "..\.Modules\CodeCoverage\CoverageProcessor\CoverageProcessor.psm1"
+                Import-Module $coverageProcessorModule -Force -DisableNameChecking
+
+                $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
+                
+                # Find source path - look for app folders in project
+                $sourcePath = $null
+                if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
+                    $sourcePath = Join-Path $projectPath $settings.appFolders[0]
+                } else {
+                    $sourcePath = $projectPath
+                }
+
+                if ($coverageFiles.Count -eq 1) {
+                    # Single coverage file
+                    $coverageStats = Convert-BCCoverageToCobertura `
+                        -CoverageFilePath $coverageFiles[0].FullName `
+                        -SourcePath $sourcePath `
+                        -OutputPath $coberturaOutputPath
+                } else {
+                    # Multiple coverage files - merge them
+                    $coverageStats = Merge-BCCoverageToCobertura `
+                        -CoverageFiles ($coverageFiles.FullName) `
+                        -SourcePath $sourcePath `
+                        -OutputPath $coberturaOutputPath
+                }
+
+                if ($coverageStats) {
+                    Write-Host "Code coverage: $($coverageStats.CoveragePercent)% ($($coverageStats.CoveredLines)/$($coverageStats.TotalLines) lines)"
+                }
+            }
+            catch {
+                Write-Host "::warning::Failed to process code coverage to Cobertura format: $($_.Exception.Message)"
+            }
+        }
+    }
+
     # check for new warnings
     Import-Module (Join-Path $PSScriptRoot ".\CheckForWarningsUtils.psm1" -Resolve) -DisableNameChecking
 

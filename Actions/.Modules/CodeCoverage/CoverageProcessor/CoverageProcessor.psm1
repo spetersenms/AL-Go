@@ -1,0 +1,311 @@
+<#
+.SYNOPSIS
+    Main orchestrator for processing BC code coverage into Cobertura format
+.DESCRIPTION
+    Combines BCCoverageParser, ALSourceParser, and CoberturaFormatter to produce
+    standardized coverage reports from BC code coverage .dat files.
+#>
+
+# Import sub-modules
+$scriptPath = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+Import-Module (Join-Path $scriptPath "BCCoverageParser.psm1") -Force
+Import-Module (Join-Path $scriptPath "ALSourceParser.psm1") -Force
+Import-Module (Join-Path $scriptPath "CoberturaFormatter.psm1") -Force
+
+<#
+.SYNOPSIS
+    Processes BC code coverage files and generates Cobertura XML output
+.PARAMETER CoverageFilePath
+    Path to the BC coverage .dat file
+.PARAMETER SourcePath
+    Path to the source code directory (for file/method mapping)
+.PARAMETER OutputPath
+    Path where the Cobertura XML file should be written
+.PARAMETER AppJsonPath
+    Optional path to app.json for app metadata
+.OUTPUTS
+    Returns coverage statistics object
+#>
+function Convert-BCCoverageToCobertura {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CoverageFilePath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$SourcePath = "",
+        
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$AppJsonPath = ""
+    )
+    
+    Write-Host "Converting BC coverage to Cobertura format..."
+    Write-Host "  Coverage file: $CoverageFilePath"
+    Write-Host "  Source path: $SourcePath"
+    Write-Host "  Output path: $OutputPath"
+    
+    # Step 1: Parse the coverage file
+    Write-Host "`nStep 1: Parsing coverage data..."
+    $coverageEntries = Read-BCCoverageFile -Path $CoverageFilePath
+    
+    if ($coverageEntries.Count -eq 0) {
+        Write-Warning "No coverage entries found in file"
+        return $null
+    }
+    
+    # Step 2: Group coverage by object
+    Write-Host "`nStep 2: Grouping coverage by object..."
+    $groupedCoverage = Group-CoverageByObject -CoverageEntries $coverageEntries
+    Write-Host "  Found $($groupedCoverage.Count) unique objects"
+    
+    # Step 3: Load app metadata if available
+    $appInfo = $null
+    if ($AppJsonPath -and (Test-Path $AppJsonPath)) {
+        Write-Host "`nStep 3: Loading app metadata..."
+        $appInfo = Read-AppJson -AppJsonPath $AppJsonPath
+        if ($appInfo) {
+            Write-Host "  App: $($appInfo.Name) v$($appInfo.Version)"
+        }
+    }
+    elseif ($SourcePath) {
+        # Try to find app.json in source path
+        $autoAppJson = Join-Path $SourcePath "app.json"
+        if (Test-Path $autoAppJson) {
+            Write-Host "`nStep 3: Loading app metadata from source path..."
+            $appInfo = Read-AppJson -AppJsonPath $autoAppJson
+            if ($appInfo) {
+                Write-Host "  App: $($appInfo.Name) v$($appInfo.Version)"
+            }
+        }
+    }
+    
+    # Step 4: Map source files if source path provided
+    $objectMap = @{}
+    if ($SourcePath -and (Test-Path $SourcePath)) {
+        Write-Host "`nStep 4: Mapping source files..."
+        $objectMap = Get-ALObjectMap -SourcePath $SourcePath
+        
+        # Merge source info into coverage data
+        foreach ($key in $groupedCoverage.Keys) {
+            if ($objectMap.ContainsKey($key)) {
+                $groupedCoverage[$key].SourceInfo = $objectMap[$key]
+            }
+        }
+        
+        $matchedCount = ($groupedCoverage.Values | Where-Object { $_.SourceInfo }).Count
+        Write-Host "  Matched $matchedCount of $($groupedCoverage.Count) objects to source files"
+    }
+    
+    # Step 5: Generate Cobertura XML
+    Write-Host "`nStep 5: Generating Cobertura XML..."
+    $coberturaXml = New-CoberturaDocument -CoverageData $groupedCoverage -SourcePath $SourcePath -AppInfo $appInfo
+    
+    # Step 6: Save output
+    Write-Host "`nStep 6: Saving output..."
+    Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
+    
+    # Calculate and return statistics
+    $stats = Get-CoverageStatistics -CoverageEntries $coverageEntries
+    
+    Write-Host "`n=== Coverage Summary ==="
+    Write-Host "  Total lines:   $($stats.TotalLines)"
+    Write-Host "  Covered lines: $($stats.CoveredLines)"
+    Write-Host "  Coverage:      $($stats.CoveragePercent)%"
+    Write-Host "========================`n"
+    
+    return $stats
+}
+
+<#
+.SYNOPSIS
+    Processes multiple coverage files and merges into single Cobertura output
+.PARAMETER CoverageFiles
+    Array of paths to coverage .dat files
+.PARAMETER SourcePath
+    Path to the source code directory
+.PARAMETER OutputPath
+    Path where the merged Cobertura XML should be written
+.PARAMETER AppJsonPath
+    Optional path to app.json
+.OUTPUTS
+    Returns merged coverage statistics
+#>
+function Merge-BCCoverageToCobertura {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$CoverageFiles,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$SourcePath = "",
+        
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$AppJsonPath = ""
+    )
+    
+    Write-Host "Merging $($CoverageFiles.Count) coverage files..."
+    
+    $allEntries = @()
+    
+    foreach ($file in $CoverageFiles) {
+        if (Test-Path $file) {
+            Write-Host "  Reading: $file"
+            $entries = Read-BCCoverageFile -Path $file
+            $allEntries += $entries
+        }
+        else {
+            Write-Warning "Coverage file not found: $file"
+        }
+    }
+    
+    if ($allEntries.Count -eq 0) {
+        Write-Warning "No coverage entries found in any file"
+        return $null
+    }
+    
+    # Merge entries by object+line (take max hits)
+    $mergedEntries = @{}
+    foreach ($entry in $allEntries) {
+        $key = "$($entry.ObjectTypeId)_$($entry.ObjectId)_$($entry.LineNo)"
+        
+        if ($mergedEntries.ContainsKey($key)) {
+            # Take the better coverage status (covered > partial > not covered)
+            $existing = $mergedEntries[$key]
+            if ($entry.IsCovered -and -not $existing.IsCovered) {
+                $mergedEntries[$key] = $entry
+            }
+            elseif ($entry.Hits -gt $existing.Hits) {
+                $mergedEntries[$key].Hits = $entry.Hits
+            }
+        }
+        else {
+            $mergedEntries[$key] = $entry
+        }
+    }
+    
+    $coverageEntries = $mergedEntries.Values | Sort-Object ObjectTypeId, ObjectId, LineNo
+    Write-Host "Merged to $($coverageEntries.Count) unique line entries"
+    
+    # Group and process
+    $groupedCoverage = Group-CoverageByObject -CoverageEntries $coverageEntries
+    
+    # Load metadata
+    $appInfo = $null
+    if ($AppJsonPath -and (Test-Path $AppJsonPath)) {
+        $appInfo = Read-AppJson -AppJsonPath $AppJsonPath
+    }
+    elseif ($SourcePath) {
+        $autoAppJson = Join-Path $SourcePath "app.json"
+        if (Test-Path $autoAppJson) {
+            $appInfo = Read-AppJson -AppJsonPath $autoAppJson
+        }
+    }
+    
+    # Map sources
+    if ($SourcePath -and (Test-Path $SourcePath)) {
+        $objectMap = Get-ALObjectMap -SourcePath $SourcePath
+        foreach ($key in $groupedCoverage.Keys) {
+            if ($objectMap.ContainsKey($key)) {
+                $groupedCoverage[$key].SourceInfo = $objectMap[$key]
+            }
+        }
+    }
+    
+    # Generate and save
+    $coberturaXml = New-CoberturaDocument -CoverageData $groupedCoverage -SourcePath $SourcePath -AppInfo $appInfo
+    Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
+    
+    $stats = Get-CoverageStatistics -CoverageEntries $coverageEntries
+    
+    Write-Host "`n=== Merged Coverage Summary ==="
+    Write-Host "  Total lines:   $($stats.TotalLines)"
+    Write-Host "  Covered lines: $($stats.CoveredLines)"
+    Write-Host "  Coverage:      $($stats.CoveragePercent)%"
+    Write-Host "================================`n"
+    
+    return $stats
+}
+
+<#
+.SYNOPSIS
+    Finds coverage files in a directory
+.PARAMETER Directory
+    Directory to search for coverage files
+.PARAMETER Pattern
+    File pattern to match (default: *.dat)
+.OUTPUTS
+    Array of file paths
+#>
+function Find-CoverageFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Directory,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Pattern = "*.dat"
+    )
+    
+    if (-not (Test-Path $Directory)) {
+        Write-Warning "Directory not found: $Directory"
+        return @()
+    }
+    
+    $files = Get-ChildItem -Path $Directory -Filter $Pattern -File -Recurse
+    return $files.FullName
+}
+
+<#
+.SYNOPSIS
+    Quick coverage summary without generating full Cobertura output
+.PARAMETER CoverageFilePath
+    Path to the coverage .dat file
+.OUTPUTS
+    Coverage statistics object
+#>
+function Get-BCCoverageSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CoverageFilePath
+    )
+    
+    $entries = Read-BCCoverageFile -Path $CoverageFilePath
+    $stats = Get-CoverageStatistics -CoverageEntries $entries
+    
+    # Add object breakdown
+    $grouped = Group-CoverageByObject -CoverageEntries $entries
+    $objectStats = @()
+    
+    foreach ($key in $grouped.Keys | Sort-Object) {
+        $obj = $grouped[$key]
+        $objEntries = $obj.Lines
+        $objStats = Get-CoverageStatistics -CoverageEntries $objEntries
+        
+        $objectStats += [PSCustomObject]@{
+            Object          = $key
+            ObjectType      = $obj.ObjectType
+            ObjectId        = $obj.ObjectId
+            TotalLines      = $objStats.TotalLines
+            CoveredLines    = $objStats.CoveredLines
+            CoveragePercent = $objStats.CoveragePercent
+        }
+    }
+    
+    $stats | Add-Member -NotePropertyName "Objects" -NotePropertyValue $objectStats
+    
+    return $stats
+}
+
+Export-ModuleMember -Function @(
+    'Convert-BCCoverageToCobertura',
+    'Merge-BCCoverageToCobertura',
+    'Find-CoverageFiles',
+    'Get-BCCoverageSummary'
+)
