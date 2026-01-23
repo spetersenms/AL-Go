@@ -58,6 +58,9 @@ function Get-ALObjectMap {
         return $objectMap
     }
     
+    # Normalize source path to resolve .\, ..\, and ensure consistent format
+    $normalizedSourcePath = [System.IO.Path]::GetFullPath($SourcePath).TrimEnd('\', '/')
+    
     $alFiles = Get-ChildItem -Path $SourcePath -Filter "*.al" -Recurse -File
     
     foreach ($file in $alFiles) {
@@ -89,8 +92,7 @@ function Get-ALObjectMap {
             # Get executable line information
             $executableInfo = Get-ALExecutableLines -Content $content
             
-            # Calculate relative path safely (handle trailing slashes)
-            $normalizedSourcePath = $SourcePath.TrimEnd('\', '/')
+            # Calculate relative path (normalizedSourcePath is already normalized at function start)
             $relativePath = $file.FullName.Substring($normalizedSourcePath.Length + 1)
             
             $objectMap[$key] = [PSCustomObject]@{

@@ -279,11 +279,3 @@ function Get-CoverageSummaryMD {
         DetailsMD = $detailsSb.ToString()
     }
 }
-
-Export-ModuleMember -Function @(
-    'Get-CoverageSummaryMD',
-    'Read-CoberturaFile',
-    'Get-CoverageStatusIcon',
-    'Format-CoveragePercent',
-    'New-CoverageBar'
-) -ErrorAction SilentlyContinue
