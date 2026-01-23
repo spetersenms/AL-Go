@@ -803,6 +803,18 @@ function Install-WcfDependencies {
     }
 }
 
+function Write-Log {
+    <#
+    .SYNOPSIS
+    Simple logging function to replace BcContainerHelper's Write-Log
+    #>
+    param(
+        [Parameter(Position=0)]
+        [string]$Message
+    )
+    Write-Host $Message
+}
+
 if(!$script:TypesLoaded)
 {
     # Load order matters - dependencies must be loaded before the client DLL
