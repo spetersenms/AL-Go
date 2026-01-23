@@ -683,14 +683,19 @@ function Disable-SslVerification
 {
     if (-not ([System.Management.Automation.PSTypeName]"SslVerification").Type)
     {
+        # Use pragma to suppress obsolete warnings for .NET 6+ compatibility
+        # ServicePointManager is obsolete in .NET 6+ but still works for our use case
         Add-Type -TypeDefinition  @"
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 public static class SslVerification
 {
     private static bool ValidationCallback(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors) { return true; }
+    
+    #pragma warning disable SYSLIB0014
     public static void Disable() { System.Net.ServicePointManager.ServerCertificateValidationCallback = ValidationCallback; }
     public static void Enable()  { System.Net.ServicePointManager.ServerCertificateValidationCallback = null; }
+    #pragma warning restore SYSLIB0014
 }
 "@
     }

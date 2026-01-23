@@ -509,7 +509,17 @@ try {
                     # Fallback to constructing URL from container name
                     $publicWebBaseUrl = "http://$($containerName):80/BC/"
                 }
-                $serviceUrl = "$publicWebBaseUrl"
+                # Ensure tenant parameter is included (required for client services connection)
+                $tenant = if ($parameters.tenant) { $parameters.tenant } else { "default" }
+                if ($publicWebBaseUrl -notlike "*tenant=*") {
+                    if ($publicWebBaseUrl.Contains("?")) {
+                        $serviceUrl = "$publicWebBaseUrl&tenant=$tenant"
+                    } else {
+                        $serviceUrl = "$($publicWebBaseUrl.TrimEnd('/'))/?tenant=$tenant"
+                    }
+                } else {
+                    $serviceUrl = $publicWebBaseUrl
+                }
                 Write-Host "Using ServiceUrl: $serviceUrl"
 
                 # Code coverage output path
