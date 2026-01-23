@@ -321,6 +321,13 @@ jobs:
           project: ${{ inputs.project }}
           testType: "pageScripting"
 
+      - name: Build Code Coverage Summary
+        if: (success() || failure()) && (hashFiles(format('{0}/.buildartifacts/CodeCoverage/cobertura.xml',inputs.project)) != '')
+        uses: microsoft/AL-Go-Actions/BuildCodeCoverageSummary@main
+        with:
+          shell: ${{ inputs.shell }}
+          project: ${{ inputs.project }}
+
       - name: Cleanup
         if: always() && steps.DetermineBuildProject.outputs.BuildIt == 'True'
         uses: microsoft/AL-Go-Actions/PipelineCleanup@main
