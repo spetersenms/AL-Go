@@ -88,15 +88,42 @@ function Convert-BCCoverageToCobertura {
         Write-Host "`nStep 4: Mapping source files..."
         $objectMap = Get-ALObjectMap -SourcePath $SourcePath
         
-        # Merge source info into coverage data
+        # Filter coverage to only include objects from user's source files
+        # This excludes Microsoft base app objects
+        $filteredCoverage = @{}
+        $excludedObjects = 0
+        
         foreach ($key in $groupedCoverage.Keys) {
             if ($objectMap.ContainsKey($key)) {
-                $groupedCoverage[$key].SourceInfo = $objectMap[$key]
+                $filteredCoverage[$key] = $groupedCoverage[$key]
+                $filteredCoverage[$key].SourceInfo = $objectMap[$key]
+            } else {
+                $excludedObjects++
             }
         }
         
-        $matchedCount = ($groupedCoverage.Values | Where-Object { $_.SourceInfo }).Count
-        Write-Host "  Matched $matchedCount of $($groupedCoverage.Count) objects to source files"
+        Write-Host "  Found $($objectMap.Count) objects in source files"
+        Write-Host "  Matched $($filteredCoverage.Count) objects with coverage data"
+        if ($excludedObjects -gt 0) {
+            Write-Host "  Excluded $excludedObjects objects (Microsoft/external)"
+        }
+        
+        # Use filtered coverage going forward
+        $groupedCoverage = $filteredCoverage
+        
+        # Add objects from source that have no coverage (not executed at all)
+        foreach ($key in $objectMap.Keys) {
+            if (-not $groupedCoverage.ContainsKey($key)) {
+                # Object exists in source but has no coverage - add with empty lines
+                $groupedCoverage[$key] = @{
+                    ObjectType   = $objectMap[$key].ObjectType
+                    ObjectTypeId = Get-ObjectTypeId $objectMap[$key].ObjectType
+                    ObjectId     = $objectMap[$key].ObjectId
+                    Lines        = @()
+                    SourceInfo   = $objectMap[$key]
+                }
+            }
+        }
     }
     
     # Step 5: Generate Cobertura XML
@@ -107,14 +134,38 @@ function Convert-BCCoverageToCobertura {
     Write-Host "`nStep 6: Saving output..."
     Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
     
-    # Calculate and return statistics
-    $stats = Get-CoverageStatistics -CoverageEntries $coverageEntries
+    # Calculate and return statistics using source-based executable lines
+    $totalExecutableLines = 0
+    $coveredLines = 0
     
-    Write-Host "`n=== Coverage Summary ==="
+    foreach ($obj in $groupedCoverage.Values) {
+        if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
+            $totalExecutableLines += $obj.SourceInfo.ExecutableLines
+        }
+        $coveredLines += @($obj.Lines | Where-Object { $_.IsCovered }).Count
+    }
+    
+    $coveragePercent = if ($totalExecutableLines -gt 0) { 
+        [math]::Round(($coveredLines / $totalExecutableLines) * 100, 2) 
+    } else { 
+        0 
+    }
+    
+    $stats = [PSCustomObject]@{
+        TotalLines      = $totalExecutableLines
+        CoveredLines    = $coveredLines
+        NotCoveredLines = $totalExecutableLines - $coveredLines
+        CoveragePercent = $coveragePercent
+        LineRate        = if ($totalExecutableLines -gt 0) { $coveredLines / $totalExecutableLines } else { 0 }
+        ObjectCount     = $groupedCoverage.Count
+    }
+    
+    Write-Host "`n=== Coverage Summary (User Code Only) ==="
+    Write-Host "  Objects:       $($stats.ObjectCount)"
     Write-Host "  Total lines:   $($stats.TotalLines)"
     Write-Host "  Covered lines: $($stats.CoveredLines)"
     Write-Host "  Coverage:      $($stats.CoveragePercent)%"
-    Write-Host "========================`n"
+    Write-Host "==========================================`n"
     
     return $stats
 }

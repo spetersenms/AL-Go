@@ -86,15 +86,20 @@ function Get-ALObjectMap {
             # Parse procedures in this file
             $procedures = Get-ALProcedures -Content $content
             
+            # Get executable line information
+            $executableInfo = Get-ALExecutableLines -Content $content
+            
             $objectMap[$key] = [PSCustomObject]@{
-                ObjectType       = $normalizedType
-                ObjectTypeAL     = $objectType.ToLower()
-                ObjectId         = $objectId
-                ObjectName       = $objectName
-                FilePath         = $file.FullName
-                RelativePath     = $file.FullName.Substring($SourcePath.Length).TrimStart('\', '/')
-                Procedures       = $procedures
-                TotalLines       = ($content -split "`n").Count
+                ObjectType            = $normalizedType
+                ObjectTypeAL          = $objectType.ToLower()
+                ObjectId              = $objectId
+                ObjectName            = $objectName
+                FilePath              = $file.FullName
+                RelativePath          = $file.FullName.Substring($SourcePath.Length).TrimStart('\', '/')
+                Procedures            = $procedures
+                TotalLines            = ($content -split "`n").Count
+                ExecutableLines       = $executableInfo.ExecutableLines
+                ExecutableLineNumbers = $executableInfo.ExecutableLineNumbers
             }
         }
     }
@@ -303,11 +308,132 @@ function Find-ALSourceFolders {
     return $sourceFolders | Select-Object -Unique
 }
 
+<#
+.SYNOPSIS
+    Counts executable lines in AL source content
+.DESCRIPTION
+    Identifies lines that are executable code statements vs non-executable
+    (comments, blank lines, declarations, keywords like begin/end, etc.)
+.PARAMETER Content
+    The AL source file content
+.OUTPUTS
+    Object with TotalLines, ExecutableLines, and ExecutableLineNumbers array
+#>
+function Get-ALExecutableLines {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+    
+    $lines = $Content -split "`n"
+    $executableLineNumbers = @()
+    $inMultiLineComment = $false
+    $inProcedureBody = $false
+    $braceDepth = 0
+    
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $lineNum = $i + 1
+        $line = $lines[$i].Trim()
+        
+        # Skip empty lines
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        
+        # Handle multi-line comments /* */
+        if ($line -match '/\*') {
+            $inMultiLineComment = $true
+        }
+        if ($inMultiLineComment) {
+            if ($line -match '\*/') {
+                $inMultiLineComment = $false
+            }
+            continue
+        }
+        
+        # Skip single-line comments
+        if ($line -match '^//') {
+            continue
+        }
+        
+        # Remove inline comments for analysis
+        $lineNoComment = $line -replace '//.*$', ''
+        $lineNoComment = $lineNoComment.Trim()
+        
+        if ([string]::IsNullOrWhiteSpace($lineNoComment)) {
+            continue
+        }
+        
+        # Skip non-executable constructs
+        # Object declarations
+        if ($lineNoComment -match '(?i)^(codeunit|table|page|report|query|xmlport|enum|interface|permissionset|tableextension|pageextension|reportextension|enumextension)\s+\d+') {
+            continue
+        }
+        
+        # Field/column definitions (in tables)
+        if ($lineNoComment -match '(?i)^field\s*\(\s*\d+\s*;') {
+            continue
+        }
+        
+        # Property assignments (Name = value; at object level)
+        if ($lineNoComment -match '(?i)^(Caption|Description|DataClassification|Access|Subtype|TableRelation|OptionMembers|OptionCaption)\s*=') {
+            continue
+        }
+        
+        # Procedure/trigger declarations (the signature line itself)
+        if ($lineNoComment -match '(?i)^(local\s+|internal\s+|protected\s+)?(procedure|trigger)\s+') {
+            $inProcedureBody = $true
+            $braceDepth = 0
+            continue
+        }
+        
+        # Variable declarations
+        if ($lineNoComment -match '(?i)^var\s*$') {
+            continue
+        }
+        if ($lineNoComment -match '(?i)^\w+\s*:\s*(Record|Code|Text|Integer|Decimal|Boolean|Date|Time|DateTime|Option|Enum|Codeunit|Page|Report|Query|Guid|BigInteger|Blob|Media|MediaSet|RecordRef|FieldRef|JsonObject|JsonArray|JsonToken|JsonValue|HttpClient|HttpContent|HttpRequestMessage|HttpResponseMessage|List|Dictionary|TextBuilder|OutStream|InStream|File|Char|Byte|Duration|Label|DotNet)') {
+            continue
+        }
+        
+        # Keywords that are structural, not executable
+        if ($lineNoComment -match '(?i)^(begin|end;?|keys|fieldgroups|actions|area|group|repeater|layout|requestpage|dataset|column|dataitem|labels|trigger\s+OnRun|trigger\s+On\w+)\s*$') {
+            # Track begin/end for procedure body detection
+            if ($lineNoComment -match '(?i)^begin\s*$') {
+                $braceDepth++
+            }
+            if ($lineNoComment -match '(?i)^end;?\s*$') {
+                $braceDepth--
+                if ($braceDepth -le 0) {
+                    $inProcedureBody = $false
+                }
+            }
+            continue
+        }
+        
+        # At this point, if we're in a procedure body, it's likely executable
+        if ($inProcedureBody -or $braceDepth -gt 0) {
+            $executableLineNumbers += $lineNum
+        }
+        # Also count lines that look like statements (assignments, calls, control flow)
+        elseif ($lineNoComment -match '(?i)(:=|if\s+|else|for\s+|foreach\s+|while\s+|repeat|until|case\s+|exit\(|error\(|message\(|\.\w+\(|;$)') {
+            $executableLineNumbers += $lineNum
+        }
+    }
+    
+    return [PSCustomObject]@{
+        TotalLines           = $lines.Count
+        ExecutableLines      = $executableLineNumbers.Count
+        ExecutableLineNumbers = $executableLineNumbers
+    }
+}
+
 Export-ModuleMember -Function @(
     'Read-AppJson',
     'Get-ALObjectMap',
     'Get-NormalizedObjectType',
     'Get-ALProcedures',
     'Find-ProcedureForLine',
-    'Find-ALSourceFolders'
+    'Find-ALSourceFolders',
+    'Get-ALExecutableLines'
 )

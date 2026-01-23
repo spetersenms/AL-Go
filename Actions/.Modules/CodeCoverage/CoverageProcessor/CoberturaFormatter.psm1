@@ -31,18 +31,26 @@ function New-CoberturaDocument {
         $AppInfo = $null
     )
     
-    # Calculate overall statistics
-    $totalLines = 0
+    # Calculate overall statistics using source-based executable lines when available
+    $totalExecutableLines = 0
     $coveredLines = 0
     
     foreach ($obj in $CoverageData.Values) {
+        # If we have source info with executable line count, use that for total
+        if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
+            $totalExecutableLines += $obj.SourceInfo.ExecutableLines
+        } else {
+            # Fallback to counting lines in coverage data
+            $totalExecutableLines += $obj.Lines.Count
+        }
+        
+        # Count covered lines from coverage data
         foreach ($line in $obj.Lines) {
-            $totalLines++
             if ($line.IsCovered) { $coveredLines++ }
         }
     }
     
-    $lineRate = if ($totalLines -gt 0) { [math]::Round($coveredLines / $totalLines, 4) } else { 0 }
+    $lineRate = if ($totalExecutableLines -gt 0) { [math]::Round($coveredLines / $totalExecutableLines, 4) } else { 0 }
     $branchRate = 0  # BC coverage doesn't provide branch information
     
     # Create XML document
@@ -60,7 +68,7 @@ function New-CoberturaDocument {
     $coverage.SetAttribute("line-rate", $lineRate.ToString())
     $coverage.SetAttribute("branch-rate", $branchRate.ToString())
     $coverage.SetAttribute("lines-covered", $coveredLines.ToString())
-    $coverage.SetAttribute("lines-valid", $totalLines.ToString())
+    $coverage.SetAttribute("lines-valid", $totalExecutableLines.ToString())
     $coverage.SetAttribute("branches-covered", "0")
     $coverage.SetAttribute("branches-valid", "0")
     $coverage.SetAttribute("complexity", "0")
@@ -122,10 +130,14 @@ function New-CoberturaClass {
         $ObjectData
     )
     
-    # Calculate class statistics
-    $totalLines = $ObjectData.Lines.Count
-    $coveredLines = ($ObjectData.Lines | Where-Object { $_.IsCovered }).Count
-    $lineRate = if ($totalLines -gt 0) { [math]::Round($coveredLines / $totalLines, 4) } else { 0 }
+    # Calculate class statistics using executable lines from source when available
+    $totalExecutableLines = if ($ObjectData.SourceInfo -and $ObjectData.SourceInfo.ExecutableLines) {
+        $ObjectData.SourceInfo.ExecutableLines
+    } else {
+        $ObjectData.Lines.Count
+    }
+    $coveredLines = @($ObjectData.Lines | Where-Object { $_.IsCovered }).Count
+    $lineRate = if ($totalExecutableLines -gt 0) { [math]::Round($coveredLines / $totalExecutableLines, 4) } else { 0 }
     
     # Create class element
     $class = $Xml.CreateElement("class")
@@ -160,16 +172,35 @@ function New-CoberturaClass {
         }
     }
     
-    # Lines element (all lines for the class)
+    # Lines element (all executable lines for the class)
     $linesElement = $Xml.CreateElement("lines")
     $class.AppendChild($linesElement) | Out-Null
     
-    foreach ($line in $ObjectData.Lines | Sort-Object -Property LineNo) {
-        $lineElement = $Xml.CreateElement("line")
-        $lineElement.SetAttribute("number", $line.LineNo.ToString())
-        $lineElement.SetAttribute("hits", $line.Hits.ToString())
-        $lineElement.SetAttribute("branch", "false")
-        $linesElement.AppendChild($lineElement) | Out-Null
+    # Build a set of covered line numbers for quick lookup
+    $coveredLineNumbers = @{}
+    foreach ($line in $ObjectData.Lines) {
+        $coveredLineNumbers[$line.LineNo] = $line.Hits
+    }
+    
+    # If we have source info with executable line numbers, include all of them
+    if ($ObjectData.SourceInfo -and $ObjectData.SourceInfo.ExecutableLineNumbers) {
+        foreach ($lineNo in $ObjectData.SourceInfo.ExecutableLineNumbers | Sort-Object) {
+            $lineElement = $Xml.CreateElement("line")
+            $lineElement.SetAttribute("number", $lineNo.ToString())
+            $hits = if ($coveredLineNumbers.ContainsKey($lineNo)) { $coveredLineNumbers[$lineNo] } else { 0 }
+            $lineElement.SetAttribute("hits", $hits.ToString())
+            $lineElement.SetAttribute("branch", "false")
+            $linesElement.AppendChild($lineElement) | Out-Null
+        }
+    } else {
+        # Fallback: only output covered lines (BC data only)
+        foreach ($line in $ObjectData.Lines | Sort-Object -Property LineNo) {
+            $lineElement = $Xml.CreateElement("line")
+            $lineElement.SetAttribute("number", $line.LineNo.ToString())
+            $lineElement.SetAttribute("hits", $line.Hits.ToString())
+            $lineElement.SetAttribute("branch", "false")
+            $linesElement.AppendChild($lineElement) | Out-Null
+        }
     }
     
     return $class
