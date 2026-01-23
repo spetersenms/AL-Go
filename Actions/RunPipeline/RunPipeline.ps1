@@ -527,6 +527,7 @@ try {
                     AutorizationType = 'NavUserPassword'
                     TestSuite = 'DEFAULT'
                     Detailed = $true
+                    DisableSSLVerification = $true
                     CodeCoverageTrackingType = 'PerRun'
                     ProduceCodeCoverageMap = 'PerCodeunit'
                     CodeCoverageOutputPath = $codeCoverageOutputPath
