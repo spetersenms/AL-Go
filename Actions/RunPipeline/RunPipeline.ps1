@@ -493,6 +493,7 @@ try {
                 $containerName = $parameters.containerName
                 $credential = $parameters.credential
                 $extensionId = $parameters.extensionId
+                $appName = $parameters.appName
                 
                 # Handle both JUnit and XUnit result file names
                 $resultsFilePath = $null
@@ -538,6 +539,7 @@ try {
                     TestSuite = 'DEFAULT'
                     Detailed = $true
                     DisableSSLVerification = $true
+                    ResultsFormat = 'JUnit'
                     CodeCoverageTrackingType = 'PerRun'
                     ProduceCodeCoverageMap = 'PerCodeunit'
                     CodeCoverageOutputPath = $codeCoverageOutputPath
@@ -546,6 +548,10 @@ try {
                 
                 if ($extensionId) {
                     $testRunParams.ExtensionId = $extensionId
+                }
+
+                if ($appName) {
+                    $testRunParams.AppName = $appName
                 }
                 
                 if ($resultsFilePath) {

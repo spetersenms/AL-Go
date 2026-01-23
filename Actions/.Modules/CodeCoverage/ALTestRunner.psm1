@@ -24,6 +24,9 @@ function Run-AlTests
     [string] $AzureDevOps = 'no',
     [bool] $SaveResultFile = $true,
     [string] $ResultsFilePath = "$PSScriptRoot\TestResults.xml",
+    [ValidateSet('XUnit','JUnit')]
+    [string] $ResultsFormat = 'JUnit',
+    [string] $AppName = '',
     [ValidateSet('Disabled', 'PerRun', 'PerCodeunit', 'PerTest')]
     [string] $CodeCoverageTrackingType = 'Disabled',
     [ValidateSet('Disabled','PerCodeunit','PerTest')]
@@ -62,7 +65,11 @@ function Run-AlTests
 
     if($SaveResultFile)
     {
-        Save-ResultsAsXUnitFile -TestRunResultObject $testRunResult -ResultsFilePath $ResultsFilePath
+        # Import the formatter module
+        $formatterPath = Join-Path $PSScriptRoot "TestResultFormatter.psm1"
+        Import-Module $formatterPath -Force
+
+        Save-TestResults -TestRunResultObject $testRunResult -ResultsFilePath $ResultsFilePath -Format $ResultsFormat -ExtensionId $ExtensionId -AppName $AppName
     }
 
     if($AzureDevOps  -ne 'no')
