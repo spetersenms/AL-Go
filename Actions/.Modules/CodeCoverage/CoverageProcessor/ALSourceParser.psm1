@@ -89,13 +89,17 @@ function Get-ALObjectMap {
             # Get executable line information
             $executableInfo = Get-ALExecutableLines -Content $content
             
+            # Calculate relative path safely (handle trailing slashes)
+            $normalizedSourcePath = $SourcePath.TrimEnd('\', '/')
+            $relativePath = $file.FullName.Substring($normalizedSourcePath.Length + 1)
+            
             $objectMap[$key] = [PSCustomObject]@{
                 ObjectType            = $normalizedType
                 ObjectTypeAL          = $objectType.ToLower()
                 ObjectId              = $objectId
                 ObjectName            = $objectName
                 FilePath              = $file.FullName
-                RelativePath          = $file.FullName.Substring($SourcePath.Length).TrimStart('\', '/')
+                RelativePath          = $relativePath
                 Procedures            = $procedures
                 TotalLines            = ($content -split "`n").Count
                 ExecutableLines       = $executableInfo.ExecutableLines
