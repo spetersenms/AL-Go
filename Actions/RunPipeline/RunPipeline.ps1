@@ -669,7 +669,7 @@ try {
     # Process code coverage files to Cobertura format
     $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
     if (Test-Path $codeCoveragePath) {
-        $coverageFiles = Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue
+        $coverageFiles = @(Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue)
         if ($coverageFiles.Count -gt 0) {
             Write-Host "Processing $($coverageFiles.Count) code coverage file(s) to Cobertura format..."
             try {
