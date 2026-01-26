@@ -9,8 +9,8 @@ Param(
 $coverageSummaryMD = ''
 $coverageDetailsMD = ''
 
-# Find Cobertura coverage file
-$coverageFile = Join-Path $ENV:GITHUB_WORKSPACE "$project\CodeCoverage\cobertura.xml"
+# Find Cobertura coverage file in .buildartifacts folder
+$coverageFile = Join-Path $ENV:GITHUB_WORKSPACE "$project/.buildartifacts/CodeCoverage/cobertura.xml"
 
 if (-not (Test-Path -Path $coverageFile -PathType Leaf)) {
     Write-Host "No coverage file found at: $coverageFile"
