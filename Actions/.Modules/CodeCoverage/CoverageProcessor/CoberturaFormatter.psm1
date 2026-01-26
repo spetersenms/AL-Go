@@ -31,18 +31,22 @@ function New-CoberturaDocument {
         $AppInfo = $null
     )
     
-    # Calculate overall statistics using source-based executable lines when available
+    # Calculate overall statistics
+    # With XMLport 130007, coverage data includes all lines (covered and not covered)
+    # Fall back to source-based counting for XMLport 130470 which only exports covered lines
     $totalExecutableLines = 0
     $coveredLines = 0
     
     foreach ($obj in $CoverageData.Values) {
-        # If we have source info with executable line count, use that for total
-        if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
-            $totalExecutableLines += $obj.SourceInfo.ExecutableLines
-        } else {
-            # Fallback to counting lines in coverage data
-            $totalExecutableLines += $obj.Lines.Count
+        # Count total lines from coverage data (includes all lines with XMLport 130007)
+        $objTotalLines = $obj.Lines.Count
+        
+        # If no lines in coverage data but we have source info, use source-based count (fallback)
+        if ($objTotalLines -eq 0 -and $obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
+            $objTotalLines = $obj.SourceInfo.ExecutableLines
         }
+        
+        $totalExecutableLines += $objTotalLines
         
         # Count covered lines from coverage data
         foreach ($line in $obj.Lines) {
@@ -130,11 +134,11 @@ function New-CoberturaClass {
         $ObjectData
     )
     
-    # Calculate class statistics using executable lines from source when available
-    $totalExecutableLines = if ($ObjectData.SourceInfo -and $ObjectData.SourceInfo.ExecutableLines) {
-        $ObjectData.SourceInfo.ExecutableLines
-    } else {
-        $ObjectData.Lines.Count
+    # Calculate class statistics
+    # With XMLport 130007, all lines are in coverage data; fall back to source for XMLport 130470
+    $totalExecutableLines = $ObjectData.Lines.Count
+    if ($totalExecutableLines -eq 0 -and $ObjectData.SourceInfo -and $ObjectData.SourceInfo.ExecutableLines) {
+        $totalExecutableLines = $ObjectData.SourceInfo.ExecutableLines
     }
     $coveredLines = @($ObjectData.Lines | Where-Object { $_.IsCovered }).Count
     $lineRate = if ($totalExecutableLines -gt 0) { [math]::Round($coveredLines / $totalExecutableLines, 4) } else { 0 }

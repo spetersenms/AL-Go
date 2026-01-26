@@ -544,6 +544,9 @@ try {
                     ProduceCodeCoverageMap = 'PerCodeunit'
                     CodeCoverageOutputPath = $codeCoverageOutputPath
                     CodeCoverageFilePrefix = "CodeCoverage_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    # XMLport 130007 exports all lines including uncovered (XML format)
+                    # XMLport 130470 exports only covered/partially covered lines (CSV format)
+                    CodeCoverageExporterId = '130007'
                 }
                 
                 if ($extensionId) {

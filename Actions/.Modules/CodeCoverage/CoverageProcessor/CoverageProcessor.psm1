@@ -134,14 +134,22 @@ function Convert-BCCoverageToCobertura {
     Write-Host "`nStep 6: Saving output..."
     Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
     
-    # Calculate and return statistics using source-based executable lines
+    # Calculate and return statistics
+    # With XMLport 130007, all executable lines (covered and not covered) are in the coverage data
+    # Fall back to source-based counting if coverage data doesn't include uncovered lines
     $totalExecutableLines = 0
     $coveredLines = 0
-    
+
     foreach ($obj in $groupedCoverage.Values) {
-        if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
-            $totalExecutableLines += $obj.SourceInfo.ExecutableLines
+        # Count total lines from coverage data (includes covered and not covered with XMLport 130007)
+        $objTotalLines = $obj.Lines.Count
+        
+        # If no lines in coverage data but we have source info, use source-based count (fallback for XMLport 130470)
+        if ($objTotalLines -eq 0 -and $obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
+            $objTotalLines = $obj.SourceInfo.ExecutableLines
         }
+        
+        $totalExecutableLines += $objTotalLines
         $coveredLines += @($obj.Lines | Where-Object { $_.IsCovered }).Count
     }
     

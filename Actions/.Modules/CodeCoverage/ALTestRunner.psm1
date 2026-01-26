@@ -359,5 +359,7 @@ $script:SkippedTestResultType = '3';
 $script:DefaultAuthorizationType = 'NavUserPassword'
 $script:DefaultTestSuite = 'DEFAULT'
 $global:TestRunnerAppId = "23de40a6-dfe8-4f80-80db-d70f83ce8caf"
+# XMLport 130470 (Code Coverage Results) - exports covered/partially covered lines as CSV
+# XMLport 130007 (Code Coverage Internal) - exports all lines including not covered as XML
 $script:DefaultCodeCoverageExporter = 130470;
 Import-Module "$PSScriptRoot\Internal\ALTestRunnerInternal.psm1"
