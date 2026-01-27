@@ -43,8 +43,8 @@ The action generates a GitHub Job Summary containing:
 
 | Icon | Coverage Level |
 |------|---------------|
-| 🟢 | ≥ 80% (Good) |
-| 🟡 | ≥ 50% (Needs Improvement) |
+| 🟢 | >= 80% (Good) |
+| 🟡 | >= 50% (Needs Improvement) |
 | 🔴 | < 50% (Low) |
 
 ## Prerequisites

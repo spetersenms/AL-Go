@@ -73,9 +73,9 @@ function New-CoverageBar {
     $filled = [math]::Floor($Coverage / 100 * $Width)
     $empty = $Width - $filled
     
-    # Using Unicode block characters for the bar
-    $bar = ("█" * $filled) + ("░" * $empty)
-    return "``$bar``"
+    # Using ASCII-compatible characters for GitHub
+    $bar = ("#" * $filled) + ("-" * $empty)
+    return "``[$bar]``"
 }
 
 <#
@@ -191,7 +191,7 @@ function Get-CoverageSummaryMD {
     $summarySb.AppendLine("") | Out-Null
     
     # Coverage threshold legend
-    $summarySb.AppendLine("<sub>:green_circle: ≥80% &nbsp; :yellow_circle: ≥50% &nbsp; :red_circle: <50%</sub>") | Out-Null
+    $summarySb.AppendLine("<sub>:green_circle: &ge;80% &nbsp; :yellow_circle: &ge;50% &nbsp; :red_circle: &lt;50%</sub>") | Out-Null
     $summarySb.AppendLine("") | Out-Null
     
     # Per-package/class breakdown table
