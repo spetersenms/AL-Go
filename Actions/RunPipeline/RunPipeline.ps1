@@ -25,6 +25,10 @@ try {
     Import-Module (Join-Path $PSScriptRoot '..\TelemetryHelper.psm1' -Resolve)
     DownloadAndImportBcContainerHelper
     Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "..\DetermineProjectsToBuild\DetermineProjectsToBuild.psm1" -Resolve) -DisableNameChecking
+    
+    # Import Code Coverage module for ALTestRunner functionality
+    # This makes Run-AlTests available globally for custom RunTestsInBcContainer overrides
+    Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "..\.Modules\CodeCoverage\ALTestRunner.psm1" -Resolve) -Force -DisableNameChecking
 
     if ($isWindows) {
         # Pull docker image in the background
@@ -481,14 +485,12 @@ try {
         
         # Capture buildArtifactFolder for use in scriptblock
         $ccBuildArtifactFolder = $buildArtifactFolder
-        $ccModulePath = Join-Path $PSScriptRoot "..\.Modules\CodeCoverage\ALTestRunner.psm1"
 
         $runAlPipelineParams += @{
             "RunTestsInBcContainer" = {
                 Param([Hashtable]$parameters)
 
-                # Import the module inside the scriptblock
-                Import-Module $ccModulePath -Force -DisableNameChecking
+                # Module is already imported at the top of RunPipeline.ps1
 
                 $containerName = $parameters.containerName
                 $credential = $parameters.credential
