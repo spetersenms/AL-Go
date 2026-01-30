@@ -613,6 +613,11 @@ try {
         $runAlPipelineParams["preprocessorsymbols"] += $settings.preprocessorSymbols
     }
 
+    # Set environment variable for buildArtifactFolder so custom override scripts can access it
+    # This is needed for code coverage support in repos with custom RunTestsInBcContainer overrides
+    $env:AL_GO_BUILD_ARTIFACT_FOLDER = $buildArtifactFolder
+    Write-Host "Build artifact folder: $buildArtifactFolder"
+
     Write-Host "Invoke Run-AlPipeline with buildmode $buildMode"
     Run-AlPipeline @runAlPipelineParams `
         -accept_insiderEula `
