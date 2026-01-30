@@ -63,7 +63,7 @@ function Run-AlTests
     
     [array]$testRunResult = Run-AlTestsInternal @testRunArguments
 
-    if($SaveResultFile)
+    if($SaveResultFile -and $testRunResult)
     {
         # Import the formatter module
         $formatterPath = Join-Path $PSScriptRoot "TestResultFormatter.psm1"
@@ -71,10 +71,13 @@ function Run-AlTests
 
         Save-TestResults -TestRunResultObject $testRunResult -ResultsFilePath $ResultsFilePath -Format $ResultsFormat -ExtensionId $ExtensionId -AppName $AppName
     }
+    elseif ($SaveResultFile -and -not $testRunResult) {
+        Write-Host "Warning: No test results to save - tests may not have run"
+    }
 
-    if($AzureDevOps  -ne 'no')
+    if($AzureDevOps -ne 'no' -and $testRunResult)
     {
-        Report-ErrorsInAzureDevOps -AzureDevOps $AzureDevOps -TestRunResultObject $TestRunResultObject
+        Report-ErrorsInAzureDevOps -AzureDevOps $AzureDevOps -TestRunResultObject $testRunResult
     }
 }
 
