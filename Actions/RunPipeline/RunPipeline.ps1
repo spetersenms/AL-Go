@@ -688,12 +688,15 @@ try {
 
                 $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
                 
-                # Find source path - look for app folders in project
+                # Find source path - look for app folders in project, or search entire workspace
                 $sourcePath = $null
                 if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
                     $sourcePath = Join-Path $projectPath $settings.appFolders[0]
                 } else {
-                    $sourcePath = $projectPath
+                    # No appFolders in this project - search entire workspace for source files
+                    # This supports test-only projects that test apps from other projects in the same repo
+                    $sourcePath = $ENV:GITHUB_WORKSPACE
+                    Write-Host "No appFolders in project, searching workspace for source files: $sourcePath"
                 }
 
                 if ($coverageFiles.Count -eq 1) {

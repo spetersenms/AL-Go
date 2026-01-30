@@ -116,7 +116,14 @@ function Read-CoberturaFile {
             Classes    = @()
         }
         
-        foreach ($class in $package.classes.class) {
+        # Handle empty classes element
+        $classes = $package.classes.class
+        if ($null -eq $classes) {
+            $result.Packages += $packageData
+            continue
+        }
+        
+        foreach ($class in $classes) {
             $methods = @()
             foreach ($method in $class.methods.method) {
                 $methodLines = @($method.lines.line)
@@ -177,6 +184,18 @@ function Get-CoverageSummaryMD {
         }
     }
     
+    # Try to read stats JSON for external code info
+    $statsFile = [System.IO.Path]::ChangeExtension($CoverageFile, '.stats.json')
+    $stats = $null
+    if (Test-Path $statsFile) {
+        try {
+            $stats = Get-Content -Path $statsFile -Encoding UTF8 | ConvertFrom-Json
+        }
+        catch {
+            Write-Host "Warning: Could not read stats file: $_"
+        }
+    }
+    
     $summarySb = [System.Text.StringBuilder]::new()
     $detailsSb = [System.Text.StringBuilder]::new()
     
@@ -189,6 +208,17 @@ function Get-CoverageSummaryMD {
     $summarySb.AppendLine("") | Out-Null
     $summarySb.AppendLine("$overallBar **$($coverage.LinesCovered)** of **$($coverage.LinesValid)** lines covered") | Out-Null
     $summarySb.AppendLine("") | Out-Null
+    
+    # External code section (code executed but no source available)
+    if ($stats -and $stats.ExcludedObjectCount -gt 0) {
+        $summarySb.AppendLine("### External Code Executed") | Out-Null
+        $summarySb.AppendLine("") | Out-Null
+        $summarySb.AppendLine(":information_source: **$($stats.ExcludedObjectCount)** objects executed from external apps (no source available)") | Out-Null
+        $summarySb.AppendLine("") | Out-Null
+        $summarySb.AppendLine("- Lines executed: **$($stats.ExcludedLinesExecuted)**") | Out-Null
+        $summarySb.AppendLine("- Total hits: **$($stats.ExcludedTotalHits)**") | Out-Null
+        $summarySb.AppendLine("") | Out-Null
+    }
     
     # Coverage threshold legend
     $summarySb.AppendLine("<sub>:green_circle: &ge;80% &nbsp; :yellow_circle: &ge;50% &nbsp; :red_circle: &lt;50%</sub>") | Out-Null
@@ -271,6 +301,40 @@ function Get-CoverageSummaryMD {
             }
         }
         
+        $detailsSb.AppendLine("</details>") | Out-Null
+    }
+    
+    # External objects section (collapsible)
+    if ($stats -and $stats.ExcludedObjects -and $stats.ExcludedObjects.Count -gt 0) {
+        $detailsSb.AppendLine("") | Out-Null
+        $detailsSb.AppendLine("<details>") | Out-Null
+        $detailsSb.AppendLine("<summary><b>External Objects Executed (no source available)</b></summary>") | Out-Null
+        $detailsSb.AppendLine("") | Out-Null
+        $detailsSb.AppendLine("These objects were executed during tests but their source code was not found in the workspace:") | Out-Null
+        $detailsSb.AppendLine("") | Out-Null
+        
+        $extHeaders = @("Object Type;left", "Object ID;right", "Lines Executed;right", "Total Hits;right")
+        $extRows = [System.Collections.ArrayList]@()
+        
+        foreach ($obj in ($stats.ExcludedObjects | Sort-Object -Property TotalHits -Descending)) {
+            $extRow = @(
+                $obj.ObjectType,
+                $obj.ObjectId.ToString(),
+                $obj.LinesExecuted.ToString(),
+                $obj.TotalHits.ToString()
+            )
+            $extRows.Add($extRow) | Out-Null
+        }
+        
+        try {
+            $extTable = Build-MarkdownTable -Headers $extHeaders -Rows $extRows
+            $detailsSb.AppendLine($extTable) | Out-Null
+        }
+        catch {
+            $detailsSb.AppendLine("<i>Failed to generate external objects table</i>") | Out-Null
+        }
+        
+        $detailsSb.AppendLine("") | Out-Null
         $detailsSb.AppendLine("</details>") | Out-Null
     }
     
