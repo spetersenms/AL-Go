@@ -125,16 +125,21 @@ function Read-CoberturaFile {
         
         foreach ($class in $classes) {
             $methods = @()
-            foreach ($method in $class.methods.method) {
-                $methodLines = @($method.lines.line)
-                $methodCovered = @($methodLines | Where-Object { [int]$_.hits -gt 0 }).Count
-                $methodTotal = $methodLines.Count
-                
-                $methods += @{
-                    Name        = $method.name
-                    LineRate    = [double]$method.'line-rate'
-                    LinesCovered = $methodCovered
-                    LinesTotal  = $methodTotal
+            
+            # Handle empty methods element
+            $classMethods = $class.methods.method
+            if ($classMethods) {
+                foreach ($method in $classMethods) {
+                    $methodLines = @($method.lines.line)
+                    $methodCovered = @($methodLines | Where-Object { [int]$_.hits -gt 0 }).Count
+                    $methodTotal = $methodLines.Count
+                    
+                    $methods += @{
+                        Name        = $method.name
+                        LineRate    = [double]$method.'line-rate'
+                        LinesCovered = $methodCovered
+                        LinesTotal  = $methodTotal
+                    }
                 }
             }
             
