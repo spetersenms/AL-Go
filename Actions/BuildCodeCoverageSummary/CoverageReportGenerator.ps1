@@ -126,10 +126,10 @@ function Read-CoberturaFile {
         foreach ($class in $classes) {
             $methods = @()
             
-            # Handle empty methods element
-            $classMethods = $class.methods.method
-            if ($classMethods) {
-                foreach ($method in $classMethods) {
+            # Handle empty methods element (strict mode compatible)
+            $methodsNode = $class.SelectSingleNode('methods')
+            if ($methodsNode -and $methodsNode.HasChildNodes) {
+                foreach ($method in $methodsNode.method) {
                     $methodLines = @($method.lines.line)
                     $methodCovered = @($methodLines | Where-Object { [int]$_.hits -gt 0 }).Count
                     $methodTotal = $methodLines.Count
@@ -143,7 +143,12 @@ function Read-CoberturaFile {
                 }
             }
             
-            $classLines = @($class.lines.line)
+            # Handle lines element (strict mode compatible)
+            $linesNode = $class.SelectSingleNode('lines')
+            $classLines = @()
+            if ($linesNode -and $linesNode.HasChildNodes) {
+                $classLines = @($linesNode.line)
+            }
             $classCovered = @($classLines | Where-Object { [int]$_.hits -gt 0 }).Count
             $classTotal = $classLines.Count
             
