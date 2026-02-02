@@ -168,8 +168,8 @@ function New-CoberturaClass {
     $methods = $Xml.CreateElement("methods")
     $class.AppendChild($methods) | Out-Null
     
-    # Group lines by procedure if source info available
-    if ($ObjectData.SourceInfo -and $ObjectData.SourceInfo.Procedures) {
+    # Group lines by procedure if source info available and there are lines to process
+    if ($ObjectData.SourceInfo -and $ObjectData.SourceInfo.Procedures -and $ObjectData.Lines -and $ObjectData.Lines.Count -gt 0) {
         $procedureCoverage = Get-ProcedureCoverage -Lines $ObjectData.Lines -Procedures $ObjectData.SourceInfo.Procedures
         
         foreach ($proc in $procedureCoverage) {
@@ -272,14 +272,19 @@ function New-CoberturaMethod {
 function Get-ProcedureCoverage {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
-        [array]$Lines,
+        [Parameter(Mandatory = $false)]
+        [array]$Lines = @(),
         
         [Parameter(Mandatory = $true)]
         [array]$Procedures
     )
     
     $result = @()
+    
+    # If no lines, return empty result
+    if (-not $Lines -or $Lines.Count -eq 0) {
+        return $result
+    }
     
     foreach ($proc in $Procedures) {
         $procLines = $Lines | Where-Object { 
