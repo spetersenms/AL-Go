@@ -80,6 +80,105 @@ function New-CoverageBar {
 
 <#
 .SYNOPSIS
+    Extracts Area and Module paths from a filename
+.PARAMETER Filename
+    Source file path (e.g., "src/System Application/App/Email/src/Email.Codeunit.al")
+.OUTPUTS
+    Hashtable with Area and Module paths
+#>
+function Get-ModuleFromFilename {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Filename
+    )
+    
+    $parts = $Filename -split '/'
+    
+    # Area is 3 levels deep (e.g., "src/System Application/App")
+    $area = if ($parts.Count -ge 3) { 
+        "$($parts[0])/$($parts[1])/$($parts[2])" 
+    } else { 
+        $Filename 
+    }
+    
+    # Module is 4 levels deep (e.g., "src/System Application/App/Email")
+    $module = if ($parts.Count -ge 4) { 
+        "$($parts[0])/$($parts[1])/$($parts[2])/$($parts[3])" 
+    } else { 
+        $area 
+    }
+    
+    return @{
+        Area   = $area
+        Module = $module
+    }
+}
+
+<#
+.SYNOPSIS
+    Aggregates coverage data by module and area
+.PARAMETER Coverage
+    Coverage data from Read-CoberturaFile
+.OUTPUTS
+    Hashtable with AreaData containing module aggregations
+#>
+function Get-ModuleCoverageData {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Coverage
+    )
+    
+    $moduleData = @{}
+    
+    foreach ($package in $Coverage.Packages) {
+        foreach ($class in $package.Classes) {
+            $paths = Get-ModuleFromFilename -Filename $class.Filename
+            $module = $paths.Module
+            $area = $paths.Area
+            
+            if (-not $moduleData.ContainsKey($module)) {
+                $moduleData[$module] = @{
+                    Area         = $area
+                    ModuleName   = if ($module -ne $area) { $module.Replace("$area/", "") } else { $module }
+                    TotalLines   = 0
+                    CoveredLines = 0
+                    Objects      = 0
+                }
+            }
+            
+            $moduleData[$module].Objects++
+            $moduleData[$module].TotalLines += $class.LinesTotal
+            $moduleData[$module].CoveredLines += $class.LinesCovered
+        }
+    }
+    
+    # Group modules by area
+    $areaData = @{}
+    foreach ($mod in $moduleData.Keys) {
+        $area = $moduleData[$mod].Area
+        if (-not $areaData.ContainsKey($area)) {
+            $areaData[$area] = @{
+                Modules      = @{}
+                AllZero      = $true
+                TotalLines   = 0
+                CoveredLines = 0
+                Objects      = 0
+            }
+        }
+        $areaData[$area].Modules[$mod] = $moduleData[$mod]
+        $areaData[$area].TotalLines += $moduleData[$mod].TotalLines
+        $areaData[$area].CoveredLines += $moduleData[$mod].CoveredLines
+        $areaData[$area].Objects += $moduleData[$mod].Objects
+        if ($moduleData[$mod].CoveredLines -gt 0) {
+            $areaData[$area].AllZero = $false
+        }
+    }
+    
+    return $areaData
+}
+
+<#
+.SYNOPSIS
     Parses Cobertura XML and returns coverage data
 .PARAMETER CoverageFile
     Path to the Cobertura XML file
@@ -109,28 +208,39 @@ function Read-CoberturaFile {
         Packages       = @()
     }
     
-    foreach ($package in $coverage.packages.package) {
+    # Handle empty packages element (strict mode compatible)
+    $packagesNode = $coverage.SelectSingleNode('packages')
+    if (-not $packagesNode -or -not $packagesNode.HasChildNodes) {
+        return $result
+    }
+    
+    foreach ($package in $packagesNode.package) {
         $packageData = @{
             Name       = $package.name
             LineRate   = [double]$package.'line-rate'
             Classes    = @()
         }
         
-        # Handle empty classes element
-        $classes = $package.classes.class
-        if ($null -eq $classes) {
+        # Handle empty classes element (strict mode compatible)
+        $classesNode = $package.SelectSingleNode('classes')
+        if (-not $classesNode -or -not $classesNode.HasChildNodes) {
             $result.Packages += $packageData
             continue
         }
         
-        foreach ($class in $classes) {
+        foreach ($class in $classesNode.class) {
             $methods = @()
             
             # Handle empty methods element (strict mode compatible)
             $methodsNode = $class.SelectSingleNode('methods')
             if ($methodsNode -and $methodsNode.HasChildNodes) {
                 foreach ($method in $methodsNode.method) {
-                    $methodLines = @($method.lines.line)
+                    # Handle empty lines element in method (strict mode compatible)
+                    $methodLinesNode = $method.SelectSingleNode('lines')
+                    $methodLines = @()
+                    if ($methodLinesNode -and $methodLinesNode.HasChildNodes) {
+                        $methodLines = @($methodLinesNode.line)
+                    }
                     $methodCovered = @($methodLines | Where-Object { [int]$_.hits -gt 0 }).Count
                     $methodTotal = $methodLines.Count
                     
@@ -220,7 +330,9 @@ function Get-CoverageSummaryMD {
     $summarySb.AppendLine("") | Out-Null
     
     # External code section (code executed but no source available)
-    if ($stats -and $stats.ExcludedObjectCount -gt 0) {
+    # Safely check for property existence (strict mode compatible)
+    $hasExcludedStats = $stats -and ($stats | Get-Member -Name 'ExcludedObjectCount' -MemberType NoteProperty) -and $stats.ExcludedObjectCount -gt 0
+    if ($hasExcludedStats) {
         $summarySb.AppendLine("### External Code Executed") | Out-Null
         $summarySb.AppendLine("") | Out-Null
         $summarySb.AppendLine(":information_source: **$($stats.ExcludedObjectCount)** objects executed from external apps (no source available)") | Out-Null
@@ -234,88 +346,104 @@ function Get-CoverageSummaryMD {
     $summarySb.AppendLine("<sub>:green_circle: &ge;80% &nbsp; :yellow_circle: &ge;50% &nbsp; :red_circle: &lt;50%</sub>") | Out-Null
     $summarySb.AppendLine("") | Out-Null
     
-    # Per-package/class breakdown table
+    # Per-module coverage breakdown (aggregated from objects)
     if ($coverage.Packages.Count -gt 0) {
-        $detailsSb.AppendLine("### Coverage by Object") | Out-Null
+        $areaData = Get-ModuleCoverageData -Coverage $coverage
+        
+        $detailsSb.AppendLine("### Coverage by Module") | Out-Null
         $detailsSb.AppendLine("") | Out-Null
         
-        $headers = @("Object;left", "File;left", "Coverage;right", "Lines;right", "Bar;left")
-        $rows = [System.Collections.ArrayList]@()
+        # Separate areas into those with coverage and those without
+        $areasWithCoverage = @($areaData.GetEnumerator() | Where-Object { -not $_.Value.AllZero } | Sort-Object { $_.Value.CoveredLines } -Descending)
+        $areasWithoutCoverage = @($areaData.GetEnumerator() | Where-Object { $_.Value.AllZero } | Sort-Object { $_.Value.Objects } -Descending)
         
-        foreach ($package in $coverage.Packages) {
-            foreach ($class in $package.Classes) {
-                $classPercent = [math]::Round($class.LineRate * 100, 1)
-                $classIcon = Get-CoverageStatusIcon -Coverage $classPercent
-                $classBar = New-CoverageBar -Coverage $classPercent -Width 10
+        # Build module-level table for areas with coverage
+        if ($areasWithCoverage.Count -gt 0) {
+            $headers = @("Module;left", "Coverage;right", "Lines;right", "Objects;right", "Bar;left")
+            $rows = [System.Collections.ArrayList]@()
+            
+            foreach ($area in $areasWithCoverage) {
+                # Add area header row
+                $areaPct = if ($area.Value.TotalLines -gt 0) { [math]::Round($area.Value.CoveredLines / $area.Value.TotalLines * 100, 1) } else { 0 }
+                $areaIcon = Get-CoverageStatusIcon -Coverage $areaPct
+                $areaBar = New-CoverageBar -Coverage $areaPct -Width 10
                 
-                $row = @(
-                    $class.Name,
-                    $class.Filename,
-                    "$classPercent%$classIcon",
-                    "$($class.LinesCovered)/$($class.LinesTotal)",
-                    $classBar
+                $areaRow = @(
+                    "**$($area.Key)**",
+                    "**$areaPct%$areaIcon**",
+                    "**$($area.Value.CoveredLines)/$($area.Value.TotalLines)**",
+                    "**$($area.Value.Objects)**",
+                    $areaBar
                 )
-                $rows.Add($row) | Out-Null
-            }
-        }
-        
-        # Sort by coverage ascending (lowest first to highlight problem areas)
-        $sortedRows = [System.Collections.ArrayList]@($rows | Sort-Object { [double]($_[2] -replace '[^0-9.]', '') })
-        
-        try {
-            $table = Build-MarkdownTable -Headers $headers -Rows $sortedRows
-            $detailsSb.AppendLine($table) | Out-Null
-        }
-        catch {
-            $detailsSb.AppendLine("<i>Failed to generate coverage table</i>") | Out-Null
-        }
-        
-        $detailsSb.AppendLine("") | Out-Null
-        
-        # Method-level details (collapsible)
-        $detailsSb.AppendLine("<details>") | Out-Null
-        $detailsSb.AppendLine("<summary><b>Method-level coverage details</b></summary>") | Out-Null
-        $detailsSb.AppendLine("") | Out-Null
-        
-        foreach ($package in $coverage.Packages) {
-            foreach ($class in $package.Classes) {
-                if ($class.Methods.Count -gt 0) {
-                    $classPercent = [math]::Round($class.LineRate * 100, 1)
-                    $detailsSb.AppendLine("#### $($class.Name) ($classPercent%)") | Out-Null
-                    $detailsSb.AppendLine("") | Out-Null
+                $rows.Add($areaRow) | Out-Null
+                
+                # Add module rows (indented)
+                $sortedModules = $area.Value.Modules.GetEnumerator() | Sort-Object { $_.Value.CoveredLines } -Descending
+                foreach ($mod in $sortedModules) {
+                    $modPct = if ($mod.Value.TotalLines -gt 0) { [math]::Round($mod.Value.CoveredLines / $mod.Value.TotalLines * 100, 1) } else { 0 }
+                    $modIcon = Get-CoverageStatusIcon -Coverage $modPct
+                    $modBar = New-CoverageBar -Coverage $modPct -Width 10
                     
-                    $methodHeaders = @("Method;left", "Coverage;right", "Lines;right")
-                    $methodRows = [System.Collections.ArrayList]@()
-                    
-                    foreach ($method in $class.Methods) {
-                        $methodPercent = [math]::Round($method.LineRate * 100, 1)
-                        $methodIcon = Get-CoverageStatusIcon -Coverage $methodPercent
-                        
-                        $methodRow = @(
-                            $method.Name,
-                            "$methodPercent%$methodIcon",
-                            "$($method.LinesCovered)/$($method.LinesTotal)"
-                        )
-                        $methodRows.Add($methodRow) | Out-Null
-                    }
-                    
-                    try {
-                        $methodTable = Build-MarkdownTable -Headers $methodHeaders -Rows $methodRows
-                        $detailsSb.AppendLine($methodTable) | Out-Null
-                    }
-                    catch {
-                        $detailsSb.AppendLine("<i>Failed to generate method table</i>") | Out-Null
-                    }
-                    $detailsSb.AppendLine("") | Out-Null
+                    $modRow = @(
+                        "&nbsp;&nbsp;&nbsp;&nbsp;$($mod.Value.ModuleName)",
+                        "$modPct%$modIcon",
+                        "$($mod.Value.CoveredLines)/$($mod.Value.TotalLines)",
+                        "$($mod.Value.Objects)",
+                        $modBar
+                    )
+                    $rows.Add($modRow) | Out-Null
                 }
             }
+            
+            try {
+                $table = Build-MarkdownTable -Headers $headers -Rows $rows
+                $detailsSb.AppendLine($table) | Out-Null
+            }
+            catch {
+                $detailsSb.AppendLine("<i>Failed to generate module coverage table</i>") | Out-Null
+            }
+            $detailsSb.AppendLine("") | Out-Null
         }
         
-        $detailsSb.AppendLine("</details>") | Out-Null
+        # Show collapsed areas (all 0% coverage) in a separate section
+        if ($areasWithoutCoverage.Count -gt 0) {
+            $detailsSb.AppendLine("<details>") | Out-Null
+            $detailsSb.AppendLine("<summary><b>Areas with no coverage data</b> ($($areasWithoutCoverage.Count) areas)</summary>") | Out-Null
+            $detailsSb.AppendLine("") | Out-Null
+            $detailsSb.AppendLine("These areas had no lines executed during tests:") | Out-Null
+            $detailsSb.AppendLine("") | Out-Null
+            
+            $zeroHeaders = @("Area;left", "Objects;right", "Lines;right")
+            $zeroRows = [System.Collections.ArrayList]@()
+            
+            foreach ($area in $areasWithoutCoverage) {
+                $zeroRow = @(
+                    $area.Key,
+                    $area.Value.Objects.ToString(),
+                    $area.Value.TotalLines.ToString()
+                )
+                $zeroRows.Add($zeroRow) | Out-Null
+            }
+            
+            try {
+                $zeroTable = Build-MarkdownTable -Headers $zeroHeaders -Rows $zeroRows
+                $detailsSb.AppendLine($zeroTable) | Out-Null
+            }
+            catch {
+                $detailsSb.AppendLine("<i>Failed to generate table</i>") | Out-Null
+            }
+            
+            $detailsSb.AppendLine("") | Out-Null
+            $detailsSb.AppendLine("</details>") | Out-Null
+        }
+        
+        $detailsSb.AppendLine("") | Out-Null
     }
     
     # External objects section (collapsible)
-    if ($stats -and $stats.ExcludedObjects -and $stats.ExcludedObjects.Count -gt 0) {
+    # Use Get-Member to safely check if ExcludedObjects property exists (strict mode compatible)
+    $hasExcludedObjects = $stats -and ($stats | Get-Member -Name 'ExcludedObjects' -MemberType NoteProperty) -and $stats.ExcludedObjects -and @($stats.ExcludedObjects).Count -gt 0
+    if ($hasExcludedObjects) {
         $detailsSb.AppendLine("") | Out-Null
         $detailsSb.AppendLine("<details>") | Out-Null
         $detailsSb.AppendLine("<summary><b>External Objects Executed (no source available)</b></summary>") | Out-Null
