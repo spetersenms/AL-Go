@@ -688,16 +688,20 @@ try {
 
                 $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
                 
-                # Find source path - look for app folders in project, or search entire workspace
-                $sourcePath = $null
+                # Find source path for coverage mapping
+                # We need to scan ALL app folders, not just the first one
+                # The best approach is to use the workspace root so we can find all source files
+                # This handles cases like BCApps where appFolders use relative paths like "../../../src/Apps/W1/*/App"
+                $sourcePath = $ENV:GITHUB_WORKSPACE
+                
                 if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
-                    $sourcePath = Join-Path $projectPath $settings.appFolders[0]
+                    # Log the app folders being covered
+                    Write-Host "Scanning workspace for source files from $($settings.appFolders.Count) app folder pattern(s):"
+                    $settings.appFolders | ForEach-Object { Write-Host "  $_" }
                 } else {
-                    # No appFolders in this project - search entire workspace for source files
-                    # This supports test-only projects that test apps from other projects in the same repo
-                    $sourcePath = $ENV:GITHUB_WORKSPACE
-                    Write-Host "No appFolders in project, searching workspace for source files: $sourcePath"
+                    Write-Host "No appFolders in project, searching entire workspace for source files"
                 }
+                Write-Host "Source path for coverage mapping: $sourcePath"
 
                 if ($coverageFiles.Count -eq 1) {
                     # Single coverage file
