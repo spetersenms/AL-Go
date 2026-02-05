@@ -350,15 +350,17 @@ function Get-CoverageSummaryMD {
     if ($coverage.Packages.Count -gt 0) {
         $areaData = Get-ModuleCoverageData -Coverage $coverage
         
-        $detailsSb.AppendLine("### Coverage by Module") | Out-Null
-        $detailsSb.AppendLine("") | Out-Null
-        
         # Separate areas into those with coverage and those without
         $areasWithCoverage = @($areaData.GetEnumerator() | Where-Object { -not $_.Value.AllZero } | Sort-Object { $_.Value.CoveredLines } -Descending)
         $areasWithoutCoverage = @($areaData.GetEnumerator() | Where-Object { $_.Value.AllZero } | Sort-Object { $_.Value.Objects } -Descending)
         
-        # Build module-level table for areas with coverage
+        # Build module-level table for areas with coverage (collapsible)
         if ($areasWithCoverage.Count -gt 0) {
+            $totalModules = ($areasWithCoverage | ForEach-Object { $_.Value.Modules.Count } | Measure-Object -Sum).Sum
+            $detailsSb.AppendLine("<details>") | Out-Null
+            $detailsSb.AppendLine("<summary><b>Coverage by Module</b> ($($areasWithCoverage.Count) areas, $totalModules modules with coverage)</summary>") | Out-Null
+            $detailsSb.AppendLine("") | Out-Null
+            
             $headers = @("Module;left", "Coverage;right", "Lines;right", "Objects;right", "Bar;left")
             $rows = [System.Collections.ArrayList]@()
             
@@ -402,6 +404,8 @@ function Get-CoverageSummaryMD {
             catch {
                 $detailsSb.AppendLine("<i>Failed to generate module coverage table</i>") | Out-Null
             }
+            $detailsSb.AppendLine("") | Out-Null
+            $detailsSb.AppendLine("</details>") | Out-Null
             $detailsSb.AppendLine("") | Out-Null
         }
         
