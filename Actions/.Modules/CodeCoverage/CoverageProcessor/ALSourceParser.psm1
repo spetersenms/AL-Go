@@ -208,15 +208,15 @@ function Get-ALProcedures {
         
         # Track braces for procedure end
         if ($inProcedure) {
-            # Count braces (simple counting, doesn't handle strings/comments perfectly)
-            $openBraces = ([regex]::Matches($line, '\{|begin', 'IgnoreCase')).Count
-            $closeBraces = ([regex]::Matches($line, '\}|end;?(?:\s*$|\s+)', 'IgnoreCase')).Count
+            # Count AL block boundaries (word-boundary anchored to avoid matching variable names)
+            $openBraces = ([regex]::Matches($line, '\bbegin\b', 'IgnoreCase')).Count
+            $closeBraces = ([regex]::Matches($line, '\bend\b\s*;?\s*$', 'IgnoreCase')).Count
             
             $braceDepth += $openBraces
             $braceDepth -= $closeBraces
             
             # Check if procedure ended
-            if ($braceDepth -le 0 -and ($line -match '\}' -or $line -match '\bend\b')) {
+            if ($braceDepth -le 0 -and $line -match '\bend\b\s*;?\s*$') {
                 $currentProcedure.EndLine = $lineNum
                 $procedures += [PSCustomObject]$currentProcedure
                 $currentProcedure = $null
