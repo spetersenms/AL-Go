@@ -148,7 +148,7 @@ function Read-BCCoverageXmlFile {
         [string]$Path
     )
     
-    $coverageEntries = @()
+    $coverageEntries = [System.Collections.Generic.List[object]]::new()
     
     try {
         [xml]$xml = Get-Content -Path $Path -Encoding UTF8
@@ -218,11 +218,11 @@ function Read-BCCoverageXmlFile {
             IsCovered          = ($coverageStatus -eq 0 -or $coverageStatus -eq 2)
         }
         
-        $coverageEntries += $entry
+        $coverageEntries.Add($entry)
     }
     
     Write-Host "Parsed $($coverageEntries.Count) coverage entries from XML file: $Path"
-    return $coverageEntries
+    return ,@($coverageEntries)
 }
 
 <#
@@ -240,7 +240,7 @@ function Read-BCCoverageCsvFile {
         [string]$Path
     )
 
-    $coverageEntries = @()
+    $coverageEntries = [System.Collections.Generic.List[object]]::new()
     
     # BC coverage files can be UTF-16 (Unicode) or UTF-8 encoded
     # Try to detect based on BOM or content validation
@@ -320,12 +320,12 @@ function Read-BCCoverageCsvFile {
                 IsCovered      = ($coverageStatus -eq 0 -or $coverageStatus -eq 2)
             }
             
-            $coverageEntries += $entry
+            $coverageEntries.Add($entry)
         }
     }
     
     Write-Host "Parsed $($coverageEntries.Count) coverage entries from $Path"
-    return $coverageEntries
+    return ,@($coverageEntries)
 }
 
 <#
@@ -353,11 +353,11 @@ function Group-CoverageByObject {
                 ObjectType   = $entry.ObjectType
                 ObjectTypeId = $entry.ObjectTypeId
                 ObjectId     = $entry.ObjectId
-                Lines        = @()
+                Lines        = [System.Collections.Generic.List[object]]::new()
             }
         }
         
-        $grouped[$key].Lines += $entry
+        $grouped[$key].Lines.Add($entry)
     }
     
     return $grouped
