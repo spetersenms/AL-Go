@@ -34,7 +34,7 @@ function Run-AlTests
     [string] $CodeCoverageOutputPath = "$PSScriptRoot\CodeCoverage",
     [string] $CodeCoverageExporterId = $script:DefaultCodeCoverageExporter,
     [switch] $CodeCoverageTrackAllSessions,
-    [string] $CodeCoverageFilePrefix = ("TestCoverageMap_" + (get-date -Format 'yyyymmdd')),
+    [string] $CodeCoverageFilePrefix = ("TestCoverageMap_" + (get-date -Format 'yyyyMMdd')),
     [bool] $StabilityRun
 )
 {
@@ -79,96 +79,6 @@ function Run-AlTests
     {
         Report-ErrorsInAzureDevOps -AzureDevOps $AzureDevOps -TestRunResultObject $testRunResult
     }
-}
-
-function Save-ResultsAsXUnitFile
-(
-    $TestRunResultObject,
-    [string] $ResultsFilePath
-)
-{
-    [xml]$XUnitDoc = New-Object System.Xml.XmlDocument
-    $XUnitDoc.AppendChild($XUnitDoc.CreateXmlDeclaration("1.0","UTF-8",$null)) | Out-Null
-    $XUnitAssemblies = $XUnitDoc.CreateElement("assemblies")
-    $XUnitDoc.AppendChild($XUnitAssemblies) | Out-Null
-
-    foreach($testResult in $TestRunResultObject)
-    {
-        $name = $testResult.name
-        $startTime =  [datetime]($testResult.startTime)
-        $finishTime = [datetime]($testResult.finishTime)
-        $duration = $finishTime.Subtract($startTime)
-        $durationSeconds = [Math]::Round($duration.TotalSeconds,3)
-
-        $XUnitAssembly = $XUnitDoc.CreateElement("assembly")
-        $XUnitAssemblies.AppendChild($XUnitAssembly) | Out-Null
-        $XUnitAssembly.SetAttribute("name",$name)
-        $XUnitAssembly.SetAttribute("x-code-unit",$testResult.codeUnit)
-        $XUnitAssembly.SetAttribute("test-framework", "PS Test Runner")
-        $XUnitAssembly.SetAttribute("run-date", $startTime.ToString("yyyy-MM-dd"))
-        $XUnitAssembly.SetAttribute("run-time", $startTime.ToString("HH:mm:ss"))
-        $XUnitAssembly.SetAttribute("total",0)
-        $XUnitAssembly.SetAttribute("passed",0)
-        $XUnitAssembly.SetAttribute("failed",0)
-        $XUnitAssembly.SetAttribute("time", $durationSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture))
-        $XUnitCollection = $XUnitDoc.CreateElement("collection")
-        $XUnitAssembly.AppendChild($XUnitCollection) | Out-Null
-        $XUnitCollection.SetAttribute("name",$name)
-        $XUnitCollection.SetAttribute("total",0)
-        $XUnitCollection.SetAttribute("passed",0)
-        $XUnitCollection.SetAttribute("failed",0)
-        $XUnitCollection.SetAttribute("skipped",0)
-        $XUnitCollection.SetAttribute("time", $durationSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture))
-
-        foreach($testMethod in $testResult.testResults)
-        {
-            $testMethodName = $testMethod.method
-            $XUnitAssembly.SetAttribute("total",([int]$XUnitAssembly.GetAttribute("total") + 1))
-            $XUnitCollection.SetAttribute("total",([int]$XUnitCollection.GetAttribute("total") + 1))
-            $XUnitTest = $XUnitDoc.CreateElement("test")
-            $XUnitCollection.AppendChild($XUnitTest) | Out-Null
-            $XUnitTest.SetAttribute("name", $XUnitAssembly.GetAttribute("name") + ':' + $testMethodName)
-            $XUnitTest.SetAttribute("method", $testMethodName)
-            $startTime =  [datetime]($testMethod.startTime)
-            $finishTime = [datetime]($testMethod.finishTime)
-            $duration = $finishTime.Subtract($startTime)
-            $durationSeconds = [Math]::Round($duration.TotalSeconds,3)
-            $XUnitTest.SetAttribute("time", $durationSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture))
-
-            switch($testMethod.result)
-            {
-                $script:SuccessTestResultType
-                {
-                    $XUnitAssembly.SetAttribute("passed",([int]$XUnitAssembly.GetAttribute("passed") + 1))
-                    $XUnitCollection.SetAttribute("passed",([int]$XUnitCollection.GetAttribute("passed") + 1))
-                    $XUnitTest.SetAttribute("result", "Pass")
-                    break;
-                }
-                $script:FailureTestResultType
-                {
-                    $XUnitAssembly.SetAttribute("failed",([int]$XUnitAssembly.GetAttribute("failed") + 1))
-                    $XUnitCollection.SetAttribute("failed",([int]$XUnitCollection.GetAttribute("failed") + 1))
-                    $XUnitTest.SetAttribute("result", "Fail")
-                    $XUnitFailure = $XUnitDoc.CreateElement("failure")
-                    $XUnitMessage = $XUnitDoc.CreateElement("message")
-                    $XUnitMessage.InnerText = $testMethod.message;
-                    $XUnitFailure.AppendChild($XUnitMessage) | Out-Null
-                    $XUnitStacktrace = $XUnitDoc.CreateElement("stack-trace")
-                    $XUnitStacktrace.InnerText = $($testMethod.stackTrace).Replace(";","`n")
-                    $XUnitFailure.AppendChild($XUnitStacktrace) | Out-Null
-                    $XUnitTest.AppendChild($XUnitFailure) | Out-Null
-                    break;
-                }
-                $script:SkippedTestResultType
-                {
-                    $XUnitCollection.SetAttribute("skipped",([int]$XUnitCollection.GetAttribute("skipped") + 1))
-                    break;
-                }
-            }
-        }
-    }
-
-    $XUnitDoc.Save($ResultsFilePath)
 }
 
 function Invoke-ALTestResultVerification
