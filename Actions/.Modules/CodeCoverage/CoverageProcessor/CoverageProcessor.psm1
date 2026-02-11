@@ -84,7 +84,7 @@ function Convert-BCCoverageToCobertura {
     
     # Step 4: Map source files if source path provided
     $objectMap = @{}
-    $excludedObjectsData = @()  # Track details of excluded objects
+    $excludedObjectsData = [System.Collections.Generic.List[object]]::new()
     
     if ($SourcePath -and (Test-Path $SourcePath)) {
         Write-Host "`nStep 4: Mapping source files..."
@@ -102,12 +102,12 @@ function Convert-BCCoverageToCobertura {
                 # Track excluded object details for reporting
                 $objData = $groupedCoverage[$key]
                 $linesExecuted = @($objData.Lines | Where-Object { $_.IsCovered }).Count
-                $excludedObjectsData += [PSCustomObject]@{
+                $excludedObjectsData.Add([PSCustomObject]@{
                     ObjectType    = $objData.ObjectType
                     ObjectId      = $objData.ObjectId
                     LinesExecuted = $linesExecuted
                     TotalHits     = ($objData.Lines | Measure-Object -Property Hits -Sum).Sum
-                }
+                })
             }
         }
         
@@ -237,13 +237,13 @@ function Merge-BCCoverageToCobertura {
     
     Write-Host "Merging $($CoverageFiles.Count) coverage files..."
     
-    $allEntries = @()
+    $allEntries = [System.Collections.Generic.List[object]]::new()
     
     foreach ($file in $CoverageFiles) {
         if (Test-Path $file) {
             Write-Host "  Reading: $file"
             $entries = Read-BCCoverageFile -Path $file
-            $allEntries += $entries
+            $allEntries.AddRange(@($entries))
         }
         else {
             Write-Warning "Coverage file not found: $file"
@@ -261,13 +261,15 @@ function Merge-BCCoverageToCobertura {
         $key = "$($entry.ObjectTypeId)_$($entry.ObjectId)_$($entry.LineNo)"
         
         if ($mergedEntries.ContainsKey($key)) {
-            # Take the better coverage status (covered > partial > not covered)
             $existing = $mergedEntries[$key]
-            if ($entry.IsCovered -and -not $existing.IsCovered) {
-                $mergedEntries[$key] = $entry
-            }
-            elseif ($entry.Hits -gt $existing.Hits) {
+            # Accumulate hits and promote coverage status
+            if ($entry.Hits -gt $existing.Hits) {
                 $mergedEntries[$key].Hits = $entry.Hits
+            }
+            if ($entry.IsCovered -and -not $existing.IsCovered) {
+                $mergedEntries[$key].IsCovered = $true
+                $mergedEntries[$key].CoverageStatus = $entry.CoverageStatus
+                $mergedEntries[$key].CoverageStatusName = $entry.CoverageStatusName
             }
         }
         else {
@@ -294,7 +296,7 @@ function Merge-BCCoverageToCobertura {
     }
     
     # Map sources and track excluded objects
-    $excludedObjectsData = @()
+    $excludedObjectsData = [System.Collections.Generic.List[object]]::new()
     if ($SourcePath -and (Test-Path $SourcePath)) {
         $objectMap = Get-ALObjectMap -SourcePath $SourcePath
         $filteredCoverage = @{}
@@ -307,12 +309,12 @@ function Merge-BCCoverageToCobertura {
                 # Track excluded object details
                 $objData = $groupedCoverage[$key]
                 $linesExecuted = @($objData.Lines | Where-Object { $_.IsCovered }).Count
-                $excludedObjectsData += [PSCustomObject]@{
+                $excludedObjectsData.Add([PSCustomObject]@{
                     ObjectType    = $objData.ObjectType
                     ObjectId      = $objData.ObjectId
                     LinesExecuted = $linesExecuted
                     TotalHits     = ($objData.Lines | Measure-Object -Property Hits -Sum).Sum
-                }
+                })
             }
         }
         
@@ -321,39 +323,77 @@ function Merge-BCCoverageToCobertura {
             Write-Host "  Excluded $($excludedObjectsData.Count) objects (Microsoft/external)"
         }
         $groupedCoverage = $filteredCoverage
+        
+        # Add objects from source that have no coverage (not executed at all)
+        foreach ($key in $objectMap.Keys) {
+            if (-not $groupedCoverage.ContainsKey($key)) {
+                $groupedCoverage[$key] = @{
+                    ObjectType   = $objectMap[$key].ObjectType
+                    ObjectTypeId = Get-ObjectTypeId $objectMap[$key].ObjectType
+                    ObjectId     = $objectMap[$key].ObjectId
+                    Lines        = @()
+                    SourceInfo   = $objectMap[$key]
+                }
+            }
+        }
     }
     
     # Generate and save
     $coberturaXml = New-CoberturaDocument -CoverageData $groupedCoverage -SourcePath $SourcePath -AppInfo $appInfo
     Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
     
-    # Calculate stats for excluded objects
+    # Calculate stats from filtered/grouped coverage (user code only), consistent with Convert-BCCoverageToCobertura
+    $totalExecutableLines = 0
+    $coveredLines = 0
+
+    foreach ($obj in $groupedCoverage.Values) {
+        $objTotalLines = $obj.Lines.Count
+        if ($objTotalLines -eq 0 -and $obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
+            $objTotalLines = $obj.SourceInfo.ExecutableLines
+        }
+        $totalExecutableLines += $objTotalLines
+        $coveredLines += @($obj.Lines | Where-Object { $_.IsCovered }).Count
+    }
+
+    $coveragePercent = if ($totalExecutableLines -gt 0) { 
+        [math]::Round(($coveredLines / $totalExecutableLines) * 100, 2) 
+    } else { 
+        0 
+    }
+
+    # Calculate stats for excluded objects (external/base app code)
     $excludedLinesExecuted = ($excludedObjectsData | Measure-Object -Property LinesExecuted -Sum).Sum
     $excludedTotalHits = ($excludedObjectsData | Measure-Object -Property TotalHits -Sum).Sum
     
-    $stats = Get-CoverageStatistics -CoverageEntries $coverageEntries
-    
-    # Add excluded object info to stats
-    $stats | Add-Member -NotePropertyName ExcludedObjectCount -NotePropertyValue $excludedObjectsData.Count
-    $stats | Add-Member -NotePropertyName ExcludedLinesExecuted -NotePropertyValue $excludedLinesExecuted
-    $stats | Add-Member -NotePropertyName ExcludedTotalHits -NotePropertyValue $excludedTotalHits
-    $stats | Add-Member -NotePropertyName ExcludedObjects -NotePropertyValue $excludedObjectsData
+    $stats = [PSCustomObject]@{
+        TotalLines           = $totalExecutableLines
+        CoveredLines         = $coveredLines
+        NotCoveredLines      = $totalExecutableLines - $coveredLines
+        CoveragePercent      = $coveragePercent
+        LineRate             = if ($totalExecutableLines -gt 0) { $coveredLines / $totalExecutableLines } else { 0 }
+        ObjectCount          = $groupedCoverage.Count
+        ExcludedObjectCount  = $excludedObjectsData.Count
+        ExcludedLinesExecuted = $excludedLinesExecuted
+        ExcludedTotalHits    = $excludedTotalHits
+        ExcludedObjects      = $excludedObjectsData
+    }
     
     # Save extended stats to JSON file
     $statsOutputPath = [System.IO.Path]::ChangeExtension($OutputPath, '.stats.json')
     $stats | ConvertTo-Json -Depth 10 | Set-Content -Path $statsOutputPath -Encoding UTF8
     Write-Host "  Saved coverage stats to: $statsOutputPath"
     
-    Write-Host "`n=== Merged Coverage Summary ==="
+    Write-Host "`n=== Merged Coverage Summary (User Code Only) ==="
+    Write-Host "  Objects:       $($stats.ObjectCount)"
     Write-Host "  Total lines:   $($stats.TotalLines)"
     Write-Host "  Covered lines: $($stats.CoveredLines)"
     Write-Host "  Coverage:      $($stats.CoveragePercent)%"
-    if ($excludedObjectsData.Count -gt 0) {
+    if ($stats.ExcludedObjectCount -gt 0) {
         Write-Host "  --- External Code (no source) ---"
-        Write-Host "  Excluded objects: $($excludedObjectsData.Count)"
-        Write-Host "  Lines executed:   $excludedLinesExecuted"
+        Write-Host "  Excluded objects: $($stats.ExcludedObjectCount)"
+        Write-Host "  Lines executed:   $($stats.ExcludedLinesExecuted)"
     }
-    Write-Host "================================`n"
+    Write-Host "================================================`n"
     
     return $stats
 }
