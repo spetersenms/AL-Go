@@ -73,7 +73,7 @@ class ClientContext {
         # On PS7/.NET Core, ServicePointManager.ServerCertificateValidationCallback does not
         # affect HttpClient instances. We must set the callback on the HttpClientHandler directly.
         # The handler is accessed via reflection since JsonHttpClient creates it internally.
-        if ($disableSSL -and $PSVersionTable.PSVersion.Major -ge 6) {
+        if ($disableSSL -and $global:PSVersionTable.PSVersion.Major -ge 6) {
             $this.DisableSSLOnHttpClient($httpClient)
         }
 
