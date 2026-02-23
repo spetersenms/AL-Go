@@ -10,32 +10,47 @@ class ClientContext {
     $caughtForm = $null
     $IgnoreErrors = $true
 
-    ClientContext([string] $serviceUrl, [pscredential] $credential, [timespan] $interactionTimeout, [string] $culture) 
+    ClientContext([string] $serviceUrl, [bool] $disableSSL, [pscredential] $credential, [timespan] $interactionTimeout, [string] $culture) 
     {
-        $this.Initialize($serviceUrl, ([AuthenticationScheme]::UserNamePassword), (New-Object System.Net.NetworkCredential -ArgumentList $credential.UserName, $credential.Password), $interactionTimeout, $culture)
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::UserNamePassword), (New-Object System.Net.NetworkCredential -ArgumentList $credential.UserName, $credential.Password), $disableSSL, $interactionTimeout, $culture)
+    }
+
+    ClientContext([string] $serviceUrl, [pscredential] $credential, [bool] $disableSSL, [timespan] $interactionTimeout, [string] $culture) 
+    {
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::UserNamePassword), (New-Object System.Net.NetworkCredential -ArgumentList $credential.UserName, $credential.Password), $disableSSL, $interactionTimeout, $culture)
     }
 
     ClientContext([string] $serviceUrl, [pscredential] $credential) 
     {
-        $this.Initialize($serviceUrl, ([AuthenticationScheme]::UserNamePassword), (New-Object System.Net.NetworkCredential -ArgumentList $credential.UserName, $credential.Password), ([timespan]::FromHours(12)), 'en-US')
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::UserNamePassword), (New-Object System.Net.NetworkCredential -ArgumentList $credential.UserName, $credential.Password), $false, ([timespan]::FromHours(12)), 'en-US')
+    }
+
+    ClientContext([string] $serviceUrl, [bool] $disableSSL, [timespan] $interactionTimeout, [string] $culture) 
+    {
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::Windows), $null, $disableSSL, $interactionTimeout, $culture)
     }
 
     ClientContext([string] $serviceUrl, [timespan] $interactionTimeout, [string] $culture) 
     {
-        $this.Initialize($serviceUrl, ([AuthenticationScheme]::Windows), $null, $interactionTimeout, $culture)
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::Windows), $null, $false, $interactionTimeout, $culture)
     }
     
     ClientContext([string] $serviceUrl) 
     {
-        $this.Initialize($serviceUrl, ([AuthenticationScheme]::Windows), $null, ([timespan]::FromHours(12)), 'en-US')
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::Windows), $null, $false, ([timespan]::FromHours(12)), 'en-US')
+    }
+
+    ClientContext([string] $serviceUrl, [Microsoft.Dynamics.Framework.UI.Client.tokenCredential] $tokenCredential, [bool] $disableSSL, [timespan] $interactionTimeout = ([timespan]::FromHours(12)), [string] $culture = 'en-US')
+    {
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::AzureActiveDirectory), $tokenCredential, $disableSSL, $interactionTimeout, $culture)
     }
 
     ClientContext([string] $serviceUrl, [Microsoft.Dynamics.Framework.UI.Client.tokenCredential] $tokenCredential, [timespan] $interactionTimeout = ([timespan]::FromHours(12)), [string] $culture = 'en-US')
     {
-        $this.Initialize($serviceUrl, ([AuthenticationScheme]::AzureActiveDirectory), $tokenCredential, $interactionTimeout, $culture)
+        $this.Initialize($serviceUrl, ([AuthenticationScheme]::AzureActiveDirectory), $tokenCredential, $false, $interactionTimeout, $culture)
     }
     
-    Initialize([string] $serviceUrl, [AuthenticationScheme] $authenticationScheme, [System.Net.ICredentials] $credential, [timespan] $interactionTimeout, [string] $culture) {
+    Initialize([string] $serviceUrl, [AuthenticationScheme] $authenticationScheme, [System.Net.ICredentials] $credential, [bool] $disableSSL, [timespan] $interactionTimeout, [string] $culture) {
                   
         $clientServicesUrl = $serviceUrl
         if(-not $clientServicesUrl.Contains("/cs/"))
@@ -54,9 +69,38 @@ class ClientContext {
         $jsonClient = New-Object JsonHttpClient -ArgumentList $addressUri, $credential, $authenticationScheme
         $httpClient = ($jsonClient.GetType().GetField("httpClient", [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Instance)).GetValue($jsonClient)
         $httpClient.Timeout = $interactionTimeout
+
+        # On PS7/.NET Core, ServicePointManager.ServerCertificateValidationCallback does not
+        # affect HttpClient instances. We must set the callback on the HttpClientHandler directly.
+        # The handler is accessed via reflection since JsonHttpClient creates it internally.
+        if ($disableSSL -and $PSVersionTable.PSVersion.Major -ge 6) {
+            $this.DisableSSLOnHttpClient($httpClient)
+        }
+
         $this.clientSession = New-Object ClientSession -ArgumentList $jsonClient, (New-Object NonDispatcher), (New-Object 'TimerFactory[TaskTimer]')
         $this.culture = $culture
         $this.OpenSession()
+    }
+
+    DisableSSLOnHttpClient($httpClient) {
+        # Walk the handler chain to find all HttpClientHandler instances and disable SSL on each.
+        # JsonHttpClient wraps handlers in a DelegatingHandler chain (e.g. BasicAuthHandler for NavUserPassword).
+        $handlerField = [System.Net.Http.HttpMessageInvoker].GetField("_handler", [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Instance)
+        $handler = $handlerField.GetValue($httpClient)
+        $this.DisableSSLOnHandler($handler)
+    }
+
+    DisableSSLOnHandler($handler) {
+        if ($handler -is [System.Net.Http.HttpClientHandler]) {
+            $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+        }
+        # Walk DelegatingHandler chain to find nested HttpClientHandlers
+        if ($handler -is [System.Net.Http.DelegatingHandler]) {
+            $innerHandler = $handler.InnerHandler
+            if ($innerHandler) {
+                $this.DisableSSLOnHandler($innerHandler)
+            }
+        }
     }
 
     OpenSession() {
