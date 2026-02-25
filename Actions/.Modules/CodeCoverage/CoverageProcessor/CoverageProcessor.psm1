@@ -39,7 +39,10 @@ function Convert-BCCoverageToCobertura {
         [string]$OutputPath,
         
         [Parameter(Mandatory = $false)]
-        [string]$AppJsonPath = ""
+        [string]$AppJsonPath = "",
+        
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppSourcePaths = @()
     )
     
     Write-Host "Converting BC coverage to Cobertura format..."
@@ -88,7 +91,7 @@ function Convert-BCCoverageToCobertura {
     
     if ($SourcePath -and (Test-Path $SourcePath)) {
         Write-Host "`nStep 4: Mapping source files..."
-        $objectMap = Get-ALObjectMap -SourcePath $SourcePath
+        $objectMap = Get-ALObjectMap -SourcePath $SourcePath -AppSourcePaths $AppSourcePaths
         
         # Filter coverage to only include objects from user's source files
         # This excludes Microsoft base app objects
@@ -144,18 +147,19 @@ function Convert-BCCoverageToCobertura {
     Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
     
     # Calculate and return statistics
-    # With XMLport 130007, all executable lines (covered and not covered) are in the coverage data
-    # Fall back to source-based counting if coverage data doesn't include uncovered lines
+    # Always prefer source-based executable line count when available.
+    # XMLport 130470 only exports covered lines, making Lines.Count inaccurate
+    # as a denominator (it equals covered-line count, not total executable lines).
+    # XMLport 130007 exports all executable lines, so Lines.Count would be correct,
+    # but source-based count is still preferred for consistency.
     $totalExecutableLines = 0
     $coveredLines = 0
 
     foreach ($obj in $groupedCoverage.Values) {
-        # Count total lines from coverage data (includes covered and not covered with XMLport 130007)
-        $objTotalLines = $obj.Lines.Count
-        
-        # If no lines in coverage data but we have source info, use source-based count (fallback for XMLport 130470)
-        if ($objTotalLines -eq 0 -and $obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
-            $objTotalLines = $obj.SourceInfo.ExecutableLines
+        $objTotalLines = if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines -gt 0) {
+            $obj.SourceInfo.ExecutableLines
+        } else {
+            $obj.Lines.Count
         }
         
         $totalExecutableLines += $objTotalLines
@@ -183,6 +187,14 @@ function Convert-BCCoverageToCobertura {
         ExcludedLinesExecuted = $excludedLinesExecuted
         ExcludedTotalHits    = $excludedTotalHits
         ExcludedObjects      = $excludedObjectsData
+        AppSourcePaths       = @($AppSourcePaths | ForEach-Object {
+            # Store paths relative to SourcePath for portability
+            $normalizedSrc = [System.IO.Path]::GetFullPath($SourcePath).TrimEnd('\', '/')
+            $normalizedApp = [System.IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+            if ($normalizedApp.StartsWith($normalizedSrc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $normalizedApp.Substring($normalizedSrc.Length + 1).Replace('\', '/')
+            } else { $normalizedApp.Replace('\', '/') }
+        })
     }
     
     # Save extended stats to JSON file alongside Cobertura XML
@@ -232,7 +244,10 @@ function Merge-BCCoverageToCobertura {
         [string]$OutputPath,
         
         [Parameter(Mandatory = $false)]
-        [string]$AppJsonPath = ""
+        [string]$AppJsonPath = "",
+        
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppSourcePaths = @()
     )
     
     Write-Host "Merging $($CoverageFiles.Count) coverage files..."
@@ -298,7 +313,7 @@ function Merge-BCCoverageToCobertura {
     # Map sources and track excluded objects
     $excludedObjectsData = [System.Collections.Generic.List[object]]::new()
     if ($SourcePath -and (Test-Path $SourcePath)) {
-        $objectMap = Get-ALObjectMap -SourcePath $SourcePath
+        $objectMap = Get-ALObjectMap -SourcePath $SourcePath -AppSourcePaths $AppSourcePaths
         $filteredCoverage = @{}
         
         foreach ($key in $groupedCoverage.Keys) {
@@ -343,13 +358,15 @@ function Merge-BCCoverageToCobertura {
     Save-CoberturaFile -XmlDocument $coberturaXml -OutputPath $OutputPath
     
     # Calculate stats from filtered/grouped coverage (user code only), consistent with Convert-BCCoverageToCobertura
+    # Always prefer source-based executable line count — see Convert-BCCoverageToCobertura for rationale
     $totalExecutableLines = 0
     $coveredLines = 0
 
     foreach ($obj in $groupedCoverage.Values) {
-        $objTotalLines = $obj.Lines.Count
-        if ($objTotalLines -eq 0 -and $obj.SourceInfo -and $obj.SourceInfo.ExecutableLines) {
-            $objTotalLines = $obj.SourceInfo.ExecutableLines
+        $objTotalLines = if ($obj.SourceInfo -and $obj.SourceInfo.ExecutableLines -gt 0) {
+            $obj.SourceInfo.ExecutableLines
+        } else {
+            $obj.Lines.Count
         }
         $totalExecutableLines += $objTotalLines
         $coveredLines += @($obj.Lines | Where-Object { $_.IsCovered }).Count
@@ -376,6 +393,13 @@ function Merge-BCCoverageToCobertura {
         ExcludedLinesExecuted = $excludedLinesExecuted
         ExcludedTotalHits    = $excludedTotalHits
         ExcludedObjects      = $excludedObjectsData
+        AppSourcePaths       = @($AppSourcePaths | ForEach-Object {
+            $normalizedSrc = [System.IO.Path]::GetFullPath($SourcePath).TrimEnd('\', '/')
+            $normalizedApp = [System.IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+            if ($normalizedApp.StartsWith($normalizedSrc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $normalizedApp.Substring($normalizedSrc.Length + 1).Replace('\', '/')
+            } else { $normalizedApp.Replace('\', '/') }
+        })
     }
     
     # Save extended stats to JSON file

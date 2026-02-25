@@ -40,7 +40,11 @@ function Read-AppJson {
 .SYNOPSIS
     Scans a directory for .al files and extracts object definitions
 .PARAMETER SourcePath
-    Root path to scan for .al files
+    Root path used for calculating relative file paths in coverage output
+.PARAMETER AppSourcePaths
+    Optional array of specific directories to scan for .al files.
+    When provided, only these directories are scanned instead of SourcePath.
+    Relative paths in output are still calculated from SourcePath.
 .OUTPUTS
     Hashtable mapping "ObjectType.ObjectId" to file and metadata info
 #>
@@ -48,7 +52,10 @@ function Get-ALObjectMap {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$SourcePath
+        [string]$SourcePath,
+        
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppSourcePaths = @()
     )
     
     $objectMap = @{}
@@ -61,7 +68,20 @@ function Get-ALObjectMap {
     # Normalize source path to resolve .\, ..\, and ensure consistent format
     $normalizedSourcePath = [System.IO.Path]::GetFullPath($SourcePath).TrimEnd('\', '/')
     
-    $alFiles = Get-ChildItem -Path $SourcePath -Filter "*.al" -Recurse -File
+    # Scan specific app source paths if provided, otherwise scan entire SourcePath
+    if ($AppSourcePaths.Count -gt 0) {
+        $alFiles = @()
+        foreach ($appPath in $AppSourcePaths) {
+            if (Test-Path $appPath) {
+                $alFiles += @(Get-ChildItem -Path $appPath -Filter "*.al" -Recurse -File)
+            } else {
+                Write-Warning "App source path not found: $appPath"
+            }
+        }
+        Write-Host "Scanning $($AppSourcePaths.Count) app source path(s) for .al files ($($alFiles.Count) files found)"
+    } else {
+        $alFiles = Get-ChildItem -Path $SourcePath -Filter "*.al" -Recurse -File
+    }
     
     foreach ($file in $alFiles) {
         $content = Get-Content -Path $file.FullName -Raw -ErrorAction SilentlyContinue
@@ -337,7 +357,15 @@ function Get-ALExecutableLines {
     $inMultiLineComment = $false
     $inProcedureBody = $false
     $braceDepth = 0
+    $previousLineEndsContinuation = $false
     
+    # Tokens that indicate a line is a continuation of the previous statement.
+    # Based on the patterns from NAV's CCCalc/CodeLine.cs.
+    # Start tokens: if a line starts with one of these, it's a continuation of the previous line.
+    # End tokens: if a line ends with one of these, the next line is a continuation.
+    $lineContinueStartPattern = '(?i)^(,|=|\(|\+|-|\*|/|\[|:=|\+=|-=|\*=|/=|in\s|and\s|or\s|xor\s|not\s)'
+    $lineContinueEndPattern = '(?i)(,|=|\(|\+|-|\*|/|\[|:=|\+=|-=|\*=|/=|\sin|\sand|\sor|\sxor|\snot)$'
+
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $lineNum = $i + 1
         $line = $lines[$i].Trim()
@@ -371,6 +399,18 @@ function Get-ALExecutableLines {
             continue
         }
         
+        # Line continuation detection: if this line starts with a continuation token,
+        # or the previous line ended with one, this line is a continuation of a
+        # multi-line statement and should not count as a separate executable line.
+        $isLineContinuation = $false
+        if ($lineNoComment -match $lineContinueStartPattern -and $lineNoComment -notmatch '^\s*/\*') {
+            $isLineContinuation = $true
+        }
+        if ($previousLineEndsContinuation) {
+            $isLineContinuation = $true
+        }
+        $previousLineEndsContinuation = ($lineNoComment -match $lineContinueEndPattern -and $lineNoComment -notmatch '\*/$')
+
         # Skip non-executable constructs
         # Object declarations
         if ($lineNoComment -match '(?i)^(codeunit|table|page|report|query|xmlport|enum|interface|permissionset|tableextension|pageextension|reportextension|enumextension)\s+\d+') {
@@ -417,6 +457,12 @@ function Get-ALExecutableLines {
             continue
         }
         
+        # Skip continuation lines — they are part of a multi-line statement
+        # and should not count as separate executable lines
+        if ($isLineContinuation) {
+            continue
+        }
+
         # At this point, if we're in a procedure body, it's likely executable
         if ($inProcedureBody -or $braceDepth -gt 0) {
             $executableLineNumbers += $lineNum
