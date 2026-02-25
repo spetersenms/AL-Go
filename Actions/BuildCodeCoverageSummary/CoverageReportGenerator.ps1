@@ -83,25 +83,48 @@ function New-CoverageBar {
     Extracts Area and Module paths from a filename
 .PARAMETER Filename
     Source file path (e.g., "src/System Application/App/Email/src/Email.Codeunit.al")
+.PARAMETER AppRoots
+    Optional array of known app root paths (relative, forward-slash separated).
+    When provided, the area is the matching app root and the module is the
+    first subdirectory under it. Falls back to depth-based heuristic if empty.
 .OUTPUTS
     Hashtable with Area and Module paths
 #>
 function Get-ModuleFromFilename {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Filename
+        [string]$Filename,
+        
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppRoots = @()
     )
     
-    $parts = $Filename -split '/'
+    $normalizedFilename = $Filename.Replace('\', '/')
     
-    # Area is 3 levels deep (e.g., "src/System Application/App")
+    # Try to match against known app roots (longest match first)
+    if ($AppRoots.Count -gt 0) {
+        $matchedRoot = $AppRoots | Sort-Object { $_.Length } -Descending | Where-Object {
+            $normalizedFilename.StartsWith($_.Replace('\', '/') + '/', [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1
+        
+        if ($matchedRoot) {
+            $area = $matchedRoot.Replace('\', '/')
+            $remainder = $normalizedFilename.Substring($area.Length + 1)
+            $parts = $remainder -split '/'
+            $module = if ($parts.Count -ge 1 -and $parts[0]) { "$area/$($parts[0])" } else { $area }
+            return @{ Area = $area; Module = $module }
+        }
+    }
+    
+    # Fallback: use path depth heuristic
+    $parts = $normalizedFilename -split '/'
+    
     $area = if ($parts.Count -ge 3) { 
         "$($parts[0])/$($parts[1])/$($parts[2])" 
     } else { 
-        $Filename 
+        $normalizedFilename 
     }
     
-    # Module is 4 levels deep (e.g., "src/System Application/App/Email")
     $module = if ($parts.Count -ge 4) { 
         "$($parts[0])/$($parts[1])/$($parts[2])/$($parts[3])" 
     } else { 
@@ -125,14 +148,17 @@ function Get-ModuleFromFilename {
 function Get-ModuleCoverageData {
     param(
         [Parameter(Mandatory = $true)]
-        [hashtable]$Coverage
+        [hashtable]$Coverage,
+        
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppRoots = @()
     )
     
     $moduleData = @{}
     
     foreach ($package in $Coverage.Packages) {
         foreach ($class in $package.Classes) {
-            $paths = Get-ModuleFromFilename -Filename $class.Filename
+            $paths = Get-ModuleFromFilename -Filename $class.Filename -AppRoots $AppRoots
             $module = $paths.Module
             $area = $paths.Area
             
@@ -348,7 +374,13 @@ function Get-CoverageSummaryMD {
     
     # Per-module coverage breakdown (aggregated from objects)
     if ($coverage.Packages.Count -gt 0) {
-        $areaData = Get-ModuleCoverageData -Coverage $coverage
+        # Use app source paths from stats for dynamic module detection
+        $appRoots = @()
+        $hasAppSourcePaths = $stats -and ($stats | Get-Member -Name 'AppSourcePaths' -MemberType NoteProperty) -and $stats.AppSourcePaths
+        if ($hasAppSourcePaths) {
+            $appRoots = @($stats.AppSourcePaths)
+        }
+        $areaData = Get-ModuleCoverageData -Coverage $coverage -AppRoots $appRoots
         
         # Separate areas into those with coverage and those without
         $areasWithCoverage = @($areaData.GetEnumerator() | Where-Object { -not $_.Value.AllZero } | Sort-Object { $_.Value.CoveredLines } -Descending)
