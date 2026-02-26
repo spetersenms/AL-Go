@@ -501,10 +501,21 @@ try {
                 
                 # Handle both JUnit and XUnit result file names
                 $resultsFilePath = $null
+                $resultsFormat = 'JUnit'
                 if ($parameters.JUnitResultFileName) {
                     $resultsFilePath = $parameters.JUnitResultFileName
+                    $resultsFormat = 'JUnit'
                 } elseif ($parameters.XUnitResultFileName) {
                     $resultsFilePath = $parameters.XUnitResultFileName
+                    $resultsFormat = 'XUnit'
+                }
+
+                # Handle append mode for result file accumulation across test apps
+                $appendToResults = $false
+                $tempResultsFilePath = $null
+                if ($resultsFilePath -and ($parameters.AppendToJUnitResultFile -or $parameters.AppendToXUnitResultFile)) {
+                    $appendToResults = $true
+                    $tempResultsFilePath = Join-Path ([System.IO.Path]::GetDirectoryName($resultsFilePath)) "TempTestResults_$([Guid]::NewGuid().ToString('N')).xml"
                 }
 
                 # Get container web client URL for connecting from host
@@ -535,22 +546,18 @@ try {
                 Write-Host "Code coverage output path: $codeCoverageOutputPath"
 
                 # Run tests with ALTestRunner from the host
-                # The module will automatically download WCF dependencies if running on .NET Core/5+/6+
                 $testRunParams = @{
                     ServiceUrl = $serviceUrl
                     Credential = $credential
                     AutorizationType = 'NavUserPassword'
-                    TestSuite = 'DEFAULT'
+                    TestSuite = if ($parameters.testSuite) { $parameters.testSuite } else { 'DEFAULT' }
                     Detailed = $true
                     DisableSSLVerification = $true
-                    ResultsFormat = 'JUnit'
+                    ResultsFormat = $resultsFormat
                     CodeCoverageTrackingType = 'PerRun'
                     ProduceCodeCoverageMap = 'PerCodeunit'
                     CodeCoverageOutputPath = $codeCoverageOutputPath
                     CodeCoverageFilePrefix = "CodeCoverage_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-                    # XMLport 130470 (default) - exports covered/partially covered lines as CSV
-                    # XMLport 130007 - exports all lines including uncovered (requires W1 tests installed)
-                    # CodeCoverageExporterId = '130470'  # Default, no need to specify
                 }
                 
                 if ($extensionId) {
@@ -562,15 +569,92 @@ try {
                 }
                 
                 if ($resultsFilePath) {
-                    $testRunParams.ResultsFilePath = $resultsFilePath
+                    $testRunParams.ResultsFilePath = if ($appendToResults) { $tempResultsFilePath } else { $resultsFilePath }
                     $testRunParams.SaveResultFile = $true
+                }
+
+                # Forward optional pipeline parameters
+                if ($parameters.disabledTests) {
+                    $testRunParams.DisabledTests = $parameters.disabledTests
+                }
+                if ($parameters.testCodeunitRange) {
+                    $testRunParams.TestCodeunitsRange = $parameters.testCodeunitRange
+                }
+                elseif ($parameters.testCodeunit -and $parameters.testCodeunit -ne "*") {
+                    $testRunParams.TestCodeunitsRange = $parameters.testCodeunit
+                }
+                if ($parameters.testFunction -and $parameters.testFunction -ne "*") {
+                    $testRunParams.TestProcedureRange = $parameters.testFunction
+                }
+                if ($parameters.requiredTestIsolation) {
+                    $testRunParams.RequiredTestIsolation = $parameters.requiredTestIsolation
+                }
+                if ($parameters.testType) {
+                    $testRunParams.TestType = $parameters.testType
+                }
+                if ($parameters.testRunnerCodeunitId) {
+                    # Map BCApps test runner codeunit IDs to Run-AlTests TestIsolation values
+                    # 130450 = Codeunit isolation (default), 130451 = Disabled isolation
+                    $testRunParams.TestIsolation = if ($parameters.testRunnerCodeunitId -eq "130451") { "Disabled" } else { "Codeunit" }
                 }
 
                 Run-AlTests @testRunParams
                 
-                # Return true to indicate tests ran (actual pass/fail is in test results file)
-                # The caller checks the test results file for actual pass/fail status
-                return $true
+                # Determine which file to check for this app's results
+                $checkResultsFile = if ($appendToResults) { $tempResultsFilePath } else { $resultsFilePath }
+                $testsPassed = $true
+
+                if ($checkResultsFile -and (Test-Path $checkResultsFile)) {
+                    # Parse results to determine pass/fail
+                    try {
+                        [xml]$testResults = Get-Content $checkResultsFile
+                        if ($testResults.testsuites) {
+                            $failures = 0; $errors = 0
+                            if ($testResults.testsuites.testsuite) {
+                                foreach ($ts in $testResults.testsuites.testsuite) {
+                                    if ($ts.failures) { $failures += [int]$ts.failures }
+                                    if ($ts.errors) { $errors += [int]$ts.errors }
+                                }
+                            }
+                            $testsPassed = ($failures -eq 0 -and $errors -eq 0)
+                        }
+                        elseif ($testResults.assemblies) {
+                            $failed = if ($testResults.assemblies.assembly.failed) { [int]$testResults.assemblies.assembly.failed } else { 0 }
+                            $testsPassed = ($failed -eq 0)
+                        }
+                    }
+                    catch {
+                        Write-Host "Warning: Could not parse test results file: $_"
+                    }
+
+                    # Merge this app's results into the consolidated file if append mode
+                    if ($appendToResults) {
+                        if (-not (Test-Path $resultsFilePath)) {
+                            Copy-Item -Path $tempResultsFilePath -Destination $resultsFilePath
+                        }
+                        else {
+                            try {
+                                [xml]$source = Get-Content $tempResultsFilePath
+                                [xml]$target = Get-Content $resultsFilePath
+                                $rootElement = if ($resultsFormat -eq 'JUnit') { 'testsuites' } else { 'assemblies' }
+                                foreach ($node in $source.$rootElement.ChildNodes) {
+                                    if ($node.NodeType -eq 'Element') {
+                                        $imported = $target.ImportNode($node, $true)
+                                        $target.$rootElement.AppendChild($imported) | Out-Null
+                                    }
+                                }
+                                $target.Save($resultsFilePath)
+                            }
+                            catch {
+                                Write-Host "Warning: Could not merge test results, copying instead: $_"
+                                Copy-Item -Path $tempResultsFilePath -Destination $resultsFilePath -Force
+                            }
+                        }
+                        Remove-Item $tempResultsFilePath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+
+                return $testsPassed
             }.GetNewClosure()
         }
     } else {
