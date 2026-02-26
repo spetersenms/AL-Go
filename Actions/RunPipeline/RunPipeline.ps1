@@ -482,8 +482,9 @@ try {
     }
 
     # Add RunTestsInBcContainer override to use ALTestRunner with code coverage support
-    if ($runAlPipelineParams.Keys -notcontains 'RunTestsInBcContainer') {
-        Write-Host "Adding RunTestsInBcContainer override with code coverage support"
+    if ($settings.enableCodeCoverage) {
+        if ($runAlPipelineParams.Keys -notcontains 'RunTestsInBcContainer') {
+            Write-Host "Adding RunTestsInBcContainer override with code coverage support"
         
         # Capture buildArtifactFolder for use in scriptblock
         $ccBuildArtifactFolder = $buildArtifactFolder
@@ -658,8 +659,9 @@ try {
             }.GetNewClosure()
         }
     } else {
-        Write-Host "Using custom RunTestsInBcContainer override"
+        Write-Host "::warning::enableCodeCoverage is set to true, but a custom RunTestsInBcContainer override was found. The custom override will be used and code coverage data may not be collected. To use the built-in code coverage support, remove your custom RunTestsInBcContainer override."
     }
+}
 
     "enableTaskScheduler",
     "assignPremiumPlan",
@@ -763,95 +765,97 @@ try {
     }
 
     # Process code coverage files to Cobertura format
-    $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
-    if (Test-Path $codeCoveragePath) {
-        $coverageFiles = @(Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue)
-        if ($coverageFiles.Count -gt 0) {
-            Write-Host "Processing $($coverageFiles.Count) code coverage file(s) to Cobertura format..."
-            try {
-                $coverageProcessorModule = Join-Path $PSScriptRoot "..\.Modules\CodeCoverage\CoverageProcessor\CoverageProcessor.psm1"
-                Import-Module $coverageProcessorModule -Force -DisableNameChecking
-
-                $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
-                
-                # Resolve app source paths for coverage denominator
-                # Collect appFolders from this project + parent projects (dependency chain)
-                # This ensures test-only projects measure coverage against the correct app source
-                $sourcePath = $ENV:GITHUB_WORKSPACE
-                $appSourcePaths = @()
-                
-                # Add current project's app folders
-                if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
-                    foreach ($folder in $settings.appFolders) {
-                        $absPath = Join-Path $projectPath $folder
-                        if (Test-Path $absPath) {
-                            $appSourcePaths += @((Resolve-Path $absPath).Path)
-                        }
-                    }
-                    Write-Host "Project app folders ($($appSourcePaths.Count) resolved):"
-                    $appSourcePaths | ForEach-Object { Write-Host "  $_" }
-                }
-                
-                # Walk project dependencies to collect parent projects' app folders
+    if ($settings.enableCodeCoverage) {
+        $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
+        if (Test-Path $codeCoveragePath) {
+            $coverageFiles = @(Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue)
+            if ($coverageFiles.Count -gt 0) {
+                Write-Host "Processing $($coverageFiles.Count) code coverage file(s) to Cobertura format..."
                 try {
-                    $projectDeps = $projectDependenciesJson | ConvertFrom-Json
-                    $parentProjects = @()
-                    if ($project -and $projectDeps.PSObject.Properties.Name -contains $project) {
-                        $parentProjects = @($projectDeps.$project)
+                    $coverageProcessorModule = Join-Path $PSScriptRoot "..\.Modules\CodeCoverage\CoverageProcessor\CoverageProcessor.psm1"
+                    Import-Module $coverageProcessorModule -Force -DisableNameChecking
+
+                    $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
+                    
+                    # Resolve app source paths for coverage denominator
+                    # Collect appFolders from this project + parent projects (dependency chain)
+                    # This ensures test-only projects measure coverage against the correct app source
+                    $sourcePath = $ENV:GITHUB_WORKSPACE
+                    $appSourcePaths = @()
+                    
+                    # Add current project's app folders
+                    if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
+                        foreach ($folder in $settings.appFolders) {
+                            $absPath = Join-Path $projectPath $folder
+                            if (Test-Path $absPath) {
+                                $appSourcePaths += @((Resolve-Path $absPath).Path)
+                            }
+                        }
+                        Write-Host "Project app folders ($($appSourcePaths.Count) resolved):"
+                        $appSourcePaths | ForEach-Object { Write-Host "  $_" }
                     }
-                    if ($parentProjects.Count -gt 0) {
-                        Write-Host "Resolving app folders from $($parentProjects.Count) parent project(s): $($parentProjects -join ', ')"
-                        foreach ($parentProject in $parentProjects) {
-                            $parentSettings = ReadSettings -project $parentProject -baseFolder $baseFolder
-                            ResolveProjectFolders -baseFolder $baseFolder -project $parentProject -projectSettings ([ref] $parentSettings)
-                            $parentProjectPath = Join-Path $baseFolder $parentProject
-                            if ($parentSettings.appFolders -and $parentSettings.appFolders.Count -gt 0) {
-                                foreach ($folder in $parentSettings.appFolders) {
-                                    $absPath = Join-Path $parentProjectPath $folder
-                                    if (Test-Path $absPath) {
-                                        $resolved = (Resolve-Path $absPath).Path
-                                        if ($appSourcePaths -notcontains $resolved) {
-                                            $appSourcePaths += @($resolved)
-                                            Write-Host "  + $resolved (from $parentProject)"
+                    
+                    # Walk project dependencies to collect parent projects' app folders
+                    try {
+                        $projectDeps = $projectDependenciesJson | ConvertFrom-Json
+                        $parentProjects = @()
+                        if ($project -and $projectDeps.PSObject.Properties.Name -contains $project) {
+                            $parentProjects = @($projectDeps.$project)
+                        }
+                        if ($parentProjects.Count -gt 0) {
+                            Write-Host "Resolving app folders from $($parentProjects.Count) parent project(s): $($parentProjects -join ', ')"
+                            foreach ($parentProject in $parentProjects) {
+                                $parentSettings = ReadSettings -project $parentProject -baseFolder $baseFolder
+                                ResolveProjectFolders -baseFolder $baseFolder -project $parentProject -projectSettings ([ref] $parentSettings)
+                                $parentProjectPath = Join-Path $baseFolder $parentProject
+                                if ($parentSettings.appFolders -and $parentSettings.appFolders.Count -gt 0) {
+                                    foreach ($folder in $parentSettings.appFolders) {
+                                        $absPath = Join-Path $parentProjectPath $folder
+                                        if (Test-Path $absPath) {
+                                            $resolved = (Resolve-Path $absPath).Path
+                                            if ($appSourcePaths -notcontains $resolved) {
+                                                $appSourcePaths += @($resolved)
+                                                Write-Host "  + $resolved (from $parentProject)"
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    } catch {
+                        Write-Host "::warning::Could not resolve project dependencies for coverage: $($_.Exception.Message)"
                     }
-                } catch {
-                    Write-Host "::warning::Could not resolve project dependencies for coverage: $($_.Exception.Message)"
-                }
-                
-                if ($appSourcePaths.Count -eq 0) {
-                    Write-Host "No app source paths resolved, scanning entire workspace for source files"
-                } else {
-                    Write-Host "Coverage source: $($appSourcePaths.Count) app folder(s) resolved"
-                }
-                Write-Host "Source path root: $sourcePath"
+                    
+                    if ($appSourcePaths.Count -eq 0) {
+                        Write-Host "No app source paths resolved, scanning entire workspace for source files"
+                    } else {
+                        Write-Host "Coverage source: $($appSourcePaths.Count) app folder(s) resolved"
+                    }
+                    Write-Host "Source path root: $sourcePath"
 
-                if ($coverageFiles.Count -eq 1) {
-                    # Single coverage file
-                    $coverageStats = Convert-BCCoverageToCobertura `
-                        -CoverageFilePath $coverageFiles[0].FullName `
-                        -SourcePath $sourcePath `
-                        -AppSourcePaths $appSourcePaths `
-                        -OutputPath $coberturaOutputPath
-                } else {
-                    # Multiple coverage files - merge them
-                    $coverageStats = Merge-BCCoverageToCobertura `
-                        -CoverageFiles ($coverageFiles.FullName) `
-                        -SourcePath $sourcePath `
-                        -AppSourcePaths $appSourcePaths `
-                        -OutputPath $coberturaOutputPath
-                }
+                    if ($coverageFiles.Count -eq 1) {
+                        # Single coverage file
+                        $coverageStats = Convert-BCCoverageToCobertura `
+                            -CoverageFilePath $coverageFiles[0].FullName `
+                            -SourcePath $sourcePath `
+                            -AppSourcePaths $appSourcePaths `
+                            -OutputPath $coberturaOutputPath
+                    } else {
+                        # Multiple coverage files - merge them
+                        $coverageStats = Merge-BCCoverageToCobertura `
+                            -CoverageFiles ($coverageFiles.FullName) `
+                            -SourcePath $sourcePath `
+                            -AppSourcePaths $appSourcePaths `
+                            -OutputPath $coberturaOutputPath
+                    }
 
-                if ($coverageStats) {
-                    Write-Host "Code coverage: $($coverageStats.CoveragePercent)% ($($coverageStats.CoveredLines)/$($coverageStats.TotalLines) lines)"
+                    if ($coverageStats) {
+                        Write-Host "Code coverage: $($coverageStats.CoveragePercent)% ($($coverageStats.CoveredLines)/$($coverageStats.TotalLines) lines)"
+                    }
                 }
-            }
-            catch {
-                Write-Host "::warning::Failed to process code coverage to Cobertura format: $($_.Exception.Message)"
+                catch {
+                    Write-Host "::warning::Failed to process code coverage to Cobertura format: $($_.Exception.Message)"
+                }
             }
         }
     }
