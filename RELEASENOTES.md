@@ -1,3 +1,13 @@
+### Code Coverage (Preview)
+
+AL-Go now supports collecting code coverage data during test runs. Enable it by setting `enableCodeCoverage` to `true` in your AL-Go settings file. When enabled, AL-Go uses the AL Test Runner to execute tests and collect line-level coverage data, which is output in Cobertura XML format as a build artifact.
+
+> **Note:** This feature is work-in-progress and is not guaranteed to work in all scenarios and setups yet. If you encounter issues, please disable the setting and report the problem.
+
+If you have a custom `RunTestsInBcContainer.ps1` override, a warning will be emitted when code coverage is enabled, as the custom override will take precedence and may not support code coverage collection.
+
+Read more at [enableCodeCoverage](https://aka.ms/ALGoSettings#enableCodeCoverage) and [Code Coverage](Scenarios/CodeCoverage.md).
+
 ### Issues
 
 - Issue 2082 Sign action no longer fails when repository is empty or no artifacts are generated
