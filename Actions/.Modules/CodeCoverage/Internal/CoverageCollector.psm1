@@ -3,6 +3,8 @@
 
 . "$PSScriptRoot\Constants.ps1"
 
+$script:_ccFileIndex = 0
+
 function CollectCoverageResults {
     param (
         [ValidateSet('PerRun', 'PerCodeunit', 'PerTest')]
@@ -32,7 +34,8 @@ function CollectCoverageResults {
             $CCInfo = $CCInfoControl.StringValue
             if($CCInfo -ne $script:CCCollectedResult){
                 $CCInfo = $CCInfo -replace ",","-"
-                $CCOutputFilename = $CodeCoverageFilePrefix +"_$CCInfo.dat"
+                $script:_ccFileIndex++
+                $CCOutputFilename = $CodeCoverageFilePrefix +"_${CCInfo}_$($script:_ccFileIndex).dat"
                 Write-Host "Storing coverage results of $CCInfo in:  $OutputPath\$CCOutputFilename"
                 Set-Content -Path "$OutputPath\$CCOutputFilename" -Value $CCResult
             }
