@@ -66,8 +66,16 @@ if ($coverageResult.SummaryMD) {
 
     $header = "## :bar_chart: Code Coverage — Consolidated`n`n"
     $inputInfo = ":information_source: Merged from **$($coberturaFiles.Count)** build job(s)`n`n"
+
+    # Warn if build had failures (some jobs may not have produced coverage data)
+    $incompleteWarning = ""
+    if ($env:BUILD_RESULT -eq 'failure') {
+        $incompleteWarning = "> :warning: **Incomplete coverage data** — some build jobs failed and did not produce coverage results. Actual coverage may be higher than reported.`n`n"
+        Write-Host "::warning::Coverage data is incomplete — some build jobs failed and did not produce coverage results."
+    }
     $headerSize = GetStringByteSize($header)
     $inputInfoSize = GetStringByteSize($inputInfo)
+    $warningSize = GetStringByteSize($incompleteWarning)
     $summarySize = GetStringByteSize($coverageResult.SummaryMD)
     $detailsSize = GetStringByteSize($coverageResult.DetailsMD)
 
@@ -75,16 +83,19 @@ if ($coverageResult.SummaryMD) {
     $coverageSummaryMD = $coverageResult.SummaryMD
     $coverageDetailsMD = $coverageResult.DetailsMD
 
-    if ($headerSize + $inputInfoSize + $summarySize -gt (1MB - 4)) {
+    if ($headerSize + $inputInfoSize + $warningSize + $summarySize -gt (1MB - 4)) {
         $coverageSummaryMD = "<i>Coverage summary size exceeds GitHub summary capacity.</i>"
         $summarySize = GetStringByteSize($coverageSummaryMD)
     }
-    if ($headerSize + $inputInfoSize + $summarySize + $detailsSize -gt (1MB - 4)) {
+    if ($headerSize + $inputInfoSize + $warningSize + $summarySize + $detailsSize -gt (1MB - 4)) {
         $coverageDetailsMD = "<i>Coverage details truncated due to size limits.</i>"
     }
 
     Add-Content -Encoding UTF8 -Path $ENV:GITHUB_STEP_SUMMARY -Value $header
     Add-Content -Encoding UTF8 -Path $ENV:GITHUB_STEP_SUMMARY -Value $inputInfo
+    if ($incompleteWarning) {
+        Add-Content -Encoding UTF8 -Path $ENV:GITHUB_STEP_SUMMARY -Value $incompleteWarning
+    }
     Add-Content -Encoding UTF8 -Path $ENV:GITHUB_STEP_SUMMARY -Value "$($coverageSummaryMD.Replace("\n","`n"))`n`n"
     Add-Content -Encoding UTF8 -Path $ENV:GITHUB_STEP_SUMMARY -Value "$($coverageDetailsMD.Replace("\n","`n"))`n`n"
 
