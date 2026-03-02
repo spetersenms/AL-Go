@@ -412,6 +412,11 @@ function Get-ALExecutableLines {
         $previousLineEndsContinuation = ($lineNoComment -match $lineContinueEndPattern -and $lineNoComment -notmatch '\*/$')
 
         # Skip non-executable constructs
+        # Namespace and using declarations
+        if ($lineNoComment -match '(?i)^(namespace|using)\s+') {
+            continue
+        }
+
         # Object declarations
         if ($lineNoComment -match '(?i)^(codeunit|table|page|report|query|xmlport|enum|interface|permissionset|tableextension|pageextension|reportextension|enumextension)\s+\d+') {
             continue
@@ -422,8 +427,13 @@ function Get-ALExecutableLines {
             continue
         }
         
-        # Property assignments (Name = value; at object level)
-        if ($lineNoComment -match '(?i)^(Caption|Description|DataClassification|Access|Subtype|TableRelation|OptionMembers|OptionCaption)\s*=') {
+        # Property assignments (Name = value;)
+        # In AL, properties always use `=` while code assignments use `:=`.
+        # A line starting with `Identifier = ` (single equals, not `:=`) is always a
+        # property declaration, never executable code. This catches all AL properties
+        # (PageType, ApplicationArea, ToolTip, Caption, Access, etc.) without
+        # needing to enumerate each one.
+        if ($lineNoComment -match '^\w+\s*=' -and $lineNoComment -notmatch ':=') {
             continue
         }
         
@@ -454,6 +464,19 @@ function Get-ALExecutableLines {
                     $inProcedureBody = $false
                 }
             }
+            continue
+        }
+
+        # Bare `else` / `else begin` — branch target keywords, not executable statements.
+        # BC's runtime does not instrument these as separate lines.
+        if ($lineNoComment -match '(?i)^else(\s+begin)?\s*$') {
+            continue
+        }
+
+        # Case labels (e.g., `MyEnum::Value:` or `1:`) — match labels, not executable.
+        # BC instruments the code within case branches, not the label itself.
+        # These lines end with `:` (the label separator), don't contain `:=`, and aren't keywords.
+        if ($lineNoComment -match ':\s*$' -and $lineNoComment -notmatch ':=' -and $lineNoComment -notmatch '(?i)^(begin|end|if|else|for|foreach|while|repeat|exit|error|message|case)') {
             continue
         }
         
