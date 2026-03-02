@@ -64,14 +64,14 @@ if ($coverageResult.SummaryMD) {
         return [System.Text.Encoding]::UTF8.GetBytes($string).Length
     }
 
-    $header = "## :bar_chart: Code Coverage — Consolidated`n`n"
+    $header = "## :bar_chart: Code Coverage - Consolidated`n`n"
     $inputInfo = ":information_source: Merged from **$($coberturaFiles.Count)** build job(s)`n`n"
 
     # Warn if build had failures (some jobs may not have produced coverage data)
     $incompleteWarning = ""
     if ($env:BUILD_RESULT -eq 'failure') {
-        $incompleteWarning = "> :warning: **Incomplete coverage data** — some build jobs failed and did not produce coverage results. Actual coverage may be higher than reported.`n`n"
-        Write-Host "::warning::Coverage data is incomplete — some build jobs failed and did not produce coverage results."
+        $incompleteWarning = "> :warning: **Incomplete coverage data** - some build jobs failed and did not produce coverage results. Actual coverage may be higher than reported.`n`n"
+        Write-Host "::warning::Coverage data is incomplete - some build jobs failed and did not produce coverage results."
     }
     $headerSize = GetStringByteSize($header)
     $inputInfoSize = GetStringByteSize($inputInfo)
