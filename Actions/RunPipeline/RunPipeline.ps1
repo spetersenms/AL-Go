@@ -17,8 +17,22 @@ Param(
     [string] $baselineWorkflowSHA = ''
 )
 
+
+
 $containerBaseFolder = $null
 $projectPath = $null
+
+# Read and output the NeedsContext JSON file passed via environment variable
+$needsContextFile = $ENV:NeedsContext
+if ($needsContextFile -and (Test-Path $needsContextFile)) {
+    Write-Host "NeedsContext file: $needsContextFile"
+    $needsContextContent = Get-Content -Path $needsContextFile -Raw
+    Write-Host "NeedsContext content:"
+    Write-Host $needsContextContent
+}
+else {
+    Write-Host "NeedsContext environment variable not set or file not found."
+}
 
 try {
     . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
