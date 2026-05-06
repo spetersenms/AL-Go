@@ -4,6 +4,7 @@ The `DownloadProjectDependencies` action now downloads only artifacts from depen
 
 ### Issues
 
+- Mitigated transient `Failed to ListArtifacts: Unable to make request: ETIMEDOUT` failures from `actions/download-artifact` in the `DownloadProjectDependencies` action: when the primary download step fails, a fallback step now sleeps briefly and retries the download via the GitHub REST API with exponential backoff (3 retries) before giving up.
 - Incremental builds (`modifiedApps` mode) now correctly identify unmodified apps for projects whose `appFolders` reference paths outside the project directory (e.g. using `../`)
 - Issue 2204 - Workspace compilation ignores vsixFile setting
 - Issue 2211 - Cannot create a release if a project contains only test apps

@@ -424,4 +424,105 @@ function Resolve-DependencyFiles {
     })
 }
 
-Export-ModuleMember -Function Get-AppFilesFromUrl, Get-AppFilesFromLocalPath, Get-DependenciesFromInstallApps, Get-DependencyArtifactPattern, Resolve-DependencyFiles
+<#
+    .SYNOPSIS
+    Fallback downloader for current-build dependency artifacts.
+    .DESCRIPTION
+    Used as a fallback when the primary `actions/download-artifact` step fails with a transient
+    error (e.g. "Failed to ListArtifacts: Unable to make request: ETIMEDOUT") that can occur in
+    repos with many parallel jobs. Sleeps for InitialDelaySeconds to let the GitHub Artifacts API
+    settle, then lists and downloads matching artifacts from the current workflow run via the
+    GitHub REST API, retrying with increasing backoff on failure. Each downloaded artifact is
+    unpacked into <DestinationPath>/<ArtifactName>/, mirroring the on-disk layout produced by
+    `actions/download-artifact` (without `merge-multiple`), so downstream steps see the same
+    folder structure regardless of which path produced it.
+    .PARAMETER Project
+    The current AL-Go project name (the project whose dependency artifacts are needed).
+    .PARAMETER ProjectDependencies
+    A hashtable mapping project names to arrays of their dependency project names (direct + transitive).
+    .PARAMETER DestinationPath
+    The folder under which each artifact will be unpacked (one subfolder per artifact name).
+    .PARAMETER Token
+    The GitHub token used to authenticate REST API calls.
+    .PARAMETER InitialDelaySeconds
+    Seconds to sleep before the first download attempt. Default is 30.
+    .PARAMETER RetryCount
+    The total number of attempts (1 initial + (RetryCount-1) retries). Default is 4 (= 3 retries).
+    .PARAMETER FirstDelaySeconds
+    Seconds to sleep between attempts on the first retry; doubles for each subsequent retry,
+    capped at MaxWaitBetweenRetries. Default is 30.
+    .PARAMETER MaxWaitBetweenRetries
+    Maximum seconds to sleep between retry attempts. Default is 120.
+    .EXAMPLE
+    Invoke-DownloadDependencyArtifactsFallback -Project 'MyProject' -ProjectDependencies $deps `
+        -DestinationPath "$env:GITHUB_WORKSPACE/.dependencies" -Token $env:GITHUB_TOKEN
+#>
+function Invoke-DownloadDependencyArtifactsFallback {
+    Param(
+        [Parameter(Mandatory = $true)]
+        [string] $Project,
+        [Parameter(Mandatory = $true)]
+        [hashtable] $ProjectDependencies,
+        [Parameter(Mandatory = $true)]
+        [string] $DestinationPath,
+        [Parameter(Mandatory = $true)]
+        [string] $Token,
+        [Parameter(Mandatory = $false)]
+        [int] $InitialDelaySeconds = 30,
+        [Parameter(Mandatory = $false)]
+        [int] $RetryCount = 4,
+        [Parameter(Mandatory = $false)]
+        [int] $FirstDelaySeconds = 30,
+        [Parameter(Mandatory = $false)]
+        [int] $MaxWaitBetweenRetries = 120
+    )
+
+    # Mirror the dependency-project selection used by Get-DependencyArtifactPattern so the
+    # fallback downloads exactly the same set of artifacts the primary step would have.
+    $dependencyProjects = @()
+    if ($ProjectDependencies.Keys -contains $Project) {
+        $dependencyProjects = @($ProjectDependencies."$Project")
+    }
+    if ($dependencyProjects.Count -eq 0) {
+        Write-Host "No dependency projects for '$Project'; nothing to download in fallback."
+        return @()
+    }
+
+    if (-not (Test-Path -Path $DestinationPath)) {
+        New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    }
+
+    Write-Host "Primary download-artifact step failed. Sleeping $InitialDelaySeconds seconds before attempting fallback download for project '$Project' (dependency projects: $($dependencyProjects -join ', '))."
+    Start-Sleep -Seconds $InitialDelaySeconds
+
+    $workflowRunId = $ENV:GITHUB_RUN_ID
+    $repository = $ENV:GITHUB_REPOSITORY
+    $apiUrl = $ENV:GITHUB_API_URL
+    if ([string]::IsNullOrWhiteSpace($workflowRunId) -or [string]::IsNullOrWhiteSpace($repository) -or [string]::IsNullOrWhiteSpace($apiUrl)) {
+        throw "Fallback download requires GITHUB_RUN_ID, GITHUB_REPOSITORY and GITHUB_API_URL environment variables."
+    }
+
+    # Match the masks produced by Get-DependencyArtifactPattern: *Apps, *Dependencies, *BuildOutput.
+    $masks = @('*Apps', '*Dependencies', '*BuildOutput')
+    $projectsArg = $dependencyProjects -join ','
+
+    # The retry script block runs in a child scope, so writes to local variables don't propagate
+    # back. Use a List<string> instead - the scriptblock mutates the same .NET object via closure.
+    $downloadedFolders = New-Object System.Collections.Generic.List[string]
+
+    Invoke-CommandWithRetry -ScriptBlock {
+        $downloadedFolders.Clear()
+        foreach ($mask in $masks) {
+            $artifacts = @(GetArtifactsFromWorkflowRun -workflowRun $workflowRunId -token $Token -api_url $apiUrl -repository $repository -mask $mask -projects $projectsArg)
+            foreach ($artifact in $artifacts) {
+                $folder = DownloadArtifact -token $Token -path $DestinationPath -artifact $artifact -unpack
+                $downloadedFolders.Add($folder)
+            }
+        }
+    } -RetryCount $RetryCount -FirstDelay $FirstDelaySeconds -MaxWaitBetweenRetries $MaxWaitBetweenRetries | Out-Null
+
+    Write-Host "::Notice::Fallback download succeeded. Downloaded $($downloadedFolders.Count) dependency artifact folder(s) into $DestinationPath."
+    return @($downloadedFolders)
+}
+
+Export-ModuleMember -Function Get-AppFilesFromUrl, Get-AppFilesFromLocalPath, Get-DependenciesFromInstallApps, Get-DependencyArtifactPattern, Resolve-DependencyFiles, Invoke-DownloadDependencyArtifactsFallback
