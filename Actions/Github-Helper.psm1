@@ -1082,8 +1082,20 @@ function GetArtifactsFromWorkflowRun {
     )
 
     # Single-mask convenience wrapper around GetArtifactsFromWorkflowRunForMasks. Both functions
-    # share the underlying single-pass implementation.
-    return GetArtifactsFromWorkflowRunForMasks -workflowRun $workflowRun -token $token -api_url $api_url -repository $repository -masks @($mask) -projects $projects -expiredArtifacts $expiredArtifacts
+    # share the underlying single-pass implementation. We forward -expiredArtifacts only when
+    # the caller actually supplied it - PowerShell rejects `$null` as a [ref] argument.
+    $forwardArgs = @{
+        workflowRun = $workflowRun
+        token       = $token
+        api_url     = $api_url
+        repository  = $repository
+        masks       = @($mask)
+        projects    = $projects
+    }
+    if ($PSBoundParameters.ContainsKey('expiredArtifacts')) {
+        $forwardArgs.expiredArtifacts = $expiredArtifacts
+    }
+    return GetArtifactsFromWorkflowRunForMasks @forwardArgs
 }
 
 <#
@@ -1225,7 +1237,7 @@ function GetArtifactsFromWorkflowRunForMasks {
 
     Write-Host "Found $($foundArtifacts.Count) artifacts for masks $($masks -join ',') and projects $($projectArr -join ',') in workflow run $workflowRun"
 
-    return ,$foundArtifacts.ToArray()
+    return $foundArtifacts.ToArray()
 }
 
 <#
