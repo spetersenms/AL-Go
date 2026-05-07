@@ -1081,13 +1081,48 @@ function GetArtifactsFromWorkflowRun {
         [ref] $expiredArtifacts
     )
 
-    Write-Host "Getting artifacts for workflow run $workflowRun, mask $mask, projects $projects and version $version"
+    # Single-mask convenience wrapper around GetArtifactsFromWorkflowRunForMasks. Both functions
+    # share the underlying single-pass implementation.
+    return GetArtifactsFromWorkflowRunForMasks -workflowRun $workflowRun -token $token -api_url $api_url -repository $repository -masks @($mask) -projects $projects -expiredArtifacts $expiredArtifacts
+}
+
+<#
+.SYNOPSIS
+    Like GetArtifactsFromWorkflowRun, but accepts an array of masks and lists artifacts once.
+.DESCRIPTION
+    The GitHub artifacts list endpoint is rate-limited and slow under load. Earlier code called
+    GetArtifactsFromWorkflowRun once per mask, doing a full paginated walk of all artifacts each
+    time. This function performs a single paginated walk (driven by the response's total_count
+    field) and filters client-side for every supplied mask × project combination.
+
+    Returns a flat array of artifact objects across all masks (de-duplicated and version-sorted
+    within each mask × project, matching the original single-mask behavior).
+.PARAMETER masks
+    An array of artifact mask patterns (e.g. '*Apps', '*Dependencies', '*BuildOutput'). Each
+    mask is filtered with the original `$project-$branch-$mask-*` pattern.
+#>
+function GetArtifactsFromWorkflowRunForMasks {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $workflowRun,
+        [Parameter(Mandatory = $true)]
+        [string] $token,
+        [Parameter(Mandatory = $true)]
+        [string] $api_url,
+        [Parameter(Mandatory = $true)]
+        [string] $repository,
+        [Parameter(Mandatory = $true)]
+        [string[]] $masks,
+        [Parameter(Mandatory = $true)]
+        [string] $projects,
+        [Parameter(Mandatory = $false)]
+        [ref] $expiredArtifacts
+    )
+
+    Write-Host "Getting artifacts for workflow run $workflowRun, masks $($masks -join ','), projects $projects"
 
     $headers = GetHeaders -token $token
-
-    $foundArtifacts = @()
     $per_page = 100
-    $page = 1
 
     # Get sanitized project names (the way they appear in the artifact names)
     $projectArr = @(@($projects.Split(',')) | ForEach-Object { $_.Replace('\','_').Replace('/','_') })
@@ -1108,21 +1143,39 @@ function GetArtifactsFromWorkflowRun {
     }
     Write-Host "Branch for workflow run $workflowRun is $branch"
 
-    # Get the artifacts from the the workflow run
-    while($true) {
+    # Single paginated walk. The first response contains total_count, which lets us compute
+    # the exact number of pages needed and stop early instead of walking until an empty page.
+    $allArtifacts = New-Object 'System.Collections.Generic.List[object]'
+    $page = 1
+    $totalPages = 0
+    while ($true) {
         $artifactsURI = "$api_url/repos/$repository/actions/runs/$workflowRun/artifacts?per_page=$per_page&page=$page"
-        $artifacts = (InvokeWebRequest -Headers $headers -Uri $artifactsURI).Content | ConvertFrom-Json
+        $resp = (InvokeWebRequest -Headers $headers -Uri $artifactsURI).Content | ConvertFrom-Json
 
-        if($artifacts.artifacts.Count -eq 0) {
-            Write-Host "No more artifacts found for workflow run $workflowRun"
+        if (-not $resp.artifacts -or $resp.artifacts.Count -eq 0) {
             break
         }
 
-        foreach($project in $projectArr) {
+        foreach ($a in $resp.artifacts) { [void]$allArtifacts.Add($a) }
+
+        if ($totalPages -eq 0 -and $resp.PSObject.Properties.Name -contains 'total_count' -and $resp.total_count) {
+            $totalPages = [Math]::Ceiling([double]$resp.total_count / $per_page)
+        }
+
+        if ($totalPages -gt 0 -and $page -ge $totalPages) {
+            break
+        }
+        $page += 1
+    }
+
+    $foundArtifacts = New-Object 'System.Collections.Generic.List[object]'
+
+    foreach ($mask in $masks) {
+        foreach ($project in $projectArr) {
             # e.g. "MyProject-main-Apps-*", format is: "project-branch-mask-version"
             # Mask might include buildMode like TranslatedTestApps
             $artifactPattern = "$project-$branch-$mask-*"
-            $matchingArtifacts = @($artifacts.artifacts | Where-Object { $_.name -like $artifactPattern })
+            $matchingArtifacts = @($allArtifacts | Where-Object { $_.name -like $artifactPattern })
 
             if ($matchingArtifacts.Count -eq 0) {
                 continue
@@ -1154,10 +1207,10 @@ function GetArtifactsFromWorkflowRun {
                 } |
                 Select-Object -ExpandProperty Obj)
 
-            foreach($artifact in $matchingArtifacts) {
+            foreach ($artifact in $matchingArtifacts) {
                 Write-Host "Found artifact $($artifact.name) (ID: $($artifact.id)) for mask $mask and project $project"
 
-                if($artifact.expired) {
+                if ($artifact.expired) {
                     Write-Host "Artifact $($artifact.name) (ID: $($artifact.id)) expired on $($artifact.expired_at)"
                     if ($expiredArtifacts) {
                         $expiredArtifacts.value += $artifact
@@ -1165,16 +1218,14 @@ function GetArtifactsFromWorkflowRun {
                     continue
                 }
 
-                $foundArtifacts += $artifact
+                [void]$foundArtifacts.Add($artifact)
             }
         }
-
-        $page += 1
     }
 
-    Write-Host "Found $($foundArtifacts.Count) artifacts for mask $mask and projects $($projectArr -join ',') in workflow run $workflowRun"
+    Write-Host "Found $($foundArtifacts.Count) artifacts for masks $($masks -join ',') and projects $($projectArr -join ',') in workflow run $workflowRun"
 
-    return $foundArtifacts
+    return ,$foundArtifacts.ToArray()
 }
 
 <#

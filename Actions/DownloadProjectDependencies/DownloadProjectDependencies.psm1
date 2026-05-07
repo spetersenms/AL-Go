@@ -506,22 +506,60 @@ function Invoke-DownloadDependencyArtifactsFallback {
     $masks = @('*Apps', '*Dependencies', '*BuildOutput')
     $projectsArg = $dependencyProjects -join ','
 
-    # The retry script block runs in a child scope, so writes to local variables don't propagate
-    # back. Use a List<string> instead - the scriptblock mutates the same .NET object via closure.
-    $downloadedFolders = New-Object System.Collections.Generic.List[string]
+    # Make sure the parallel helper is available (it lives in .Modules/ParallelHelper.psm1
+    # and may not be loaded if a caller imported only this module).
+    if (-not (Get-Command -Name 'Invoke-AlGoParallel' -ErrorAction SilentlyContinue)) {
+        Import-Module (Join-Path -Path $PSScriptRoot "../.Modules/ParallelHelper.psm1" -Resolve) -Force | Out-Null
+    }
 
+    # Step 1: list matching artifacts. ONE paginated walk for all 3 masks (vs. 3 walks before).
+    # Wrap just the list call in retry so a transient list failure doesn't waste any successful
+    # downloads (vs. earlier behaviour where a single failure re-did the entire batch).
+    $artifacts = @()
     Invoke-CommandWithRetry -ScriptBlock {
-        $downloadedFolders.Clear()
-        foreach ($mask in $masks) {
-            $artifacts = @(GetArtifactsFromWorkflowRun -workflowRun $workflowRunId -token $Token -api_url $apiUrl -repository $repository -mask $mask -projects $projectsArg)
-            foreach ($artifact in $artifacts) {
-                $folder = DownloadArtifact -token $Token -path $DestinationPath -artifact $artifact -unpack
-                $downloadedFolders.Add($folder)
-            }
-        }
+        $script:_FallbackListedArtifacts = @(GetArtifactsFromWorkflowRunForMasks -workflowRun $workflowRunId -token $Token -api_url $apiUrl -repository $repository -masks $masks -projects $projectsArg)
     } -RetryCount $RetryCount -FirstDelay $FirstDelaySeconds -MaxWaitBetweenRetries $MaxWaitBetweenRetries | Out-Null
+    $artifacts = @($script:_FallbackListedArtifacts)
+    Remove-Variable -Scope Script -Name '_FallbackListedArtifacts' -ErrorAction SilentlyContinue
 
-    Write-Host "::Notice::Fallback download succeeded. Downloaded $($downloadedFolders.Count) dependency artifact folder(s) into $DestinationPath."
+    if ($artifacts.Count -eq 0) {
+        Write-Host "::Notice::Fallback download found no matching artifacts for project '$Project'."
+        return @()
+    }
+
+    # Step 2: download artifacts in parallel via Invoke-AlGoParallel (throttle 5 to match
+    # actions/download-artifact's PARALLEL_DOWNLOADS constant). Each individual download is
+    # wrapped in Invoke-CommandWithRetry so a single transient failure only re-tries that
+    # one artifact (vs. the entire batch).
+    $downloadVars = @{
+        Token = $Token
+        DestinationPath = $DestinationPath
+        GitHubHelperPath = (Join-Path $PSScriptRoot '..\Github-Helper.psm1' -Resolve)
+        AlGoHelperPath = (Join-Path $PSScriptRoot '..\AL-Go-Helper.ps1' -Resolve)
+        RetryCount = $RetryCount
+        FirstDelaySeconds = $FirstDelaySeconds
+        MaxWaitBetweenRetries = $MaxWaitBetweenRetries
+    }
+
+    $downloadOne = {
+        param($artifact, $vars)
+        # Re-import in the runspace (PS7 -Parallel runspaces don't inherit modules from the caller).
+        if (-not (Get-Command -Name 'DownloadArtifact' -ErrorAction SilentlyContinue)) {
+            . $vars.AlGoHelperPath
+            Import-Module $vars.GitHubHelperPath -DisableNameChecking -Force | Out-Null
+        }
+        $script:_FallbackDownloadResult = $null
+        Invoke-CommandWithRetry -ScriptBlock {
+            $script:_FallbackDownloadResult = DownloadArtifact -token $vars.Token -path $vars.DestinationPath -artifact $artifact -unpack
+        } -RetryCount $vars.RetryCount -FirstDelay $vars.FirstDelaySeconds -MaxWaitBetweenRetries $vars.MaxWaitBetweenRetries | Out-Null
+        $folder = $script:_FallbackDownloadResult
+        Remove-Variable -Scope Script -Name '_FallbackDownloadResult' -ErrorAction SilentlyContinue
+        return $folder
+    }
+
+    $downloadedFolders = Invoke-AlGoParallel -InputObject $artifacts -ScriptBlock $downloadOne -Variables $downloadVars -ThrottleLimit 5
+
+    Write-Host "::Notice::Fallback download succeeded. Downloaded $(@($downloadedFolders).Count) dependency artifact folder(s) into $DestinationPath."
     return @($downloadedFolders)
 }
 

@@ -773,6 +773,12 @@ Describe "DownloadProjectDependencies - Resolve-DependencyFiles Tests" {
 }
 
 Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallback Tests" {
+    BeforeAll {
+        # Import the parallel helper so the Mock for Invoke-AlGoParallel can find the command.
+        # The fallback function imports it at runtime, but Pester needs it visible at mock-time.
+        Import-Module (Join-Path $PSScriptRoot '../Actions/.Modules/ParallelHelper.psm1') -Force
+    }
+
     BeforeEach {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'originalRunId', Justification = 'False positive.')]
         $originalRunId = $ENV:GITHUB_RUN_ID
@@ -794,6 +800,20 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
         # also calls Start-Sleep (retry backoff); the latter lives in Github-Helper, so we mock both.
         Mock Start-Sleep {} -ModuleName DownloadProjectDependencies
         Mock Start-Sleep {} -ModuleName Github-Helper
+
+        # Mock Invoke-AlGoParallel to run the script block inline (avoids parallel runspaces
+        # that wouldn't see Pester mocks). Pester mocks are scoped to the current runspace,
+        # so we force serial execution for tests via the -ForceSerial switch on the helper -
+        # but this mock additionally bypasses the ParallelHelper module entirely so we don't
+        # need to import it during test setup.
+        Mock Invoke-AlGoParallel {
+            param($InputObject, $ScriptBlock, $Variables, $ThrottleLimit, [switch]$ForceSerial)
+            $results = @()
+            foreach ($item in $InputObject) {
+                $results += & $ScriptBlock $item $Variables
+            }
+            return $results
+        } -ModuleName DownloadProjectDependencies
     }
 
     AfterEach {
@@ -806,19 +826,19 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
     }
 
     It 'Returns empty and skips API calls when project has no dependencies' {
-        Mock GetArtifactsFromWorkflowRun {} -ModuleName DownloadProjectDependencies
+        Mock GetArtifactsFromWorkflowRunForMasks {} -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {} -ModuleName DownloadProjectDependencies
 
         $result = Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{} -DestinationPath $destFolder -Token 'tok'
 
         @($result) | Should -HaveCount 0
-        Should -Invoke GetArtifactsFromWorkflowRun -ModuleName DownloadProjectDependencies -Times 0
+        Should -Invoke GetArtifactsFromWorkflowRunForMasks -ModuleName DownloadProjectDependencies -Times 0
         Should -Invoke DownloadArtifact -ModuleName DownloadProjectDependencies -Times 0
         Should -Invoke Start-Sleep -ModuleName DownloadProjectDependencies -Times 0
     }
 
     It 'Sleeps for the initial delay before any download attempt' {
-        Mock GetArtifactsFromWorkflowRun { return @() } -ModuleName DownloadProjectDependencies
+        Mock GetArtifactsFromWorkflowRunForMasks { return @() } -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {} -ModuleName DownloadProjectDependencies
 
         Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok' -InitialDelaySeconds 17 | Out-Null
@@ -826,10 +846,15 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
         Should -Invoke Start-Sleep -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $Seconds -eq 17 }
     }
 
-    It 'Calls GetArtifactsFromWorkflowRun once per mask and downloads each returned artifact' {
-        Mock GetArtifactsFromWorkflowRun {
-            param($workflowRun, $token, $api_url, $repository, $mask, $projects)
-            return @([PSCustomObject]@{ name = "Base-main-$($mask.TrimStart('*'))-1.0.0.0"; archive_download_url = "https://example/$mask.zip" })
+    It 'Lists artifacts ONCE for all 3 masks (vs. once per mask) and downloads each artifact in parallel' {
+        Mock GetArtifactsFromWorkflowRunForMasks {
+            param($workflowRun, $token, $api_url, $repository, $masks, $projects)
+            # Return one artifact per mask, simulating the new array-form API.
+            return @(
+                $masks | ForEach-Object {
+                    [PSCustomObject]@{ name = "Base-main-$($_.TrimStart('*'))-1.0.0.0"; archive_download_url = "https://example/$_.zip" }
+                }
+            )
         } -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {
             param($token, $path, $artifact, [switch]$unpack)
@@ -838,29 +863,37 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
 
         $result = Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok'
 
-        Should -Invoke GetArtifactsFromWorkflowRun -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $mask -eq '*Apps' -and $projects -eq 'Base' -and $workflowRun -eq '12345' -and $repository -eq 'someOwner/someRepo' -and $api_url -eq 'https://api.github.com' }
-        Should -Invoke GetArtifactsFromWorkflowRun -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $mask -eq '*Dependencies' -and $projects -eq 'Base' }
-        Should -Invoke GetArtifactsFromWorkflowRun -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $mask -eq '*BuildOutput' -and $projects -eq 'Base' }
+        # Crucial: the multi-mask refactor means GetArtifactsFromWorkflowRunForMasks is called
+        # exactly ONCE (was 3x before, one per mask).
+        Should -Invoke GetArtifactsFromWorkflowRunForMasks -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter {
+            ($masks -join ',') -eq '*Apps,*Dependencies,*BuildOutput' -and
+            $projects -eq 'Base' -and
+            $workflowRun -eq '12345' -and
+            $repository -eq 'someOwner/someRepo' -and
+            $api_url -eq 'https://api.github.com'
+        }
+        # Downloads happen via Invoke-AlGoParallel (mocked to call the script block per artifact).
+        Should -Invoke Invoke-AlGoParallel -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $ThrottleLimit -eq 5 }
         Should -Invoke DownloadArtifact -ModuleName DownloadProjectDependencies -Times 3
         @($result) | Should -HaveCount 3
         @($result) | ForEach-Object { $_ | Should -BeLike (Join-Path $destFolder '*') }
     }
 
     It 'Joins multiple dependency projects into a comma-separated projects argument' {
-        Mock GetArtifactsFromWorkflowRun { return @() } -ModuleName DownloadProjectDependencies
+        Mock GetArtifactsFromWorkflowRunForMasks { return @() } -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {} -ModuleName DownloadProjectDependencies
 
         Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base', 'Common') } -DestinationPath $destFolder -Token 'tok' | Out-Null
 
-        Should -Invoke GetArtifactsFromWorkflowRun -ModuleName DownloadProjectDependencies -Times 3 -ParameterFilter { $projects -eq 'Base,Common' }
+        Should -Invoke GetArtifactsFromWorkflowRunForMasks -ModuleName DownloadProjectDependencies -Times 1 -ParameterFilter { $projects -eq 'Base,Common' }
     }
 
-    It 'Retries on transient failure and ultimately succeeds' {
-        $script:fallbackAttempts = 0
-        Mock GetArtifactsFromWorkflowRun {
-            $script:fallbackAttempts++
-            if ($script:fallbackAttempts -lt 3) {
-                throw "Failed to ListArtifacts: Unable to make request: ETIMEDOUT (attempt $script:fallbackAttempts)"
+    It 'Retries the LIST call on transient failure and ultimately succeeds (per-call retry granularity)' {
+        $script:fallbackListAttempts = 0
+        Mock GetArtifactsFromWorkflowRunForMasks {
+            $script:fallbackListAttempts++
+            if ($script:fallbackListAttempts -lt 3) {
+                throw "Failed to ListArtifacts: Unable to make request: ETIMEDOUT (attempt $script:fallbackListAttempts)"
             }
             return @([PSCustomObject]@{ name = 'Base-main-Apps-1.0.0.0'; archive_download_url = 'https://example/x.zip' })
         } -ModuleName DownloadProjectDependencies
@@ -871,17 +904,52 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
 
         $result = Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok' -FirstDelaySeconds 1 -MaxWaitBetweenRetries 1
 
-        # Each attempt loops the masks, so total GetArtifactsFromWorkflowRun calls > attempts.
-        # Verify retry behavior:
-        # - 1 initial sleep at module DownloadProjectDependencies
-        # - 2 retry sleeps (after attempts 1 and 2) at module Github-Helper
+        # 3 list attempts: 1 initial + 2 retries.
+        $script:fallbackListAttempts | Should -Be 3
+        # Sleeps:
+        # - 1 initial delay (DownloadProjectDependencies module)
+        # - 2 retry sleeps for the list call (Github-Helper / Invoke-CommandWithRetry)
         Should -Invoke Start-Sleep -ModuleName DownloadProjectDependencies -Times 1
         Should -Invoke Start-Sleep -ModuleName Github-Helper -Times 2
+        # Download happened exactly once (proves we don't waste downloads on list-side retries).
+        Should -Invoke DownloadArtifact -ModuleName DownloadProjectDependencies -Times 1
         @($result).Count | Should -BeGreaterThan 0
     }
 
-    It 'Throws when all retries fail' {
-        Mock GetArtifactsFromWorkflowRun { throw "ETIMEDOUT" } -ModuleName DownloadProjectDependencies
+    It 'Retries an INDIVIDUAL download on transient failure without re-running the list call' {
+        $script:listCalls = 0
+        $script:downloadAttemptsByName = @{}
+        Mock GetArtifactsFromWorkflowRunForMasks {
+            $script:listCalls++
+            return @(
+                [PSCustomObject]@{ name = 'Base-main-Apps-1.0.0.0'; archive_download_url = 'https://example/a.zip' },
+                [PSCustomObject]@{ name = 'Base-main-Dependencies-1.0.0.0'; archive_download_url = 'https://example/d.zip' }
+            )
+        } -ModuleName DownloadProjectDependencies
+        Mock DownloadArtifact {
+            param($token, $path, $artifact, [switch]$unpack)
+            $name = $artifact.name
+            if (-not $script:downloadAttemptsByName.ContainsKey($name)) { $script:downloadAttemptsByName[$name] = 0 }
+            $script:downloadAttemptsByName[$name]++
+            # Make the second artifact fail twice then succeed (simulates a single transient ETIMEDOUT).
+            if ($name -eq 'Base-main-Dependencies-1.0.0.0' -and $script:downloadAttemptsByName[$name] -lt 3) {
+                throw "ETIMEDOUT downloading $name"
+            }
+            return (Join-Path $path $name)
+        } -ModuleName DownloadProjectDependencies
+
+        $result = Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok' -FirstDelaySeconds 1 -MaxWaitBetweenRetries 1
+
+        # The list call must NOT be re-run when a download fails - that's the point of per-call retry granularity.
+        $script:listCalls | Should -Be 1
+        # First artifact succeeded on the first try, second artifact needed 3 attempts.
+        $script:downloadAttemptsByName['Base-main-Apps-1.0.0.0'] | Should -Be 1
+        $script:downloadAttemptsByName['Base-main-Dependencies-1.0.0.0'] | Should -Be 3
+        @($result).Count | Should -Be 2
+    }
+
+    It 'Throws when all list retries fail' {
+        Mock GetArtifactsFromWorkflowRunForMasks { throw "ETIMEDOUT" } -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {} -ModuleName DownloadProjectDependencies
 
         { Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok' -RetryCount 2 -FirstDelaySeconds 1 -MaxWaitBetweenRetries 1 } | Should -Throw "*ETIMEDOUT*"
@@ -890,7 +958,7 @@ Describe "DownloadProjectDependencies - Invoke-DownloadDependencyArtifactsFallba
 
     It 'Throws when required GitHub env vars are missing' {
         $ENV:GITHUB_RUN_ID = ''
-        Mock GetArtifactsFromWorkflowRun {} -ModuleName DownloadProjectDependencies
+        Mock GetArtifactsFromWorkflowRunForMasks {} -ModuleName DownloadProjectDependencies
         Mock DownloadArtifact {} -ModuleName DownloadProjectDependencies
 
         { Invoke-DownloadDependencyArtifactsFallback -Project 'App' -ProjectDependencies @{ 'App' = @('Base') } -DestinationPath $destFolder -Token 'tok' } | Should -Throw "*GITHUB_RUN_ID*"

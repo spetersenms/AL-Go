@@ -4,6 +4,7 @@ The `DownloadProjectDependencies` action now downloads only artifacts from depen
 
 ### Issues
 
+- The download-artifact fallback in `DownloadProjectDependencies` is now significantly faster on the rare occasions it runs: the GitHub artifacts list endpoint is queried once for all masks (was once per mask = 3×), pagination uses `total_count` to stop early, and individual artifact downloads run in parallel (throttle 5, matching the upstream action). Retry granularity moved from whole-batch to per-call, so a single transient download failure no longer wastes the work already done for other artifacts.
 - Mitigated transient `Failed to FinalizeArtifact: Unable to make request: ETIMEDOUT` failures from `actions/upload-artifact` by introducing a new `RetryUploadArtifact` AL-Go action that wraps the upstream action with up to 3 attempts and exponential backoff (30s → 60s). All template upload sites now use the wrapper.
 - Mitigated transient `Failed to ListArtifacts: Unable to make request: ETIMEDOUT` failures from `actions/download-artifact` in the `DownloadProjectDependencies` action: when the primary download step fails, a fallback step now sleeps briefly and retries the download via the GitHub REST API with exponential backoff (3 retries) before giving up.
 - Incremental builds (`modifiedApps` mode) now correctly identify unmodified apps for projects whose `appFolders` reference paths outside the project directory (e.g. using `../`)
