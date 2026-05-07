@@ -28,3 +28,26 @@ Describe "All AL-Go workflows should reference reusable workflows from the same 
         }
     }
 }
+
+Describe "Templates must use microsoft/AL-Go-Actions/RetryUploadArtifact instead of actions/upload-artifact" {
+    # The RetryUploadArtifact composite action wraps actions/upload-artifact with a small
+    # retry loop to mitigate transient FinalizeArtifact/ETIMEDOUT errors. Templates must go
+    # through the wrapper so that future regressions (someone re-introducing a direct
+    # actions/upload-artifact call) are caught here.
+    It 'No template YAML directly references actions/upload-artifact (must use RetryUploadArtifact)' {
+        $templatesRoot = Join-Path $PSScriptRoot '..\..\Templates' -Resolve
+        $offenders = @(
+            Get-ChildItem -Path $templatesRoot -Recurse -Include '*.yaml','*.yml' -ErrorAction SilentlyContinue |
+            Where-Object {
+                # Skip the RetryUploadArtifact action.yaml itself (which legitimately uses the upstream action).
+                $_.FullName -notlike '*\Actions\RetryUploadArtifact\*'
+            } |
+            Where-Object {
+                $content = Get-Content -Path $_.FullName -Raw -Encoding UTF8
+                $content -match 'actions/upload-artifact@'
+            } |
+            ForEach-Object { $_.FullName }
+        )
+        $offenders | Should -BeNullOrEmpty -Because "templates must use microsoft/AL-Go-Actions/RetryUploadArtifact instead of actions/upload-artifact directly. Offending files: $($offenders -join ', ')"
+    }
+}
