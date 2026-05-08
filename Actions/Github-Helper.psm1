@@ -60,7 +60,8 @@ function InvokeWebRequest {
         [string] $method,
         [string] $body,
         [string] $outFile,
-        [string] $uri
+        [string] $uri,
+        [int] $timeoutSec = 0
     )
 
     $params = @{ "UseBasicParsing" = $true }
@@ -75,6 +76,9 @@ function InvokeWebRequest {
     }
     if ($outfile) {
         $params += @{ "outfile" = $outfile }
+    }
+    if ($timeoutSec -gt 0) {
+        $params += @{ "TimeoutSec" = $timeoutSec }
     }
     while ($true) {
         try {
@@ -1377,7 +1381,10 @@ function DownloadArtifact {
     $headers = GetHeaders -token $token
     $foldername = Join-Path $path $artifact.Name
     $filename = "$foldername.zip"
-    InvokeWebRequest -Headers $headers -Uri $artifact.archive_download_url -OutFile $filename
+    # Use a 5-minute timeout. Without it, Invoke-WebRequest can hang indefinitely if Azure Front
+    # Door / Blob Storage accepts the TCP connection but stalls mid-stream (no per-byte stall
+    # detector exists in PS Invoke-WebRequest). 
+    InvokeWebRequest -Headers $headers -Uri $artifact.archive_download_url -OutFile $filename -TimeoutSec 300
     if ($unpack) {
         if (Test-Path $foldername) {
             Remove-Item $foldername -Recurse -Force
