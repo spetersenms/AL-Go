@@ -173,6 +173,7 @@ function GetDefaultSettings
         "enableTaskScheduler"                           = $false
         "doNotBuildTests"                               = $false
         "doNotRunTests"                                 = $false
+        "useSeparateTestAction"                         = $false
         "doNotRunBcptTests"                             = $false
         "doNotRunPageScriptingTests"                    = $false
         "doNotPublishApps"                              = $false

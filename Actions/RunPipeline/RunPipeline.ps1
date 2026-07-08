@@ -468,6 +468,18 @@ try {
     $runAlPipelineParams["preprocessorsymbols"] = $settings.preprocessorSymbols
     $runAlPipelineParams["features"] = $settings.features
 
+    # When useSeparateTestAction is enabled, normal test execution is delegated to the
+    # separate RunTests action. Apps and test apps are still compiled, published and installed
+    # here, but the normal tests are not run (equivalent to doNotRunTests). The container is
+    # kept alive so the RunTests action can run the tests against it afterwards.
+    # This only affects normal tests; BCPT and page scripting tests are still run here.
+    $keepContainerForSeparateTestAction = $false
+    if ($settings.useSeparateTestAction) {
+        Write-Host "useSeparateTestAction is enabled: skipping normal test execution in RunPipeline and keeping the container alive for the RunTests action"
+        $runAlPipelineParams["doNotRunTests"] = $true
+        $keepContainerForSeparateTestAction = $true
+    }
+
     Write-Host "Invoke Run-AlPipeline with buildmode $buildMode"
     Run-AlPipeline @runAlPipelineParams `
         -accept_insiderEula `
@@ -513,6 +525,7 @@ try {
         -pageScriptingTestResultsFolder (Join-Path $buildArtifactFolder 'PageScriptingTestResultDetails') `
         -CreateRuntimePackages:$CreateRuntimePackages `
         -appVersion ($versionNumber.MajorMinorVersion) -appBuild ($versionNumber.BuildNumber) -appRevision ($versionNumber.RevisionNumber) `
+        -keepContainer:$keepContainerForSeparateTestAction `
         -uninstallRemovedApps
 
     if ($containerBaseFolder) {
