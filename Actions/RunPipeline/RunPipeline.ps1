@@ -19,6 +19,22 @@ Param(
     [string] $previousAppsPath = ''
 )
 
+function New-KeepAliveContainerCredential {
+    <#
+    .SYNOPSIS
+        Generates a credential used to create a build container that is kept alive for the RunTests action.
+    .DESCRIPTION
+        When useSeparateTestAction is enabled, RunPipeline keeps the build container alive so the RunTests
+        action can run tests against it. BcContainerHelper requires an explicit credential when a container
+        is kept (otherwise it is created with a random password that cannot be reused). This function returns
+        a PSCredential with a randomly generated complex password.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'A container password must be generated as plain text to build a reusable credential')]
+    param()
+    $password = "Pass!$([GUID]::NewGuid().ToString())"
+    return (New-Object pscredential 'admin', (ConvertTo-SecureString -String $password -AsPlainText -Force))
+}
+
 $containerBaseFolder = $null
 $projectPath = $null
 
@@ -477,6 +493,21 @@ try {
         Write-Host "useSeparateTestAction is enabled: skipping normal test execution in RunPipeline and keeping the container alive for the RunTests action"
         $runAlPipelineParams["doNotRunTests"] = $true
         $keepContainerForSeparateTestAction = $true
+
+        # BcContainerHelper requires an explicit credential when the container is kept alive. Generate one
+        # here, pass it to Run-AlPipeline and surface it (masked, as base64-encoded JSON) to the RunTests
+        # action via the containerCredential environment variable so it can connect to the same container.
+        if (-not $runAlPipelineParams.ContainsKey('credential')) {
+            $containerCredential = New-KeepAliveContainerCredential
+            $runAlPipelineParams["credential"] = $containerCredential
+
+            $containerCredentialPassword = $containerCredential.GetNetworkCredential().Password
+            $containerCredentialJson = @{ "username" = $containerCredential.UserName; "password" = $containerCredentialPassword } | ConvertTo-Json -Compress
+            $containerCredentialBase64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($containerCredentialJson))
+            Write-Host "::add-mask::$containerCredentialPassword"
+            Write-Host "::add-mask::$containerCredentialBase64"
+            Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "containerCredential=$containerCredentialBase64"
+        }
     }
 
     Write-Host "Invoke Run-AlPipeline with buildmode $buildMode"
