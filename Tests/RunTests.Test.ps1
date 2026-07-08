@@ -133,5 +133,31 @@ Describe 'RunTests.psm1 Tests' {
 
             Remove-Item -Path $projectPath -Recurse -Force
         }
+
+        It 'Passes GitHubActions severity error when treatTestFailuresAsWarnings is not set' {
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $script:capturedSeverity = $null
+            $override = { param($parameters) $script:capturedSeverity = $parameters.GitHubActions; return $true }
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -credential $testCredential -runTestsOverride $override
+
+            $script:capturedSeverity | Should -Be 'error'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Passes GitHubActions severity warning when treatTestFailuresAsWarnings is set' {
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $script:capturedSeverity = $null
+            $override = { param($parameters) $script:capturedSeverity = $parameters.GitHubActions; return $true }
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $true }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -credential $testCredential -runTestsOverride $override
+
+            $script:capturedSeverity | Should -Be 'warning'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
     }
 }

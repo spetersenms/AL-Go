@@ -99,6 +99,11 @@ function Invoke-AlGoTestRun {
         Remove-Item $testResultsFile -Force
     }
 
+    # GitHub Actions output severity for test failures. This mirrors how Run-AlPipeline configures
+    # Run-TestsInBcContainer: failing tests surface as warnings when treatTestFailuresAsWarnings is
+    # set, otherwise as errors. Valid values are 'no', 'error' and 'warning'.
+    $gitHubActionsSeverity = if ($settings.treatTestFailuresAsWarnings) { 'warning' } else { 'error' }
+
     $allTestsPassed = $true
     Push-Location $projectPath
     try {
@@ -115,7 +120,7 @@ function Invoke-AlGoTestRun {
                 "testResultsFile"       = $testResultsFile
                 "testResultsFormat"     = 'JUnit'
                 "detailed"              = $true
-                "GitHubActions"         = 'yes'
+                "GitHubActions"         = $gitHubActionsSeverity
                 "returnTrueIfAllPassed" = $true
             }
 
