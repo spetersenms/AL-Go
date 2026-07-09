@@ -92,6 +92,16 @@ $serviceUrl = $ENV:containerServiceUrl
 $overrideParams = Get-ScriptOverrides -ALGoFolderName (Join-Path $projectPath ".AL-Go") -OverrideScriptNames @("RunTestsInBcContainer")
 $runTestsOverride = $overrideParams['RunTestsInBcContainer']
 
+# When no custom override is supplied, the local test runner connects to the build container via the
+# service URL surfaced by RunPipeline. RunPipeline only surfaces that URL when it created and kept a
+# container alive to run tests against (for example, it creates none when apps are not published). If
+# no service URL is present there is no container to test against, so skip. A custom override manages
+# its own connection and is therefore not subject to this check.
+if ((-not $runTestsOverride) -and (-not $serviceUrl)) {
+    Write-Host "No build container was kept alive for this project (RunPipeline surfaced no container service URL). Skipping test execution."
+    return
+}
+
 # Only import the local test runner module when no custom override is supplied. Importing it loads
 # the bundled BC client-services assemblies, which is unnecessary when the user runs their own runner.
 if (-not $runTestsOverride) {
