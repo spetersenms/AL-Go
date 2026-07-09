@@ -159,5 +159,39 @@ Describe 'RunTests.psm1 Tests' {
             $script:capturedSeverity | Should -Be 'warning'
             Remove-Item -Path $projectPath -Recurse -Force
         }
+
+        It 'Builds a parameter set that is valid for the real Run-TestsInBcContainer cmdlet' {
+            # Guard against parameter drift: every key/value passed to the BcContainerHelper test
+            # runner is validated against the real cmdlet signature (parameter names and ValidateSet
+            # values). This catches invalid parameter names and out-of-set values locally instead of
+            # only surfacing them in CI, where the real cmdlet is actually invoked.
+            $command = Get-Command -Name 'Run-TestsInBcContainer' -ErrorAction SilentlyContinue
+            if (-not $command) {
+                Set-ItResult -Skipped -Because 'BcContainerHelper (Run-TestsInBcContainer) is not available in this environment'
+                return
+            }
+            if ($command.ResolvedCommand) { $command = $command.ResolvedCommand }
+
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $script:capturedParams = $null
+            $override = { param($parameters) $script:capturedParams = $parameters; return $true }
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -credential $testCredential -runTestsOverride $override
+
+            $script:capturedParams | Should -Not -BeNullOrEmpty
+            foreach ($key in $script:capturedParams.Keys) {
+                $parameter = $command.Parameters[$key]
+                $parameter | Should -Not -BeNullOrEmpty -Because "'$key' must be a real parameter of Run-TestsInBcContainer"
+
+                $validateSet = $parameter.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } | Select-Object -First 1
+                if ($validateSet) {
+                    $validateSet.ValidValues | Should -Contain $script:capturedParams[$key] -Because "the value for '$key' must be one of its allowed ValidateSet values"
+                }
+            }
+
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
     }
 }

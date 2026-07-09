@@ -112,16 +112,16 @@ function Invoke-AlGoTestRun {
             Write-Host "Running tests in $($appJson.name) ($($appJson.id))"
 
             $runTestsParams = @{
-                "containerName"         = $containerName
-                "credential"            = $credential
-                "companyName"           = $settings.companyName
-                "extensionId"           = $appJson.id
-                "appName"               = $appJson.name
-                "testResultsFile"       = $testResultsFile
-                "testResultsFormat"     = 'JUnit'
-                "detailed"              = $true
-                "GitHubActions"         = $gitHubActionsSeverity
-                "returnTrueIfAllPassed" = $true
+                "containerName"           = $containerName
+                "credential"              = $credential
+                "companyName"             = $settings.companyName
+                "extensionId"             = $appJson.id
+                "appName"                 = $appJson.name
+                "JUnitResultFileName"     = $testResultsFile
+                "AppendToJUnitResultFile" = $true
+                "detailed"                = $true
+                "GitHubActions"           = $gitHubActionsSeverity
+                "returnTrueIfAllPassed"   = $true
             }
 
             if ($runTestsOverride) {
