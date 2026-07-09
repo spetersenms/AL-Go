@@ -81,15 +81,28 @@ if (-not $containerName) {
 # Credentials used to connect to the build container.
 $credential = Get-TestRunnerCredential
 
-# NOTE: RunTestsInBcContainer is the seam for the "local test runner". By default the
-# BcContainerHelper test runner is used against the container created by RunPipeline; a
-# custom/local test runner that behaves the same way can be provided as an override script.
+# Container client-services URL surfaced by the RunPipeline action. The local (BcContainerHelper-free)
+# test runner connects directly to this URL, so RunTests itself makes no BcContainerHelper calls.
+$serviceUrl = $ENV:containerServiceUrl
+
+# NOTE: RunTestsInBcContainer is the seam for a custom test runner. By default the local AL test
+# runner (Run-AlTests) is used against the container created by RunPipeline; a user who supplies a
+# RunTestsInBcContainer override script gets a BcContainerHelper-compatible parameter hashtable
+# instead, so existing overrides keep working.
 $overrideParams = Get-ScriptOverrides -ALGoFolderName (Join-Path $projectPath ".AL-Go") -OverrideScriptNames @("RunTestsInBcContainer")
+$runTestsOverride = $overrideParams['RunTestsInBcContainer']
+
+# Only import the local test runner module when no custom override is supplied. Importing it loads
+# the bundled BC client-services assemblies, which is unnecessary when the user runs their own runner.
+if (-not $runTestsOverride) {
+    Import-Module (Join-Path $PSScriptRoot '..\.Modules\TestRunner\ALTestRunner.psm1' -Resolve) -DisableNameChecking -Force
+}
 
 Invoke-AlGoTestRun `
     -settings $settings `
     -projectPath $projectPath `
     -containerName $containerName `
+    -serviceUrl $serviceUrl `
     -credential $credential `
     -installTestAppsJson $installTestAppsJson `
-    -runTestsOverride $overrideParams['RunTestsInBcContainer']
+    -runTestsOverride $runTestsOverride

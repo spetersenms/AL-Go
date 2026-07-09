@@ -35,6 +35,39 @@ function New-KeepAliveContainerCredential {
     return (New-Object pscredential 'admin', (ConvertTo-SecureString -String $password -AsPlainText -Force))
 }
 
+function Get-ContainerServiceUrl {
+    <#
+    .SYNOPSIS
+        Returns the Business Central client-services URL for a build container.
+    .DESCRIPTION
+        Reads the container's PublicWebBaseUrl from its server configuration and ensures a tenant
+        query parameter is present so the URL can be used directly by a client-services test runner.
+        This is used to hand a kept-alive build container off to the RunTests action, so that action
+        can connect to the container without making any BcContainerHelper calls of its own.
+    .PARAMETER containerName
+        The name of the build container.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $containerName
+    )
+    $containerConfig = Get-BcContainerServerConfiguration -ContainerName $containerName
+    $publicWebBaseUrl = ''
+    if ($containerConfig -and ($containerConfig.PSObject.Properties.Name -contains 'PublicWebBaseUrl')) {
+        $publicWebBaseUrl = $containerConfig.PublicWebBaseUrl
+    }
+    if (-not $publicWebBaseUrl) {
+        $publicWebBaseUrl = "http://$containerName/BC/"
+    }
+    if ($publicWebBaseUrl -like "*tenant=*") {
+        return $publicWebBaseUrl
+    }
+    if ($publicWebBaseUrl.Contains("?")) {
+        return "$publicWebBaseUrl&tenant=default"
+    }
+    return "$($publicWebBaseUrl.TrimEnd('/'))/?tenant=default"
+}
+
 $containerBaseFolder = $null
 $projectPath = $null
 
@@ -557,6 +590,15 @@ try {
         -appVersion ($versionNumber.MajorMinorVersion) -appBuild ($versionNumber.BuildNumber) -appRevision ($versionNumber.RevisionNumber) `
         -keepContainer:$keepContainerForSeparateTestAction `
         -uninstallRemovedApps
+
+    if ($keepContainerForSeparateTestAction) {
+        # Surface the kept-alive container's client-services URL so the RunTests action can connect
+        # to it directly with the local (BcContainerHelper-free) test runner. This is the single
+        # BcContainerHelper touch-point used to hand the container off to RunTests.
+        $containerServiceUrl = Get-ContainerServiceUrl -containerName $containerName
+        Write-Host "Surfacing container service URL for the RunTests action: $containerServiceUrl"
+        Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "containerServiceUrl=$containerServiceUrl"
+    }
 
     if ($containerBaseFolder) {
         Write-Host "Copy artifacts and build output back from build container"
