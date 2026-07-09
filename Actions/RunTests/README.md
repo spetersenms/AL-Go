@@ -6,6 +6,8 @@ This action only does anything when the `useSeparateTestAction` setting is enabl
 
 Only normal tests (testFolders) are handled here. BCPT and page scripting tests continue to be executed by the RunPipeline action.
 
+When the `enableCodeCoverage` setting is enabled, this action also collects line-level code coverage while running the tests and writes a Cobertura `cobertura.xml` (plus raw `.dat` files) to `.buildartifacts/CodeCoverage` in the project folder. Code coverage requires `useSeparateTestAction`; see [Collect Code Coverage](https://github.com/microsoft/AL-Go/blob/main/Scenarios/CodeCoverage.md).
+
 ## INPUT
 
 ### ENV variables
@@ -22,6 +24,7 @@ Only normal tests (testFolders) are handled here. BCPT and page scripting tests 
 | shell | | The shell (powershell or pwsh) in which the PowerShell script should run | powershell |
 | project | | Project folder | '.' |
 | installTestAppsJson | | Path to a JSON file containing a list of test apps to run tests in | '' |
+| projectDependenciesJson | | JSON string describing project dependencies, used to resolve app source paths for code coverage | '{}' |
 
 ## OUTPUT
 

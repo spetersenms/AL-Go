@@ -78,6 +78,22 @@ function Invoke-AlGoTestRun {
         Path to a JSON file with the list of installed test apps.
     .PARAMETER runTestsOverride
         Optional scriptblock overriding the built-in test runner (RunTestsInBcContainer).
+    .PARAMETER enableCodeCoverage
+        When set, the local test runner collects code coverage and the resulting .dat files are
+        converted to a Cobertura report. Code coverage is only produced by the built-in local test
+        runner (not when a RunTestsInBcContainer override is supplied).
+    .PARAMETER codeCoverageSetup
+        The codeCoverageSetup settings (trackingType, produceCodeCoverageMap, excludeFilesPattern).
+    .PARAMETER buildArtifactFolder
+        The project build artifacts folder. Code coverage output is written to its CodeCoverage
+        subfolder. Defaults to '<projectPath>/.buildartifacts'.
+    .PARAMETER baseFolder
+        The repository base folder, used to resolve parent projects' app source folders for coverage.
+    .PARAMETER project
+        The current project name, used to look up parent projects in projectDependenciesJson.
+    .PARAMETER projectDependenciesJson
+        Compressed JSON mapping each project to the projects it depends on. Used to include parent
+        projects' app source folders in the coverage denominator.
     #>
     Param(
         [hashtable] $settings,
@@ -86,7 +102,13 @@ function Invoke-AlGoTestRun {
         [string] $serviceUrl = '',
         [System.Management.Automation.PSCredential] $credential,
         [string] $installTestAppsJson = '',
-        [scriptblock] $runTestsOverride = $null
+        [scriptblock] $runTestsOverride = $null,
+        [bool] $enableCodeCoverage = $false,
+        [object] $codeCoverageSetup = @{},
+        [string] $buildArtifactFolder = '',
+        [string] $baseFolder = '',
+        [string] $project = '',
+        [string] $projectDependenciesJson = '{}'
     )
 
     if ($settings.doNotRunTests) {
@@ -111,6 +133,27 @@ function Invoke-AlGoTestRun {
     # the container test runner: failing tests surface as warnings when treatTestFailuresAsWarnings
     # is set, otherwise as errors. Valid values are 'no', 'error' and 'warning'.
     $gitHubActionsSeverity = if ($settings.treatTestFailuresAsWarnings) { 'warning' } else { 'error' }
+
+    # Code coverage is only collected by the built-in local test runner. When a custom
+    # RunTestsInBcContainer override is supplied the override owns test execution, so coverage is
+    # skipped (the override may run a completely different runner).
+    $collectCoverage = $enableCodeCoverage -and (-not $runTestsOverride)
+    if ($enableCodeCoverage -and $runTestsOverride) {
+        OutputWarning -message "enableCodeCoverage is set, but a custom RunTestsInBcContainer override is in use. Code coverage is only collected by the built-in local test runner and will be skipped."
+    }
+
+    $coverageParams = @{}
+    if ($collectCoverage) {
+        if (-not $buildArtifactFolder) {
+            $buildArtifactFolder = Join-Path $projectPath ".buildartifacts"
+        }
+        $codeCoverageOutputPath = Join-Path $buildArtifactFolder "CodeCoverage"
+        if (-not (Test-Path $codeCoverageOutputPath)) {
+            New-Item -Path $codeCoverageOutputPath -ItemType Directory | Out-Null
+        }
+        $coverageParams = Get-CoverageRunnerParameters -codeCoverageSetup $codeCoverageSetup -codeCoverageOutputPath $codeCoverageOutputPath
+        Write-Host "Code coverage enabled: TrackingType=$($coverageParams.CodeCoverageTrackingType), ProduceMap=$($coverageParams.ProduceCodeCoverageMap), OutputPath=$codeCoverageOutputPath"
+    }
 
     $allTestsPassed = $true
     Push-Location $projectPath
@@ -138,7 +181,7 @@ function Invoke-AlGoTestRun {
                 $passed = & $runTestsOverride -parameters $runTestsParams
             }
             else {
-                $passed = Invoke-LocalAlTestRun -parameters $runTestsParams -serviceUrl $serviceUrl
+                $passed = Invoke-LocalAlTestRun -parameters $runTestsParams -serviceUrl $serviceUrl -coverageParams $coverageParams
             }
 
             if (-not $passed) {
@@ -148,6 +191,17 @@ function Invoke-AlGoTestRun {
     }
     finally {
         Pop-Location
+    }
+
+    # Convert collected coverage (.dat) files to a Cobertura report. This runs even when tests
+    # failed so coverage is still reported before we surface the failure.
+    if ($collectCoverage) {
+        $excludePatterns = @()
+        $ccSetup = ConvertTo-CoverageSetupHashtable -codeCoverageSetup $codeCoverageSetup
+        if ($ccSetup['excludeFilesPattern']) {
+            $excludePatterns = @($ccSetup['excludeFilesPattern'])
+        }
+        Convert-AlGoCodeCoverage -settings $settings -projectPath $projectPath -baseFolder $baseFolder -project $project -buildArtifactFolder $buildArtifactFolder -projectDependenciesJson $projectDependenciesJson -excludePatterns $excludePatterns
     }
 
     if (-not $allTestsPassed) {
@@ -174,10 +228,15 @@ function Invoke-LocalAlTestRun {
         The BcContainerHelper-compatible parameter hashtable built by Invoke-AlGoTestRun.
     .PARAMETER serviceUrl
         The container client-services URL surfaced by RunPipeline.
+    .PARAMETER coverageParams
+        Optional code-coverage parameters (CodeCoverageTrackingType, ProduceCodeCoverageMap,
+        CodeCoverageOutputPath) to forward to Run-AlTests. When supplied, the runner also produces
+        coverage .dat files under CodeCoverageOutputPath.
     #>
     Param(
         [hashtable] $parameters,
-        [string] $serviceUrl
+        [string] $serviceUrl,
+        [hashtable] $coverageParams = @{}
     )
 
     if (-not $serviceUrl) {
@@ -227,6 +286,15 @@ function Invoke-LocalAlTestRun {
     }
     if ($parameters.testFunction -and $parameters.testFunction -ne '*') {
         $testRunParams.TestProcedureRange = $parameters.testFunction
+    }
+
+    # Forward code-coverage parameters when coverage collection is enabled. A per-run file prefix
+    # keeps the .dat files from different test apps distinct in the output folder.
+    if ($coverageParams -and $coverageParams.Count -gt 0) {
+        foreach ($key in $coverageParams.Keys) {
+            $testRunParams[$key] = $coverageParams[$key]
+        }
+        $testRunParams.CodeCoverageFilePrefix = "CodeCoverage_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
     }
 
     Run-AlTests @testRunParams
@@ -337,4 +405,222 @@ function Merge-AlTestResults {
     }
 }
 
-Export-ModuleMember -Function Invoke-AlGoTestRun, Get-TestAppsToRun, Invoke-LocalAlTestRun, Test-AlTestResultsPassed, Merge-AlTestResults
+function ConvertTo-CoverageSetupHashtable {
+    <#
+    .SYNOPSIS
+        Normalizes the codeCoverageSetup setting into a hashtable.
+    .DESCRIPTION
+        The codeCoverageSetup setting can reach this module as a hashtable or as a PSCustomObject
+        (depending on how the settings JSON was converted). This helper returns a plain hashtable so
+        callers can read its keys uniformly.
+    .PARAMETER codeCoverageSetup
+        The codeCoverageSetup setting value (hashtable or PSCustomObject).
+    #>
+    Param(
+        [object] $codeCoverageSetup
+    )
+
+    $ccSetup = @{}
+    if ($codeCoverageSetup) {
+        if ($codeCoverageSetup -is [System.Collections.IDictionary]) {
+            $codeCoverageSetup.GetEnumerator() | ForEach-Object { $ccSetup[$_.Key] = $_.Value }
+        }
+        else {
+            $codeCoverageSetup.PSObject.Properties | ForEach-Object { $ccSetup[$_.Name] = $_.Value }
+        }
+    }
+    return $ccSetup
+}
+
+function Get-CoverageRunnerParameters {
+    <#
+    .SYNOPSIS
+        Builds the code-coverage parameters forwarded to the local test runner (Run-AlTests).
+    .DESCRIPTION
+        Reads the tracking type and coverage-map granularity from the codeCoverageSetup setting
+        (defaulting to PerRun / PerCodeunit) and returns a hashtable with CodeCoverageTrackingType,
+        ProduceCodeCoverageMap and CodeCoverageOutputPath.
+    .PARAMETER codeCoverageSetup
+        The codeCoverageSetup setting value (hashtable or PSCustomObject).
+    .PARAMETER codeCoverageOutputPath
+        The folder the runner writes coverage .dat files to.
+    #>
+    Param(
+        [object] $codeCoverageSetup = @{},
+        [string] $codeCoverageOutputPath
+    )
+
+    $ccSetup = ConvertTo-CoverageSetupHashtable -codeCoverageSetup $codeCoverageSetup
+    $trackingType = if ($ccSetup['trackingType']) { $ccSetup['trackingType'] } else { 'PerRun' }
+    $produceMap = if ($ccSetup['produceCodeCoverageMap']) { $ccSetup['produceCodeCoverageMap'] } else { 'PerCodeunit' }
+
+    return @{
+        CodeCoverageTrackingType = $trackingType
+        ProduceCodeCoverageMap   = $produceMap
+        CodeCoverageOutputPath   = $codeCoverageOutputPath
+    }
+}
+
+function Resolve-CoverageAppSourcePaths {
+    <#
+    .SYNOPSIS
+        Resolves the app source folders used as the code-coverage denominator.
+    .DESCRIPTION
+        Collects the current project's app folders plus the app folders of every parent project the
+        current project depends on (walked via projectDependenciesJson). This ensures test-only
+        projects measure coverage against the correct app source. Returns absolute paths.
+    .PARAMETER settings
+        The (analyzed) AL-Go settings hashtable for the current project.
+    .PARAMETER projectPath
+        The full path to the current project folder.
+    .PARAMETER baseFolder
+        The repository base folder.
+    .PARAMETER project
+        The current project name (key into projectDependenciesJson).
+    .PARAMETER projectDependenciesJson
+        Compressed JSON mapping each project to the projects it depends on.
+    #>
+    Param(
+        [hashtable] $settings,
+        [string] $projectPath,
+        [string] $baseFolder,
+        [string] $project,
+        [string] $projectDependenciesJson = '{}'
+    )
+
+    $appSourcePaths = @()
+
+    if ($settings.appFolders -and $settings.appFolders.Count -gt 0) {
+        foreach ($folder in $settings.appFolders) {
+            $absPath = Join-Path $projectPath $folder
+            if (Test-Path $absPath) {
+                $appSourcePaths += @((Resolve-Path $absPath).Path)
+            }
+        }
+    }
+
+    try {
+        $projectDeps = $projectDependenciesJson | ConvertFrom-Json | ConvertTo-HashTable -recurse
+        $parentProjects = @()
+        if ($projectDeps -and $project -and $projectDeps.ContainsKey($project)) {
+            $parentProjects = @($projectDeps[$project])
+        }
+        if ($parentProjects.Count -gt 0) {
+            Write-Host "Resolving app folders from $($parentProjects.Count) parent project(s): $($parentProjects -join ', ')"
+            foreach ($parentProject in $parentProjects) {
+                $parentSettings = ReadSettings -project $parentProject -baseFolder $baseFolder
+                ResolveProjectFolders -baseFolder $baseFolder -project $parentProject -projectSettings ([ref] $parentSettings)
+                $parentProjectPath = Join-Path $baseFolder $parentProject
+                if ($parentSettings.appFolders -and $parentSettings.appFolders.Count -gt 0) {
+                    foreach ($folder in $parentSettings.appFolders) {
+                        $absPath = Join-Path $parentProjectPath $folder
+                        if (Test-Path $absPath) {
+                            $resolved = (Resolve-Path $absPath).Path
+                            if ($appSourcePaths -notcontains $resolved) {
+                                $appSourcePaths += @($resolved)
+                                Write-Host "  + $resolved (from $parentProject)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        OutputWarning -message "Could not resolve project dependencies for coverage: $($_.Exception.Message)"
+    }
+
+    return ,@($appSourcePaths)
+}
+
+function Convert-AlGoCodeCoverage {
+    <#
+    .SYNOPSIS
+        Converts collected code-coverage .dat files to a Cobertura report.
+    .DESCRIPTION
+        Finds the coverage .dat files produced by the local test runner under
+        '<buildArtifactFolder>/CodeCoverage', resolves the app source paths (current + parent
+        projects) and converts/merges them to 'cobertura.xml' in the same folder using the
+        CoverageProcessor module. Failures are surfaced as warnings so they do not fail the build.
+    .PARAMETER settings
+        The (analyzed) AL-Go settings hashtable for the current project.
+    .PARAMETER projectPath
+        The full path to the current project folder.
+    .PARAMETER baseFolder
+        The repository base folder.
+    .PARAMETER project
+        The current project name.
+    .PARAMETER buildArtifactFolder
+        The project build artifacts folder. Coverage is read from its CodeCoverage subfolder.
+    .PARAMETER projectDependenciesJson
+        Compressed JSON mapping each project to the projects it depends on.
+    .PARAMETER excludePatterns
+        Glob patterns for source files to exclude from the coverage denominator.
+    #>
+    Param(
+        [hashtable] $settings,
+        [string] $projectPath,
+        [string] $baseFolder,
+        [string] $project,
+        [string] $buildArtifactFolder,
+        [string] $projectDependenciesJson = '{}',
+        [string[]] $excludePatterns = @()
+    )
+
+    $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
+    if (-not (Test-Path $codeCoveragePath)) {
+        Write-Host "No code coverage output folder found at $codeCoveragePath. Skipping Cobertura conversion."
+        return
+    }
+
+    $coverageFiles = @(Get-ChildItem -Path $codeCoveragePath -Filter "*.dat" -File -ErrorAction SilentlyContinue)
+    if ($coverageFiles.Count -eq 0) {
+        Write-Host "No code coverage (.dat) files were produced. Skipping Cobertura conversion."
+        return
+    }
+
+    Write-Host "Processing $($coverageFiles.Count) code coverage file(s) to Cobertura format..."
+    try {
+        Import-Module (Join-Path $PSScriptRoot '..\.Modules\TestRunner\CoverageProcessor\CoverageProcessor.psm1' -Resolve) -Force -DisableNameChecking
+
+        $coberturaOutputPath = Join-Path $codeCoveragePath "cobertura.xml"
+        $sourcePath = $ENV:GITHUB_WORKSPACE
+        if (-not $sourcePath) { $sourcePath = $baseFolder }
+
+        $appSourcePaths = @(Resolve-CoverageAppSourcePaths -settings $settings -projectPath $projectPath -baseFolder $baseFolder -project $project -projectDependenciesJson $projectDependenciesJson)
+        if ($appSourcePaths.Count -eq 0) {
+            Write-Host "No app source paths resolved; scanning entire workspace for source files."
+        }
+        else {
+            Write-Host "Coverage source: $($appSourcePaths.Count) app folder(s) resolved"
+        }
+        Write-Host "Source path root: $sourcePath"
+
+        if ($coverageFiles.Count -eq 1) {
+            $coverageStats = Convert-BCCoverageToCobertura `
+                -CoverageFilePath $coverageFiles[0].FullName `
+                -SourcePath $sourcePath `
+                -AppSourcePaths $appSourcePaths `
+                -ExcludePatterns $excludePatterns `
+                -OutputPath $coberturaOutputPath
+        }
+        else {
+            $coverageStats = Merge-BCCoverageToCobertura `
+                -CoverageFiles ($coverageFiles.FullName) `
+                -SourcePath $sourcePath `
+                -AppSourcePaths $appSourcePaths `
+                -ExcludePatterns $excludePatterns `
+                -OutputPath $coberturaOutputPath
+        }
+
+        if ($coverageStats) {
+            Write-Host "Code coverage: $($coverageStats.CoveragePercent)% ($($coverageStats.CoveredLines)/$($coverageStats.TotalLines) lines)"
+        }
+        Write-Host "Cobertura coverage written to $coberturaOutputPath"
+    }
+    catch {
+        OutputWarning -message "Failed to process code coverage to Cobertura format: $($_.Exception.Message)"
+    }
+}
+
+Export-ModuleMember -Function Invoke-AlGoTestRun, Get-TestAppsToRun, Invoke-LocalAlTestRun, Test-AlTestResultsPassed, Merge-AlTestResults, ConvertTo-CoverageSetupHashtable, Get-CoverageRunnerParameters, Resolve-CoverageAppSourcePaths, Convert-AlGoCodeCoverage

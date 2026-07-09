@@ -176,6 +176,12 @@ function GetDefaultSettings
         "useSeparateTestAction"                         = $false
         "doNotRunBcptTests"                             = $false
         "doNotRunPageScriptingTests"                    = $false
+        "enableCodeCoverage"                            = $false
+        "codeCoverageSetup"                             = [ordered]@{
+            "trackingType"                              = "PerRun"
+            "produceCodeCoverageMap"                    = "PerCodeunit"
+            "excludeFilesPattern"                       = @()
+        }
         "doNotPublishApps"                              = $false
         "doNotSignApps"                                 = $false
         "configPackages"                                = @()

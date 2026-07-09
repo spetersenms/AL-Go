@@ -6,7 +6,7 @@ inputs:
     required: false
     default: powershell
   coveragePath:
-    description: Path containing downloaded coverage artifacts (each in a subfolder)
+    description: Path containing downloaded coverage artifacts
     required: true
 runs:
   using: composite
@@ -20,5 +20,5 @@ runs:
           ${{ github.action_path }}/MergeCoverageSummaries.ps1 -coveragePath $ENV:_coveragePath
         }
 branding:
-  icon: bar-chart-2
+  icon: terminal
   color: blue

@@ -2,7 +2,9 @@ Param(
     [Parameter(HelpMessage = "Project folder", Mandatory = $false)]
     [string] $project = "",
     [Parameter(HelpMessage = "A path to a JSON-formatted list of test apps to run tests in", Mandatory = $false)]
-    [string] $installTestAppsJson = ''
+    [string] $installTestAppsJson = '',
+    [Parameter(HelpMessage = "Dependencies of the built project in compressed JSON format", Mandatory = $false)]
+    [string] $projectDependenciesJson = '{}'
 )
 
 <#
@@ -23,6 +25,9 @@ Param(
     Project folder.
 .PARAMETER installTestAppsJson
     A path to a JSON-formatted list of test apps (produced by previous jobs) to run tests in.
+.PARAMETER projectDependenciesJson
+    Compressed JSON mapping each project to the projects it depends on. Used to resolve parent
+    projects' app source folders when producing code coverage.
 .EXAMPLE
     RunTests.ps1 -project 'MyProject'
 #>
@@ -64,6 +69,9 @@ $settings = $env:Settings | ConvertFrom-Json | ConvertTo-HashTable
 # This action is a no-op unless normal test execution has been delegated from RunPipeline via
 # the useSeparateTestAction setting. In all other cases tests are executed inside RunPipeline.
 if (-not $settings.useSeparateTestAction) {
+    if ($settings.enableCodeCoverage) {
+        OutputWarning -message "enableCodeCoverage is set, but useSeparateTestAction is not enabled. Code coverage is only produced by the separate RunTests action; no coverage will be generated. Enable useSeparateTestAction to collect code coverage."
+    }
     Write-Host "useSeparateTestAction is not enabled. Tests are executed by the RunPipeline action. Skipping."
     return
 }
@@ -115,4 +123,10 @@ Invoke-AlGoTestRun `
     -serviceUrl $serviceUrl `
     -credential $credential `
     -installTestAppsJson $installTestAppsJson `
-    -runTestsOverride $runTestsOverride
+    -runTestsOverride $runTestsOverride `
+    -enableCodeCoverage ([bool]$settings.enableCodeCoverage) `
+    -codeCoverageSetup $settings.codeCoverageSetup `
+    -buildArtifactFolder (Join-Path $projectPath ".buildartifacts") `
+    -baseFolder $baseFolder `
+    -project $project `
+    -projectDependenciesJson $projectDependenciesJson

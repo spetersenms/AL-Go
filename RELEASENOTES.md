@@ -2,6 +2,10 @@
 
 A new `useSeparateTestAction` setting (default `false`) lets you move normal test execution (`testFolders`) out of the `RunPipeline` action and into a new dedicated `RunTests` action. When enabled, `RunPipeline` still compiles, publishes and installs the apps and keeps the build container alive, but does not run the normal tests. A new `RunTests` action then runs the tests against that same container and produces the same `TestResults.xml`. Only normal tests are affected; BCPT and page scripting tests are still executed by `RunPipeline`. When the setting is `false`, behavior is unchanged.
 
+### Collect code coverage (PREVIEW)
+
+A new `enableCodeCoverage` setting (default `false`) makes the `RunTests` action collect line-level code coverage while running tests, and emit a Cobertura `cobertura.xml` in the build artifacts. Coverage is produced only by the built-in AL Test Runner, so `enableCodeCoverage` requires `useSeparateTestAction` to be enabled (a warning is emitted if it is set without it). A companion `codeCoverageSetup` object configures tracking granularity (`trackingType`), the coverage map (`produceCodeCoverageMap`), and file-exclusion globs (`excludeFilesPattern`). Each project publishes a `CodeCoverage` artifact and a new `MergeCoverage` job combines them into a single `MergedCodeCoverage` artifact. See [Collect Code Coverage](https://github.com/microsoft/AL-Go/blob/main/Scenarios/CodeCoverage.md) for details and limitations.
+
 ### New `doNotPerformUpgrade` setting
 
 AL-Go now supports a new `doNotPerformUpgrade` setting that is passed through to `Run-AlPipeline`. Use it to skip the upgrade phase while still running the rest of the pipeline.

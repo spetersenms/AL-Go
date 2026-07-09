@@ -21,5 +21,5 @@ runs:
           ${{ github.action_path }}/BuildCodeCoverageSummary.ps1 -project $ENV:_project
         }
 branding:
-  icon: bar-chart-2
-  color: green
+  icon: terminal
+  color: blue

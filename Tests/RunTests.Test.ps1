@@ -22,7 +22,8 @@ Describe 'RunTests.psm1 Tests' {
             param(
                 $ServiceUrl, [System.Management.Automation.PSCredential]$Credential, $AutorizationType, $TestSuite, $Detailed, $DisableSSLVerification,
                 $ResultsFormat, $ExtensionId, $AppName, $ResultsFilePath, $SaveResultFile,
-                $TestCodeunitsRange, $TestProcedureRange
+                $TestCodeunitsRange, $TestProcedureRange,
+                $CodeCoverageTrackingType, $ProduceCodeCoverageMap, $CodeCoverageOutputPath, $CodeCoverageFilePrefix
             )
         }
 
@@ -289,6 +290,80 @@ Describe 'RunTests.psm1 Tests' {
             foreach ($key in $usedKeys) {
                 $validParameterNames | Should -Contain $key -Because "Invoke-LocalAlTestRun passes '$key', which must be a real parameter of Run-AlTests"
             }
+        }
+    }
+
+    Context 'Code coverage' {
+        It 'Get-CoverageRunnerParameters returns PerRun/PerCodeunit defaults for an empty setup' {
+            $params = Get-CoverageRunnerParameters -codeCoverageSetup @{} -codeCoverageOutputPath 'C:\cc'
+
+            $params.CodeCoverageTrackingType | Should -Be 'PerRun'
+            $params.ProduceCodeCoverageMap | Should -Be 'PerCodeunit'
+            $params.CodeCoverageOutputPath | Should -Be 'C:\cc'
+        }
+
+        It 'Get-CoverageRunnerParameters honors the provided codeCoverageSetup values' {
+            $setup = @{ trackingType = 'PerTest'; produceCodeCoverageMap = 'Disabled' }
+            $params = Get-CoverageRunnerParameters -codeCoverageSetup $setup -codeCoverageOutputPath 'C:\cc'
+
+            $params.CodeCoverageTrackingType | Should -Be 'PerTest'
+            $params.ProduceCodeCoverageMap | Should -Be 'Disabled'
+        }
+
+        It 'ConvertTo-CoverageSetupHashtable normalizes a PSCustomObject into a hashtable' {
+            $setup = [PSCustomObject]@{ trackingType = 'PerCodeunit'; excludeFilesPattern = @('*.g.al') }
+            $result = ConvertTo-CoverageSetupHashtable -codeCoverageSetup $setup
+
+            $result | Should -BeOfType [hashtable]
+            $result['trackingType'] | Should -Be 'PerCodeunit'
+            $result['excludeFilesPattern'] | Should -Contain '*.g.al'
+        }
+
+        It 'Resolve-CoverageAppSourcePaths returns the current project app folders' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            New-Item -Path (Join-Path $projectPath 'app') -ItemType Directory -Force | Out-Null
+            $settings = @{ appFolders = @('app') }
+
+            $paths = Resolve-CoverageAppSourcePaths -settings $settings -projectPath $projectPath -baseFolder $projectPath -project '' -projectDependenciesJson '{}'
+
+            $paths.Count | Should -Be 1
+            $paths[0] | Should -Be (Resolve-Path (Join-Path $projectPath 'app')).Path
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Forwards code coverage parameters to Run-AlTests and processes coverage when enabled' {
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            Mock -ModuleName RunTests Run-AlTests {
+                Set-Content -Path $ResultsFilePath -Encoding UTF8 -Value '<?xml version="1.0" encoding="UTF-8"?><testsuites><testsuite name="App" tests="1" failures="0" errors="0"><testcase name="T1" /></testsuite></testsuites>'
+            }
+            Mock -ModuleName RunTests Convert-AlGoCodeCoverage { }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $buildArtifactFolder = Join-Path $projectPath '.buildartifacts'
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+            $setup = @{ trackingType = 'PerCodeunit'; produceCodeCoverageMap = 'PerTest' }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -serviceUrl 'http://c/BC/?tenant=default' -credential $testCredential -enableCodeCoverage $true -codeCoverageSetup $setup -buildArtifactFolder $buildArtifactFolder
+
+            Should -Invoke -ModuleName RunTests Run-AlTests -Times 1 -Exactly -ParameterFilter {
+                $CodeCoverageTrackingType -eq 'PerCodeunit' -and $ProduceCodeCoverageMap -eq 'PerTest' -and $CodeCoverageOutputPath -eq (Join-Path $buildArtifactFolder 'CodeCoverage')
+            }
+            Should -Invoke -ModuleName RunTests Convert-AlGoCodeCoverage -Times 1 -Exactly
+            (Test-Path (Join-Path $buildArtifactFolder 'CodeCoverage')) | Should -BeTrue
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Does not collect coverage when a custom RunTestsInBcContainer override is supplied' {
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            Mock -ModuleName RunTests Convert-AlGoCodeCoverage { }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $buildArtifactFolder = Join-Path $projectPath '.buildartifacts'
+            $override = { param($parameters) return $true }
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -credential $testCredential -runTestsOverride $override -enableCodeCoverage $true -codeCoverageSetup @{} -buildArtifactFolder $buildArtifactFolder
+
+            Should -Invoke -ModuleName RunTests Convert-AlGoCodeCoverage -Times 0 -Exactly
+            Remove-Item -Path $projectPath -Recurse -Force
         }
     }
 
