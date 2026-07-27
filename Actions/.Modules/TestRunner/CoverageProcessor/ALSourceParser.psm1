@@ -35,7 +35,129 @@ function Read-AppJson {
         Name      = if ($null -ne $appJson.PSObject.Properties['name']) { $appJson.name } else { $null }
         Publisher = if ($null -ne $appJson.PSObject.Properties['publisher']) { $appJson.publisher } else { $null }
         Version   = if ($null -ne $appJson.PSObject.Properties['version']) { $appJson.version } else { $null }
+        IdRanges  = @(Get-AppIdRanges -AppJson $appJson)
     }
+}
+
+<#
+.SYNOPSIS
+    Extracts the object ID ranges declared in an app.json object
+.DESCRIPTION
+    Reads the modern 'idRanges' array and the legacy 'idRange' object from a parsed app.json
+    and returns a normalized array of ranges. Each range is a PSCustomObject with integer From
+    and To properties. Ranges that cannot be parsed are skipped.
+.PARAMETER AppJson
+    The parsed app.json object (from ConvertFrom-Json)
+.OUTPUTS
+    Array of PSCustomObject with From and To integer properties
+#>
+function Get-AppIdRanges {
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        $AppJson
+    )
+
+    $ranges = [System.Collections.Generic.List[object]]::new()
+
+    $addRange = {
+        param($rangeObj)
+        if ($null -eq $rangeObj) { return }
+        $hasFrom = $rangeObj.PSObject.Properties['from']
+        $hasTo = $rangeObj.PSObject.Properties['to']
+        if ($hasFrom -and $hasTo) {
+            $fromValue = 0
+            $toValue = 0
+            if ([int]::TryParse([string]$rangeObj.from, [ref]$fromValue) -and [int]::TryParse([string]$rangeObj.to, [ref]$toValue)) {
+                $ranges.Add([PSCustomObject]@{ From = $fromValue; To = $toValue })
+            }
+        }
+    }
+
+    if ($null -ne $AppJson.PSObject.Properties['idRanges'] -and $null -ne $AppJson.idRanges) {
+        foreach ($range in @($AppJson.idRanges)) {
+            & $addRange $range
+        }
+    }
+
+    if ($null -ne $AppJson.PSObject.Properties['idRange'] -and $null -ne $AppJson.idRange) {
+        & $addRange $AppJson.idRange
+    }
+
+    return $ranges.ToArray()
+}
+
+<#
+.SYNOPSIS
+    Collects the object ID ranges declared by the repo apps under the given source folders
+.DESCRIPTION
+    Reads the app.json in each supplied app source folder and merges their declared object ID
+    ranges (idRanges / legacy idRange). Used to distinguish objects that belong to the repo's own
+    apps from Microsoft/system objects when filtering the external objects report.
+.PARAMETER AppSourcePaths
+    Array of app folder paths, each expected to contain an app.json
+.OUTPUTS
+    Array of PSCustomObject with From and To integer properties
+#>
+function Get-AppSourceIdRanges {
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string[]]$AppSourcePaths = @()
+    )
+
+    $ranges = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($appPath in $AppSourcePaths) {
+        if (-not (Test-Path $appPath)) { continue }
+        $appJsonPath = Join-Path $appPath "app.json"
+        if (-not (Test-Path $appJsonPath)) { continue }
+        try {
+            $appInfo = Read-AppJson -AppJsonPath $appJsonPath
+            if ($appInfo -and $appInfo.IdRanges) {
+                foreach ($range in @($appInfo.IdRanges)) {
+                    $ranges.Add($range)
+                }
+            }
+        }
+        catch {
+            Write-Warning "Could not read id ranges from $appJsonPath : $($_.Exception.Message)"
+        }
+    }
+
+    return $ranges.ToArray()
+}
+
+<#
+.SYNOPSIS
+    Determines whether an object ID falls within any of the supplied ID ranges
+.PARAMETER ObjectId
+    The object ID to test
+.PARAMETER Ranges
+    Array of range objects with From and To integer properties
+.OUTPUTS
+    Boolean - true when the ID is within at least one range
+#>
+function Test-ObjectIdInRanges {
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ObjectId,
+
+        [Parameter(Mandatory = $false)]
+        [object[]]$Ranges = @()
+    )
+
+    foreach ($range in $Ranges) {
+        if ($ObjectId -ge $range.From -and $ObjectId -le $range.To) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 <#
@@ -540,6 +662,9 @@ function Get-ALExecutableLines {
 
 Export-ModuleMember -Function @(
     'Read-AppJson',
+    'Get-AppIdRanges',
+    'Get-AppSourceIdRanges',
+    'Test-ObjectIdInRanges',
     'Get-ALObjectMap',
     'Get-NormalizedObjectType',
     'Get-ALProcedures',

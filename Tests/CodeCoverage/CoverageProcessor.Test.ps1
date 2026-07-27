@@ -151,6 +151,96 @@ Describe "CoverageProcessor - Convert-BCCoverageToCobertura" {
         }
     }
 
+    Context "External object filtering (filterToRepoObjectIds)" {
+        BeforeAll {
+            # sample-coverage.dat contains objects 50100, 50101 (codeunit), 50000 (table) and 50001.
+            # Build a source folder that only contains codeunit 50100 and declares id range 50100-50149,
+            # so 50101 is an in-range external object and 50000/50001 are out-of-range (Microsoft-like).
+            $script:filterSource = Join-Path $TestDrive "FilterApp"
+            New-Item -Path $script:filterSource -ItemType Directory -Force | Out-Null
+            Set-Content -Path (Join-Path $script:filterSource "app.json") -Value '{"name":"FilterApp","idRanges":[{"from":50100,"to":50149}]}' -Encoding UTF8
+            Set-Content -Path (Join-Path $script:filterSource "Cod50100.al") -Value 'codeunit 50100 "My Codeunit"
+{
+    trigger OnRun()
+    begin
+        Message(''hi'');
+    end;
+}' -Encoding UTF8
+        }
+
+        It "Reports all external objects when filtering is disabled" {
+            $coverageFile = Join-Path $script:testDataPath "CoverageFiles/sample-coverage.dat"
+            $outputPath = Join-Path $TestDrive "nofilter.cobertura.xml"
+
+            $stats = Convert-BCCoverageToCobertura `
+                -CoverageFilePath $coverageFile `
+                -SourcePath $script:filterSource `
+                -AppSourcePaths @($script:filterSource) `
+                -OutputPath $outputPath `
+                -FilterToRepoObjectIds $false
+
+            # 50101, 50000 and 50001 are not in source, so all three are reported as external
+            $stats.ExcludedObjectCount | Should -Be 3
+        }
+
+        It "Drops out-of-range external objects when filtering is enabled" {
+            $coverageFile = Join-Path $script:testDataPath "CoverageFiles/sample-coverage.dat"
+            $outputPath = Join-Path $TestDrive "filter.cobertura.xml"
+
+            $stats = Convert-BCCoverageToCobertura `
+                -CoverageFilePath $coverageFile `
+                -SourcePath $script:filterSource `
+                -AppSourcePaths @($script:filterSource) `
+                -OutputPath $outputPath `
+                -FilterToRepoObjectIds $true
+
+            # Only 50101 falls within the repo id range 50100-50149; 50000 and 50001 are dropped
+            $stats.ExcludedObjectCount | Should -Be 1
+            $stats.ExcludedObjects[0].ObjectId | Should -Be 50101
+        }
+
+        It "Reports all external objects when filtering is enabled but no id ranges are declared" {
+            $noRangeSource = Join-Path $TestDrive "NoRangeApp"
+            New-Item -Path $noRangeSource -ItemType Directory -Force | Out-Null
+            Set-Content -Path (Join-Path $noRangeSource "app.json") -Value '{"name":"NoRangeApp"}' -Encoding UTF8
+            Set-Content -Path (Join-Path $noRangeSource "Cod50100.al") -Value 'codeunit 50100 "My Codeunit"
+{
+    trigger OnRun()
+    begin
+        Message(''hi'');
+    end;
+}' -Encoding UTF8
+
+            $coverageFile = Join-Path $script:testDataPath "CoverageFiles/sample-coverage.dat"
+            $outputPath = Join-Path $TestDrive "norange.cobertura.xml"
+
+            $stats = Convert-BCCoverageToCobertura `
+                -CoverageFilePath $coverageFile `
+                -SourcePath $noRangeSource `
+                -AppSourcePaths @($noRangeSource) `
+                -OutputPath $outputPath `
+                -FilterToRepoObjectIds $true
+
+            # No id ranges to filter with, so fall back to reporting all external objects
+            $stats.ExcludedObjectCount | Should -Be 3
+        }
+
+        It "Applies filtering in Merge-BCCoverageToCobertura" {
+            $coverageFile = Join-Path $script:testDataPath "CoverageFiles/sample-coverage.dat"
+            $outputPath = Join-Path $TestDrive "merge-filter.cobertura.xml"
+
+            $stats = Merge-BCCoverageToCobertura `
+                -CoverageFiles @($coverageFile) `
+                -SourcePath $script:filterSource `
+                -AppSourcePaths @($script:filterSource) `
+                -OutputPath $outputPath `
+                -FilterToRepoObjectIds $true
+
+            $stats.ExcludedObjectCount | Should -Be 1
+            $stats.ExcludedObjects[0].ObjectId | Should -Be 50101
+        }
+    }
+
     Context "XML output validation" {
         It "Should generate valid Cobertura XML" {
             $coverageFile = Join-Path $script:testDataPath "CoverageFiles/sample-coverage.dat"

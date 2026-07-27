@@ -382,6 +382,11 @@
                     },
                     "default": [],
                     "description": "Glob patterns for files to exclude from coverage"
+                },
+                "filterToRepoObjectIds": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When true, the external objects report only lists objects whose ID falls within the repo apps' declared id ranges (from app.json), hiding Microsoft/system objects"
                 }
             }
         },

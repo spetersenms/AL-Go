@@ -390,6 +390,106 @@ Describe "ALSourceParser - Read-AppJson" {
 
         { Read-AppJson -AppJsonPath $badJsonPath } | Should -Throw
     }
+
+    It "Should parse modern idRanges array" {
+        $appJsonDir = Join-Path $TestDrive "IdRangesModern"
+        New-Item -Path $appJsonDir -ItemType Directory -Force | Out-Null
+        $appJsonPath = Join-Path $appJsonDir "app.json"
+        Set-Content -Path $appJsonPath -Value '{"name":"A","idRanges":[{"from":50100,"to":50149},{"from":60000,"to":60010}]}' -Encoding UTF8
+
+        $result = Read-AppJson -AppJsonPath $appJsonPath
+
+        $result.IdRanges.Count | Should -Be 2
+        $result.IdRanges[0].From | Should -Be 50100
+        $result.IdRanges[0].To | Should -Be 50149
+        $result.IdRanges[1].From | Should -Be 60000
+    }
+
+    It "Should parse legacy idRange object" {
+        $appJsonDir = Join-Path $TestDrive "IdRangeLegacy"
+        New-Item -Path $appJsonDir -ItemType Directory -Force | Out-Null
+        $appJsonPath = Join-Path $appJsonDir "app.json"
+        Set-Content -Path $appJsonPath -Value '{"name":"A","idRange":{"from":70000,"to":70099}}' -Encoding UTF8
+
+        $result = Read-AppJson -AppJsonPath $appJsonPath
+
+        $result.IdRanges.Count | Should -Be 1
+        $result.IdRanges[0].From | Should -Be 70000
+        $result.IdRanges[0].To | Should -Be 70099
+    }
+
+    It "Should return empty idRanges when none declared" {
+        $appJsonDir = Join-Path $TestDrive "IdRangeNone"
+        New-Item -Path $appJsonDir -ItemType Directory -Force | Out-Null
+        $appJsonPath = Join-Path $appJsonDir "app.json"
+        Set-Content -Path $appJsonPath -Value '{"name":"A"}' -Encoding UTF8
+
+        $result = Read-AppJson -AppJsonPath $appJsonPath
+
+        @($result.IdRanges).Count | Should -Be 0
+    }
+}
+
+Describe "ALSourceParser - Get-AppSourceIdRanges" {
+    It "Should merge id ranges from multiple app folders" {
+        $app1 = Join-Path $TestDrive "srcApp1"
+        $app2 = Join-Path $TestDrive "srcApp2"
+        New-Item -Path $app1 -ItemType Directory -Force | Out-Null
+        New-Item -Path $app2 -ItemType Directory -Force | Out-Null
+        Set-Content -Path (Join-Path $app1 "app.json") -Value '{"name":"A1","idRanges":[{"from":50100,"to":50149}]}' -Encoding UTF8
+        Set-Content -Path (Join-Path $app2 "app.json") -Value '{"name":"A2","idRange":{"from":60000,"to":60099}}' -Encoding UTF8
+
+        $ranges = @(Get-AppSourceIdRanges -AppSourcePaths @($app1, $app2))
+
+        $ranges.Count | Should -Be 2
+    }
+
+    It "Should skip folders without app.json" {
+        $app1 = Join-Path $TestDrive "srcAppOnly"
+        New-Item -Path $app1 -ItemType Directory -Force | Out-Null
+        Set-Content -Path (Join-Path $app1 "app.json") -Value '{"name":"A1","idRanges":[{"from":50100,"to":50149}]}' -Encoding UTF8
+
+        $ranges = @(Get-AppSourceIdRanges -AppSourcePaths @($app1, (Join-Path $TestDrive "missingFolder")))
+
+        $ranges.Count | Should -Be 1
+        $ranges[0].From | Should -Be 50100
+    }
+
+    It "Should return empty array for no paths" {
+        $ranges = @(Get-AppSourceIdRanges -AppSourcePaths @())
+
+        $ranges.Count | Should -Be 0
+    }
+}
+
+Describe "ALSourceParser - Test-ObjectIdInRanges" {
+    BeforeAll {
+        $script:ranges = @(
+            [PSCustomObject]@{ From = 50100; To = 50149 },
+            [PSCustomObject]@{ From = 60000; To = 60099 }
+        )
+    }
+
+    It "Should return true for id at the lower bound" {
+        Test-ObjectIdInRanges -ObjectId 50100 -Ranges $script:ranges | Should -BeTrue
+    }
+
+    It "Should return true for id at the upper bound" {
+        Test-ObjectIdInRanges -ObjectId 60099 -Ranges $script:ranges | Should -BeTrue
+    }
+
+    It "Should return true for id inside a range" {
+        Test-ObjectIdInRanges -ObjectId 50125 -Ranges $script:ranges | Should -BeTrue
+    }
+
+    It "Should return false for id outside all ranges" {
+        Test-ObjectIdInRanges -ObjectId 18 -Ranges $script:ranges | Should -BeFalse
+        Test-ObjectIdInRanges -ObjectId 50200 -Ranges $script:ranges | Should -BeFalse
+    }
+
+    It "Should return false when no ranges are supplied" {
+        Test-ObjectIdInRanges -ObjectId 50100 -Ranges @() | Should -BeFalse
+    }
 }
 
 Describe "ALSourceParser - Get-NormalizedObjectType" {

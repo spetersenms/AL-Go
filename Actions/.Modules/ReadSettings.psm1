@@ -181,6 +181,7 @@ function GetDefaultSettings
             "trackingType"                              = "PerRun"
             "produceCodeCoverageMap"                    = "PerCodeunit"
             "excludeFilesPattern"                       = @()
+            "filterToRepoObjectIds"                     = $true
         }
         "doNotPublishApps"                              = $false
         "doNotSignApps"                                 = $false

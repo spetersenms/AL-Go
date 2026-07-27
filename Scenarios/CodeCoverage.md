@@ -51,6 +51,7 @@ Use the `codeCoverageSetup` object to customize coverage behavior:
 | `excludeFilesPattern` | Array of glob patterns for files to exclude from the coverage denominator. Patterns are matched against both the file name and relative path. Example: `["*.PermissionSet.al"]` excludes all permission set files. | `[]` |
 | `trackingType` | Coverage tracking granularity: `PerRun`, `PerCodeunit`, or `PerTest`. | `PerRun` |
 | `produceCodeCoverageMap` | Code coverage map granularity: `Disabled`, `PerCodeunit`, or `PerTest`. | `PerCodeunit` |
+| `filterToRepoObjectIds` | When `true`, the External Objects section of the report only lists objects whose ID falls within your apps' declared `idRanges` (from `app.json`), hiding Microsoft/system objects. When no `idRanges` are found, all external objects are shown. | `true` |
 
 Read more about settings at [Settings](settings.md#codeCoverageSetup).
 

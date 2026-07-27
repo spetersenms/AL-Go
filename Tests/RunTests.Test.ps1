@@ -347,8 +347,29 @@ Describe 'RunTests.psm1 Tests' {
             Should -Invoke -ModuleName RunTests Run-AlTests -Times 1 -Exactly -ParameterFilter {
                 $CodeCoverageTrackingType -eq 'PerCodeunit' -and $ProduceCodeCoverageMap -eq 'PerTest' -and $CodeCoverageOutputPath -eq (Join-Path $buildArtifactFolder 'CodeCoverage')
             }
-            Should -Invoke -ModuleName RunTests Convert-AlGoCodeCoverage -Times 1 -Exactly
+            Should -Invoke -ModuleName RunTests Convert-AlGoCodeCoverage -Times 1 -Exactly -ParameterFilter {
+                $filterToRepoObjectIds -eq $true
+            }
             (Test-Path (Join-Path $buildArtifactFolder 'CodeCoverage')) | Should -BeTrue
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Forwards filterToRepoObjectIds=false when set in codeCoverageSetup' {
+            Mock -ModuleName RunTests Get-AppJsonFromAppFile { [PSCustomObject]@{ id = [Guid]::NewGuid().ToString(); name = 'TestApp' } }
+            Mock -ModuleName RunTests Run-AlTests {
+                Set-Content -Path $ResultsFilePath -Encoding UTF8 -Value '<?xml version="1.0" encoding="UTF-8"?><testsuites><testsuite name="App" tests="1" failures="0" errors="0"><testcase name="T1" /></testsuite></testsuites>'
+            }
+            Mock -ModuleName RunTests Convert-AlGoCodeCoverage { }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $buildArtifactFolder = Join-Path $projectPath '.buildartifacts'
+            $settings = @{ doNotRunTests = $false; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+            $setup = @{ filterToRepoObjectIds = $false }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -serviceUrl 'http://c/BC/?tenant=default' -credential $testCredential -enableCodeCoverage $true -codeCoverageSetup $setup -buildArtifactFolder $buildArtifactFolder
+
+            Should -Invoke -ModuleName RunTests Convert-AlGoCodeCoverage -Times 1 -Exactly -ParameterFilter {
+                $filterToRepoObjectIds -eq $false
+            }
             Remove-Item -Path $projectPath -Recurse -Force
         }
 

@@ -68,7 +68,9 @@ function Build-CoverageStatsAndSave {
         AppSourcePaths       = @($AppSourcePaths | ForEach-Object {
             $normalizedSrc = [System.IO.Path]::GetFullPath($SourcePath).TrimEnd('\', '/')
             $normalizedApp = [System.IO.Path]::GetFullPath($_).TrimEnd('\', '/')
-            if ($normalizedApp.StartsWith($normalizedSrc, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ($normalizedApp.Equals($normalizedSrc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                '.'
+            } elseif ($normalizedApp.Length -gt $normalizedSrc.Length -and $normalizedApp.StartsWith($normalizedSrc, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $normalizedApp.Substring($normalizedSrc.Length + 1).Replace('\', '/')
             } else { $normalizedApp.Replace('\', '/') }
         })
@@ -114,7 +116,10 @@ function Convert-BCCoverageToCobertura {
         [string[]]$AppSourcePaths = @(),
 
         [Parameter(Mandatory = $false)]
-        [string[]]$ExcludePatterns = @()
+        [string[]]$ExcludePatterns = @(),
+
+        [Parameter(Mandatory = $false)]
+        [bool]$FilterToRepoObjectIds = $false
     )
 
     Write-Host "Converting BC coverage to Cobertura format..."
@@ -165,6 +170,17 @@ function Convert-BCCoverageToCobertura {
         Write-Host "`nStep 4: Mapping source files..."
         $objectMap = Get-ALObjectMap -SourcePath $SourcePath -AppSourcePaths $AppSourcePaths -ExcludePatterns $ExcludePatterns
 
+        # Resolve the repo's own object ID ranges when filtering external objects
+        $repoIdRanges = @()
+        if ($FilterToRepoObjectIds) {
+            $repoIdRanges = @(Get-AppSourceIdRanges -AppSourcePaths $AppSourcePaths)
+            if ($repoIdRanges.Count -gt 0) {
+                Write-Host "  Filtering external objects to $($repoIdRanges.Count) repo id range(s)"
+            } else {
+                Write-Host "  filterToRepoObjectIds is enabled but no id ranges were found in app.json; reporting all external objects"
+            }
+        }
+
         # Filter coverage to only include objects from user's source files
         # This excludes Microsoft base app objects
         $filteredCoverage = @{}
@@ -176,6 +192,11 @@ function Convert-BCCoverageToCobertura {
             } else {
                 # Track excluded object details for reporting
                 $objData = $groupedCoverage[$key]
+                # When filterToRepoObjectIds is enabled and ranges are known, only report
+                # external objects that fall within the repo's own id ranges (drops Microsoft/system objects)
+                if ($FilterToRepoObjectIds -and $repoIdRanges.Count -gt 0 -and -not (Test-ObjectIdInRanges -ObjectId $objData.ObjectId -Ranges $repoIdRanges)) {
+                    continue
+                }
                 $linesExecuted = @($objData.Lines | Where-Object { $_.IsCovered }).Count
                 $excludedObjectsData.Add([PSCustomObject]@{
                     ObjectType    = $objData.ObjectType
@@ -274,7 +295,10 @@ function Merge-BCCoverageToCobertura {
         [string[]]$AppSourcePaths = @(),
 
         [Parameter(Mandatory = $false)]
-        [string[]]$ExcludePatterns = @()
+        [string[]]$ExcludePatterns = @(),
+
+        [Parameter(Mandatory = $false)]
+        [bool]$FilterToRepoObjectIds = $false
     )
 
     Write-Host "Merging $($CoverageFiles.Count) coverage files..."
@@ -343,6 +367,17 @@ function Merge-BCCoverageToCobertura {
         $objectMap = Get-ALObjectMap -SourcePath $SourcePath -AppSourcePaths $AppSourcePaths -ExcludePatterns $ExcludePatterns
         $filteredCoverage = @{}
 
+        # Resolve the repo's own object ID ranges when filtering external objects
+        $repoIdRanges = @()
+        if ($FilterToRepoObjectIds) {
+            $repoIdRanges = @(Get-AppSourceIdRanges -AppSourcePaths $AppSourcePaths)
+            if ($repoIdRanges.Count -gt 0) {
+                Write-Host "  Filtering external objects to $($repoIdRanges.Count) repo id range(s)"
+            } else {
+                Write-Host "  filterToRepoObjectIds is enabled but no id ranges were found in app.json; reporting all external objects"
+            }
+        }
+
         foreach ($key in $groupedCoverage.Keys) {
             if ($objectMap.ContainsKey($key)) {
                 $filteredCoverage[$key] = $groupedCoverage[$key]
@@ -350,6 +385,11 @@ function Merge-BCCoverageToCobertura {
             } else {
                 # Track excluded object details
                 $objData = $groupedCoverage[$key]
+                # When filterToRepoObjectIds is enabled and ranges are known, only report
+                # external objects that fall within the repo's own id ranges (drops Microsoft/system objects)
+                if ($FilterToRepoObjectIds -and $repoIdRanges.Count -gt 0 -and -not (Test-ObjectIdInRanges -ObjectId $objData.ObjectId -Ranges $repoIdRanges)) {
+                    continue
+                }
                 $linesExecuted = @($objData.Lines | Where-Object { $_.IsCovered }).Count
                 $excludedObjectsData.Add([PSCustomObject]@{
                     ObjectType    = $objData.ObjectType

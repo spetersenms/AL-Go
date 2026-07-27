@@ -201,7 +201,11 @@ function Invoke-AlGoTestRun {
         if ($ccSetup['excludeFilesPattern']) {
             $excludePatterns = @($ccSetup['excludeFilesPattern'])
         }
-        Convert-AlGoCodeCoverage -settings $settings -projectPath $projectPath -baseFolder $baseFolder -project $project -buildArtifactFolder $buildArtifactFolder -projectDependenciesJson $projectDependenciesJson -excludePatterns $excludePatterns
+        $filterToRepoObjectIds = $true
+        if ($null -ne $ccSetup['filterToRepoObjectIds']) {
+            $filterToRepoObjectIds = [bool]$ccSetup['filterToRepoObjectIds']
+        }
+        Convert-AlGoCodeCoverage -settings $settings -projectPath $projectPath -baseFolder $baseFolder -project $project -buildArtifactFolder $buildArtifactFolder -projectDependenciesJson $projectDependenciesJson -excludePatterns $excludePatterns -filterToRepoObjectIds $filterToRepoObjectIds
     }
 
     if (-not $allTestsPassed) {
@@ -556,6 +560,9 @@ function Convert-AlGoCodeCoverage {
         Compressed JSON mapping each project to the projects it depends on.
     .PARAMETER excludePatterns
         Glob patterns for source files to exclude from the coverage denominator.
+    .PARAMETER filterToRepoObjectIds
+        When true, the external objects report only includes objects whose ID falls within the
+        repo apps' declared id ranges (from app.json), dropping Microsoft/system objects.
     #>
     Param(
         [hashtable] $settings,
@@ -564,7 +571,8 @@ function Convert-AlGoCodeCoverage {
         [string] $project,
         [string] $buildArtifactFolder,
         [string] $projectDependenciesJson = '{}',
-        [string[]] $excludePatterns = @()
+        [string[]] $excludePatterns = @(),
+        [bool] $filterToRepoObjectIds = $false
     )
 
     $codeCoveragePath = Join-Path $buildArtifactFolder "CodeCoverage"
@@ -602,6 +610,7 @@ function Convert-AlGoCodeCoverage {
                 -SourcePath $sourcePath `
                 -AppSourcePaths $appSourcePaths `
                 -ExcludePatterns $excludePatterns `
+                -FilterToRepoObjectIds $filterToRepoObjectIds `
                 -OutputPath $coberturaOutputPath
         }
         else {
@@ -610,6 +619,7 @@ function Convert-AlGoCodeCoverage {
                 -SourcePath $sourcePath `
                 -AppSourcePaths $appSourcePaths `
                 -ExcludePatterns $excludePatterns `
+                -FilterToRepoObjectIds $filterToRepoObjectIds `
                 -OutputPath $coberturaOutputPath
         }
 
