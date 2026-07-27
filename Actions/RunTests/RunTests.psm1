@@ -55,9 +55,11 @@ function Invoke-AlGoTestRun {
         Runs the normal tests for an AL-Go project against a kept-alive build container.
     .DESCRIPTION
         Runs tests in each test app against the given container and writes the results to
-        testResultsFile in JUnit format. Honors the doNotRunTests and treatTestFailuresAsWarnings
-        settings. When a RunTestsInBcContainer override is provided it is used instead of the
-        built-in BcContainerHelper test runner - this is the seam where a custom/local test runner
+        testResultsFile in JUnit format. Honors the doNotRunTests, doNotPublishApps and
+        treatTestFailuresAsWarnings settings (when doNotPublishApps is set, RunPipeline keeps no
+        container alive, so there is nothing to test against and this is a no-op). When a
+        RunTestsInBcContainer override is provided it is used instead of the built-in
+        BcContainerHelper test runner - this is the seam where a custom/local test runner
         can be substituted.
     .PARAMETER settings
         The (analyzed) AL-Go settings hashtable.
@@ -83,6 +85,11 @@ function Invoke-AlGoTestRun {
 
     if ($settings.doNotRunTests) {
         Write-Host "doNotRunTests is set. Skipping test execution."
+        return
+    }
+
+    if ($settings.doNotPublishApps) {
+        Write-Host "doNotPublishApps is set, so RunPipeline did not keep a build container alive. Skipping test execution."
         return
     }
 

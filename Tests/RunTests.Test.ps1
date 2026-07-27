@@ -87,6 +87,18 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
+        It 'Does not run tests when doNotPublishApps is set (no container kept alive)' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $script:runnerCalls = 0
+            $override = { param($parameters) $script:runnerCalls++; return $true }
+            $settings = @{ doNotRunTests = $false; doNotPublishApps = $true; runTestsInAllInstalledTestApps = $false; companyName = ''; treatTestFailuresAsWarnings = $false }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' -credential $testCredential -runTestsOverride $override
+
+            $script:runnerCalls | Should -Be 0
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
         It 'Does not run tests when there are no test apps' {
             $projectPath = New-TestProject
             $script:runnerCalls = 0
