@@ -488,8 +488,15 @@ try {
     # here, but the normal tests are not run (equivalent to doNotRunTests). The container is
     # kept alive so the RunTests action can run the tests against it afterwards.
     # This only affects normal tests; BCPT and page scripting tests are still run here.
+    #
+    # This only applies when Run-AlPipeline actually creates a build container to run tests against.
+    # A test-capable container is only created when apps are published (doNotPublishApps not set) and
+    # the build does not target an online environment. When apps are not published, Run-AlPipeline
+    # forces doNotRunTests and creates no test-capable container, so there is nothing for the RunTests
+    # action to hand off to - fall back to the normal RunPipeline behavior in that case.
+    $createsTestContainer = (-not $settings.doNotPublishApps) -and -not ($authContext -and $environmentName)
     $keepContainerForSeparateTestAction = $false
-    if ($settings.useSeparateTestAction) {
+    if ($settings.useSeparateTestAction -and $createsTestContainer) {
         Write-Host "useSeparateTestAction is enabled: skipping normal test execution in RunPipeline and keeping the container alive for the RunTests action"
         $runAlPipelineParams["doNotRunTests"] = $true
         $keepContainerForSeparateTestAction = $true
@@ -508,6 +515,9 @@ try {
             Write-Host "::add-mask::$containerCredentialBase64"
             Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "containerCredential=$containerCredentialBase64"
         }
+    }
+    elseif ($settings.useSeparateTestAction) {
+        Write-Host "::Notice::useSeparateTestAction is enabled, but no build container is created for this project (doNotPublishApps is set or the build targets an online environment), so the RunTests action has no container to run tests against and will be skipped."
     }
 
     Write-Host "Invoke Run-AlPipeline with buildmode $buildMode"
