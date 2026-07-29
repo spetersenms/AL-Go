@@ -1,4 +1,7 @@
 Param(
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'token', Justification = 'Exposed as $env:_token via action.yaml so downstream test override scripts (e.g. BCApps test tolerance artifact download) can authenticate.')]
+    [Parameter(HelpMessage = "The GitHub token running the action", Mandatory = $false)]
+    [string] $token,
     [Parameter(HelpMessage = "Project folder", Mandatory = $false)]
     [string] $project = "",
     [Parameter(HelpMessage = "A path to a JSON-formatted list of test apps to run tests in", Mandatory = $false)]
@@ -19,6 +22,10 @@ Param(
 
     Only normal tests (testFolders) are handled here. BCPT and page scripting tests continue
     to be executed by the RunPipeline action.
+.PARAMETER token
+    The GitHub token running the action. It is exposed as the _token environment variable by
+    action.yaml so downstream test override scripts (for example, BCApps test tolerance, which
+    downloads the unstable-tests artifact) can authenticate against GitHub.
 .PARAMETER project
     Project folder.
 .PARAMETER installTestAppsJson
