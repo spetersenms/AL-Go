@@ -241,8 +241,13 @@ function Invoke-CoveragePageExport {
     if ($null -eq $exportAction) {
         throw "Export action '$actionName' was not found on the coverage page."
     }
-    # The export raises a file download interaction rather than opening a form.
-    $null = $session.ClientContext.InvokeActionAndCatchForm($exportAction)
+    # The export raises a file-download interaction. The download is driven entirely by the client
+    # session events registered in New-ClientContext (DialogToShow auto-confirms the download dialog;
+    # UriToShow raises the download URI, which our own handler captures). We therefore invoke the
+    # action with the plain InvokeAction, NOT InvokeActionAndCatchForm: the latter calls
+    # CloseAllWarningForms/GetAllForms when no form is caught, and enumerating OpenedForms throws
+    # "Cannot find an overload for GetEnumerator" on newer BC client assemblies.
+    $session.ClientContext.InvokeAction($exportAction)
 
     $uri = $null
     for ($i = 0; $i -lt 30; $i++) {

@@ -113,12 +113,14 @@ Describe "Start-CodeCoverageCollection / Stop-CodeCoverageCollection orchestrati
             $ctx = [PSCustomObject]@{ Recorder = $recorder; UriCaptureFile = $uriCaptureFile }
             $ctx | Add-Member -MemberType ScriptMethod -Name OpenForm -Value { param($id) return "form-$id" }
             $ctx | Add-Member -MemberType ScriptMethod -Name GetActionByName -Value { param($form, $name) return $name }
-            $ctx | Add-Member -MemberType ScriptMethod -Name InvokeAction -Value { param($action) $this.Recorder.Add($action) }
-            $ctx | Add-Member -MemberType ScriptMethod -Name InvokeActionAndCatchForm -Value {
+            $ctx | Add-Member -MemberType ScriptMethod -Name InvokeAction -Value {
                 param($action)
                 $this.Recorder.Add($action)
-                Add-Content -Path $this.UriCaptureFile -Value "BC/download?id=123"
-                return $null
+                # Mirror the real client: invoking the export action raises the download URI
+                # (captured via the session's UriToShow event in production).
+                if ($action -eq 'Backup/Restore') {
+                    Add-Content -Path $this.UriCaptureFile -Value "BC/download?id=123"
+                }
             }
             $ctx | Add-Member -MemberType ScriptMethod -Name CloseForm -Value { param($form) }
             $ctx | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
