@@ -37,12 +37,15 @@ $script:CodeCoveragePageId = 9990
 function Get-CoverageClientToolFolder {
     <#
     .SYNOPSIS
-        Prepares a host folder with the client DLLs and BcContainerHelper client scripts.
+        Prepares a host folder with the client DLLs copied from the build container.
     .DESCRIPTION
-        Copies the UI client assemblies from the container's "C:\Test Assemblies" folder and the
-        BcContainerHelper PsTestFunctions.ps1 / ClientContext.ps1 scripts to a temporary host folder,
-        mirroring how BcContainerHelper sets up a host-side client session (connectFromHost). Returns
-        the folder path together with the resolved DLL and script paths.
+        Copies the UI client assemblies from the container's "C:\Test Assemblies" folder to a
+        temporary host folder, mirroring how BcContainerHelper sets up a host-side client session
+        (connectFromHost). The client PowerShell plumbing (ClientContext / New-ClientContext) is
+        vendored in this action (CoverageTestClient.ps1 / CoverageClientContext.ps1) rather than
+        copied from the installed BcContainerHelper module, so the coverage path does not depend on
+        the runner's BcContainerHelper version. Returns the folder path together with the resolved
+        DLL paths.
     .PARAMETER containerName
         The name of the build container to copy the client assemblies from.
     #>
@@ -54,21 +57,10 @@ function Get-CoverageClientToolFolder {
     $toolFolder = Join-Path ([System.IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
     New-Item -Path $toolFolder -ItemType Directory | Out-Null
 
-    $bchModule = Get-Module BcContainerHelper
-    if (-not $bchModule) {
-        $bchModule = Get-Module BcContainerHelper -ListAvailable | Select-Object -First 1
-    }
-    if (-not $bchModule) {
-        throw "BcContainerHelper module is not loaded; cannot set up the coverage client session."
-    }
-    $appHandling = Join-Path $bchModule.ModuleBase 'AppHandling'
-    Copy-Item -Path (Join-Path $appHandling 'PsTestFunctions.ps1') -Destination $toolFolder -Force
-    Copy-Item -Path (Join-Path $appHandling 'ClientContext.ps1') -Destination $toolFolder -Force
-
     # Copy the full set of test client assemblies from the container, mirroring how
     # BcContainerHelper's Run-TestsInBcContainer prepares a host-side client session (connectFromHost,
     # which copies all of 'Test Assemblies/*.dll'). The client DLL has transitive dependencies - for
-    # example System.Threading.Tasks.Extensions.dll, which PsTestFunctions.ps1 loads via
+    # example System.Threading.Tasks.Extensions.dll, which the client assemblies load via
     # Assembly.LoadFile when Microsoft.Internal.AntiSSRF.dll is present. Copying only a few named DLLs
     # leaves those dependencies unresolved (LoadFile 'file not found'); copying the whole folder
     # ensures every dependency resolves from the same location.
@@ -84,11 +76,9 @@ function Get-CoverageClientToolFolder {
     }
 
     return @{
-        ToolFolder           = $toolFolder
-        ClientDllPath        = $clientDllPath
-        NewtonSoftDllPath    = $newtonSoftDllPath
-        PsTestFunctionsPath  = Join-Path $toolFolder 'PsTestFunctions.ps1'
-        ClientContextPath    = Join-Path $toolFolder 'ClientContext.ps1'
+        ToolFolder        = $toolFolder
+        ClientDllPath     = $clientDllPath
+        NewtonSoftDllPath = $newtonSoftDllPath
     }
 }
 
@@ -133,8 +123,11 @@ function New-CoverageClientSession {
 
     $serviceUrl = "$publicWebBaseUrl/cs?tenant=$tenant"
 
-    # Dot-source the BcContainerHelper client scripts (loads the client assemblies and ClientContext).
-    . $tool.PsTestFunctionsPath -newtonSoftDllPath $tool.NewtonSoftDllPath -clientDllPath $tool.ClientDllPath -clientContextScriptPath $tool.ClientContextPath
+    # Dot-source the vendored client plumbing (loads the client assemblies and the ClientContext
+    # class, then exposes New-ClientContext). CoverageTestClient.ps1 defaults clientContextScriptPath
+    # to CoverageClientContext.ps1 next to it. $PSScriptRoot here is this module's folder.
+    $testClientPath = Join-Path $PSScriptRoot 'CoverageTestClient.ps1'
+    . $testClientPath -newtonSoftDllPath $tool.NewtonSoftDllPath -clientDllPath $tool.ClientDllPath
 
     $clientContext = New-ClientContext -serviceUrl $serviceUrl -auth $auth -credential $credential -culture 'en-US' -timezone ''
 
@@ -384,18 +377,32 @@ function Convert-CodeCoverageDetailedToDat {
     }
 
     $outputLines = [System.Collections.Generic.List[string]]::new()
+    $skippedEmpty = 0
+    $skippedFewParts = 0
+    $skippedNonNumeric = 0
     foreach ($line in $lines) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ([string]::IsNullOrWhiteSpace($line)) { $skippedEmpty++; continue }
         $parts = $line.Trim().Trim('"') -split '","'
-        if ($parts.Count -lt 4) { continue }
+        if ($parts.Count -lt 4) { $skippedFewParts++; continue }
         $objectType = $parts[0].Trim()
         $objectId = $parts[1].Trim()
         $lineNo = $parts[2].Trim()
         $hits = $parts[3].Trim()
-        if (-not ($objectId -match '^\d+$') -or -not ($lineNo -match '^\d+$')) { continue }
+        if (-not ($objectId -match '^\d+$') -or -not ($lineNo -match '^\d+$')) { $skippedNonNumeric++; continue }
         if (-not ($hits -match '^\d+$')) { $hits = '0' }
         # Every listed line is a hit -> CoverageStatus 0 (Covered).
         $outputLines.Add("$objectType,$objectId,$lineNo,0,$hits")
+    }
+
+    Write-Host "Read $($lines.Count) line(s) from detailed export; produced $($outputLines.Count) coverage row(s) (skipped: empty=$skippedEmpty, tooFewColumns=$skippedFewParts, nonNumeric=$skippedNonNumeric)."
+    if ($outputLines.Count -eq 0 -and $lines.Count -gt 0) {
+        # Nothing parsed even though the export was non-empty: surface a sample so the actual
+        # column shape/delimiter can be diagnosed without another blind iteration.
+        $sample = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 5)
+        if ($sample.Count -gt 0) {
+            Write-Host "No coverage rows parsed. First $($sample.Count) non-empty raw line(s) of the detailed export:"
+            foreach ($s in $sample) { Write-Host "  RAW: $s" }
+        }
     }
 
     $outputFolder = Split-Path -Path $datFilePath -Parent

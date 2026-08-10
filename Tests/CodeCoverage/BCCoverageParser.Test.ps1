@@ -68,6 +68,31 @@ Describe "BCCoverageParser - CSV Format" {
             # Empty file returns empty array, not null
             $result.Count | Should -Be 0
         }
+
+        It "Should handle a newline-only CSV file without throwing" {
+            # Regression: a 0-row coverage export writes a single trailing newline. Get-Content
+            # returns a scalar string for that single line, and under StrictMode 2.0 accessing
+            # .Count on a scalar string throws "The property 'Count' cannot be found on this object".
+            $newlineOnly = Join-Path $TestDrive "newline-only-coverage.dat"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($newlineOnly, "`n", $utf8NoBom)
+
+            { Read-BCCoverageCsvFile -Path $newlineOnly } | Should -Not -Throw
+            $result = Read-BCCoverageCsvFile -Path $newlineOnly
+            $result.Count | Should -Be 0
+        }
+
+        It "Should parse a single-line CSV file without throwing" {
+            # A file with exactly one data line also makes Get-Content return a scalar string.
+            $singleLine = Join-Path $TestDrive "single-line-coverage.dat"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($singleLine, "Codeunit,50000,10,0,3`n", $utf8NoBom)
+
+            { Read-BCCoverageCsvFile -Path $singleLine } | Should -Not -Throw
+            $result = Read-BCCoverageCsvFile -Path $singleLine
+            $result.Count | Should -Be 1
+            $result[0].ObjectId | Should -Be 50000
+        }
     }
 }
 

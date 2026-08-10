@@ -385,8 +385,11 @@ function Convert-AlGoCodeCoverage {
 
         if ($coverageStats) {
             Write-Host "Code coverage: $($coverageStats.CoveragePercent)% ($($coverageStats.CoveredLines)/$($coverageStats.TotalLines) lines)"
+            Write-Host "Cobertura coverage written to $coberturaOutputPath"
         }
-        Write-Host "Cobertura coverage written to $coberturaOutputPath"
+        else {
+            Write-Host "No coverage entries were parsed; no Cobertura report was written. Check the code coverage collection log above for the number of coverage rows produced."
+        }
     }
     catch {
         OutputWarning -message "Failed to process code coverage to Cobertura format: $($_.Exception.Message)"

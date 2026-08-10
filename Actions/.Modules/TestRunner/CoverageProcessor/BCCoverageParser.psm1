@@ -252,25 +252,28 @@ function Read-BCCoverageCsvFile {
     $content = $null
     $bytes = [System.IO.File]::ReadAllBytes($Path)
 
+    # Wrap Get-Content in @() so single-line files return an array rather than a
+    # scalar string. Under StrictMode 2.0 a scalar string has no .Count property and
+    # accessing it throws "The property 'Count' cannot be found on this object".
     # Check for UTF-16 LE BOM (FF FE)
     if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
-        $content = Get-Content -Path $Path -Encoding Unicode
+        $content = @(Get-Content -Path $Path -Encoding Unicode)
     }
     # Check for UTF-8 BOM (EF BB BF)
     elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-        $content = Get-Content -Path $Path -Encoding UTF8
+        $content = @(Get-Content -Path $Path -Encoding UTF8)
     }
     else {
         # No BOM - try UTF8 first (more common for text files without BOM)
-        $content = Get-Content -Path $Path -Encoding UTF8
+        $content = @(Get-Content -Path $Path -Encoding UTF8)
 
         # Validate first line looks like coverage data
-        if ($null -ne $content -and $content.Count -gt 0) {
+        if ($content.Count -gt 0) {
             $firstLine = $content[0]
             $parts = $firstLine.Split(',')
             # If first line doesn't have 5 parts or second part isn't numeric, try Unicode
             if ($parts.Count -lt 5 -or $parts[1] -notmatch '^\d+$') {
-                $content = Get-Content -Path $Path -Encoding Unicode
+                $content = @(Get-Content -Path $Path -Encoding Unicode)
             }
         }
     }
