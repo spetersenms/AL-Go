@@ -143,10 +143,11 @@ Describe "Start-CodeCoverageCollection / Stop-CodeCoverageCollection orchestrati
 
         Mock -ModuleName CoverageCollector Confirm-CodeCoveragePrerequisite { }
         Mock -ModuleName CoverageCollector New-CoverageClientSession { $script:fakeSession }
+        Mock -ModuleName CoverageCollector Close-CoverageClientSession { }
 
         $collector = Start-CodeCoverageCollection -containerName "altest" -credential $cred
 
-        $collector.Session | Should -Not -BeNullOrEmpty
+        $collector.ContainerName | Should -Be "altest"
         $fakeCtx.Recorder | Should -Contain "Start"
     }
 
@@ -164,7 +165,10 @@ Describe "Start-CodeCoverageCollection / Stop-CodeCoverageCollection orchestrati
             UriCaptureFile   = $uriFile
             CaptureEvent     = $null
         }
-        $collector = @{ Session = $session; Form = "form-9990" }
+        $collector = @{ ContainerName = "altest"; Credential = $cred; Tenant = "default" }
+
+        # Stop reconnects a fresh session; return the fake session from that reconnect.
+        Mock -ModuleName CoverageCollector New-CoverageClientSession { $session }
 
         # Simulate the container download producing a per-line detailed export.
         Mock -ModuleName CoverageCollector Get-CoverageDownload {
@@ -193,7 +197,7 @@ Describe "Start-CodeCoverageCollection / Stop-CodeCoverageCollection orchestrati
         $fakeCtx.Recorder | Should -Contain "Backup/Restore"
     }
 
-    It "Returns null when the collector has no session" {
-        Stop-CodeCoverageCollection -collector @{ Session = $null } -outputDatPath (Join-Path $script:tempRoot "none.dat") | Should -BeNullOrEmpty
+    It "Returns null when the collector has no container" {
+        Stop-CodeCoverageCollection -collector @{ ContainerName = $null } -outputDatPath (Join-Path $script:tempRoot "none.dat") | Should -BeNullOrEmpty
     }
 }

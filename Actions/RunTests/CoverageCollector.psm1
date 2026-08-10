@@ -7,14 +7,16 @@
     captured with the server-instance-global collector built into the BaseApp "Code Coverage" page
     (page 9990):
 
-      1. A single persistent client session opens page 9990 and invokes Start. Start always records
-         in MultiSession mode, so every session on the server instance (including the sessions AlTool
-         opens to run tests) is recorded.
-      2. AlTool runs the tests in its own sessions while the collector session is kept open.
-      3. The collector invokes Refresh (flushes the in-memory coverage store) and then the page's
-         detailed export, downloads the per-line result and converts it to the .dat format the
-         CoverageProcessor module (BCCoverageParser) consumes.
-      4. The collector invokes Stop and closes the session.
+      1. A short-lived client session opens page 9990 and invokes Start, then disconnects. Start
+         always records in MultiSession mode, so recording is server-instance-global: it keeps
+         running after the session closes and captures every session on the instance, including the
+         separate sessions AlTool opens to run tests.
+      2. AlTool runs the tests in its own sessions. No coverage client session is held open during
+         the run, so the client-services idle timeout cannot drop it mid-run.
+      3. A second short-lived session opens page 9990, invokes Refresh (flushes the in-memory
+         coverage store) and then the page's detailed export, downloads the per-line result and
+         converts it to the .dat format the CoverageProcessor module (BCCoverageParser) consumes.
+      4. That session invokes Stop and disconnects.
 
     The collector requires the server setting TestAutomationEnabled=true. It is opt-in (only used when
     the enableCodeCoverage setting is set and no RunTestsInBcContainer override is supplied).
@@ -429,10 +431,12 @@ function Start-CodeCoverageCollection {
     .SYNOPSIS
         Starts global code coverage recording on the build container.
     .DESCRIPTION
-        Ensures TestAutomationEnabled, opens a persistent client session against the BaseApp
-        "Code Coverage" page (9990) and invokes Start (MultiSession). The returned collector must be
-        kept until Stop-CodeCoverageCollection is called so recording stays active across the AlTool
-        test sessions.
+        Ensures TestAutomationEnabled, opens a short-lived client session against the BaseApp
+        "Code Coverage" page (9990), invokes Start (MultiSession) and disconnects. Start records in
+        MultiSession mode, so recording is server-instance-global and keeps running after the session
+        closes; the session is therefore not held open across the AlTool test run (which would let the
+        client-services idle timeout drop it). The returned collector carries the connection details
+        Stop-CodeCoverageCollection needs to reconnect and collect the result.
     .PARAMETER containerName
         The name of the build container to collect coverage from.
     .PARAMETER credential
@@ -454,12 +458,21 @@ function Start-CodeCoverageCollection {
 
     Write-Host "Starting code coverage recording on container '$containerName' (page $script:CodeCoveragePageId, MultiSession)."
     $session = New-CoverageClientSession -containerName $containerName -credential $credential -tenant $tenant
-    $form = Open-CoveragePage -session $session -pageId $script:CodeCoveragePageId
-    Invoke-CoveragePageAction -session $session -form $form -actionName 'Start'
+    try {
+        $form = Open-CoveragePage -session $session -pageId $script:CodeCoveragePageId
+        Invoke-CoveragePageAction -session $session -form $form -actionName 'Start'
+        try { $session.ClientContext.CloseForm($form) } catch { Write-Host "Note: could not close the coverage page after Start." }
+    }
+    finally {
+        # Recording is server-instance-global, so the session is closed immediately; it is reopened
+        # only to collect the result in Stop-CodeCoverageCollection.
+        Close-CoverageClientSession -session $session
+    }
 
     return @{
-        Session = $session
-        Form    = $form
+        ContainerName = $containerName
+        Credential    = $credential
+        Tenant        = $tenant
     }
 }
 
@@ -468,9 +481,11 @@ function Stop-CodeCoverageCollection {
     .SYNOPSIS
         Refreshes, exports and stops global code coverage recording.
     .DESCRIPTION
-        Invokes Refresh to flush the in-memory coverage store, exports the per-line detailed coverage,
-        converts it to the .dat format the CoverageProcessor consumes, invokes Stop and closes the
-        client session. The client session is always closed, even on failure.
+        Opens a fresh short-lived client session against page 9990 (recording has been running
+        server-instance-global since Start), invokes Refresh to flush the in-memory coverage store,
+        exports the per-line detailed coverage, converts it to the .dat format the CoverageProcessor
+        consumes, invokes Stop and closes the client session. The client session is always closed,
+        even on failure.
     .PARAMETER collector
         The collector object returned by Start-CodeCoverageCollection.
     .PARAMETER outputDatPath
@@ -485,14 +500,18 @@ function Stop-CodeCoverageCollection {
         [string] $outputDatPath
     )
 
-    if ($null -eq $collector -or -not $collector.Session) {
+    if ($null -eq $collector -or -not $collector.ContainerName) {
         return $null
     }
 
-    $session = $collector.Session
-    $form = $collector.Form
+    $tenant = 'default'
+    if ($collector.ContainsKey('Tenant') -and $collector.Tenant) {
+        $tenant = $collector.Tenant
+    }
+    $session = New-CoverageClientSession -containerName $collector.ContainerName -credential $collector.Credential -tenant $tenant
     $result = $null
     try {
+        $form = Open-CoveragePage -session $session -pageId $script:CodeCoveragePageId
         Invoke-CoveragePageAction -session $session -form $form -actionName 'Refresh'
 
         $detailedPath = Join-Path $session.ToolFolder 'CodeCoverageDetailed.txt'
