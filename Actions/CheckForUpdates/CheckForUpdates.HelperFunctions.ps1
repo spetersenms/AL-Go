@@ -174,6 +174,7 @@ function ModifyBuildWorkflows {
     $deploy = $yaml.Get('jobs:/Deploy:/')
     $deployALDoc = $yaml.Get('jobs:/DeployALDoc:/')
     $codeAnalysisUpload = $yaml.Get('jobs:/CodeAnalysisUpload:/')
+    $mergeCoverage = $yaml.Get('jobs:/MergeCoverage:/')
     $postProcess = $yaml.Get('jobs:/PostProcess:/')
     if (!$build) {
         throw "No build job found in the workflow"
@@ -263,6 +264,9 @@ function ModifyBuildWorkflows {
     }
     if ($codeAnalysisUpload) {
         $postProcessNeeds += @('CodeAnalysisUpload')
+    }
+    if ($mergeCoverage) {
+        $postProcessNeeds += @('MergeCoverage')
     }
     if ($postProcess) {
         $postProcess.Replace('needs:', "needs: [ $($postProcessNeeds -join ', ') ]")

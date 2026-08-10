@@ -83,10 +83,20 @@ $credential = Get-TestRunnerCredential
 # A RunTestsInBcContainer override script, if present, replaces the built-in AlTool test runner.
 $overrideParams = Get-ScriptOverrides -ALGoFolderName (Join-Path $projectPath ".AL-Go") -OverrideScriptNames @("RunTestsInBcContainer")
 
+# Code coverage is opt-in and only produced by this separate test action.
+$enableCodeCoverage = [bool]$settings.enableCodeCoverage
+if ($enableCodeCoverage -and -not $settings.useSeparateTestAction) {
+    OutputWarning -message "enableCodeCoverage is set, but useSeparateTestAction is not enabled. Code coverage is only produced by the separate RunTests action; no coverage will be generated. Enable useSeparateTestAction to collect code coverage."
+}
+
 Invoke-AlGoTestRun `
     -settings $settings `
     -projectPath $projectPath `
     -containerName $containerName `
     -credential $credential `
     -installTestAppsJson $installTestAppsJson `
-    -runTestsOverride $overrideParams['RunTestsInBcContainer']
+    -runTestsOverride $overrideParams['RunTestsInBcContainer'] `
+    -enableCodeCoverage $enableCodeCoverage `
+    -codeCoverageSetup $settings.codeCoverageSetup `
+    -baseFolder $baseFolder `
+    -project $project

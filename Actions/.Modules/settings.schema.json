@@ -348,6 +348,41 @@
             "type": "boolean",
             "description": "PREVIEW: When set to true, normal tests (testFolders) are no longer executed inside the RunPipeline action. Instead, RunPipeline keeps the build container alive and a separate RunTests action executes the tests afterwards. See https://aka.ms/ALGoSettings#useSeparateTestAction"
         },
+        "enableCodeCoverage": {
+            "type": "boolean",
+            "description": "PREVIEW: When set to true, the separate RunTests action collects line-level AL code coverage while running the tests and produces a Cobertura report. Requires useSeparateTestAction. The built-in AlTool collector records PerRun coverage; finer granularity or a coverage map requires a RunTestsInBcContainer override. See https://aka.ms/ALGoSettings#enableCodeCoverage"
+        },
+        "codeCoverageSetup": {
+            "type": "object",
+            "description": "PREVIEW: Configures code coverage collection (used when enableCodeCoverage is set). See https://aka.ms/ALGoSettings#codeCoverageSetup",
+            "properties": {
+                "trackingType": {
+                    "type": "string",
+                    "enum": [ "PerRun", "PerCodeunit", "PerTest" ],
+                    "default": "PerRun",
+                    "description": "Coverage tracking granularity. The built-in AlTool collector only supports PerRun; PerCodeunit and PerTest are ignored (with a warning) and require a RunTestsInBcContainer override."
+                },
+                "produceCodeCoverageMap": {
+                    "type": "string",
+                    "enum": [ "Disabled", "PerCodeunit", "PerTest" ],
+                    "default": "Disabled",
+                    "description": "Whether to produce a code coverage map. Not supported by the built-in AlTool collector (ignored with a warning); requires a RunTestsInBcContainer override."
+                },
+                "excludeFilesPattern": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Glob patterns for AL source files to exclude from the coverage denominator."
+                },
+                "filterToRepoObjectIds": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When true, coverage only includes objects whose ID falls within the repo apps' declared id ranges (from app.json), dropping Microsoft/system objects."
+                }
+            }
+        },
         "doNotRunBcptTests": {
             "type": "boolean"
         },

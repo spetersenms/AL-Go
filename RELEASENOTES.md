@@ -7,6 +7,13 @@ By default, the `RunTests` action runs the tests through Microsoft's headless `a
 > [!NOTE]
 > The built-in AlTool runner does not run `Legacy` test-type codeunits or tests that require UI or client-callback interaction. Projects that rely on those should supply a `RunTestsInBcContainer` override script to run their tests through BcContainerHelper instead.
 
+### Code coverage for the separate test action (PREVIEW)
+
+A new `enableCodeCoverage` setting (default `false`, requires `useSeparateTestAction`) lets the `RunTests` action collect line-level AL code coverage while running the tests and publish it as a Cobertura report. The built-in AlTool runner records coverage globally on the build container for the whole test run (`PerRun`) and produces a `CodeCoverage` build artifact with `cobertura.xml`; when a build has multiple projects a `MergeCoverage` job combines them into a single `MergedCodeCoverage` artifact. Use the `codeCoverageSetup` setting to configure `excludeFilesPattern` and `filterToRepoObjectIds`. See [the code coverage scenario](https://aka.ms/algosettings#enablecodecoverage) for details.
+
+> [!NOTE]
+> The built-in AlTool collector supports `PerRun` granularity only; finer granularity (`trackingType` = `PerCodeunit`/`PerTest`) and a code coverage map (`produceCodeCoverageMap`) are not supported and are ignored with a warning. Coverage is not collected when a `RunTestsInBcContainer` override is supplied. Projects that need finer granularity, a coverage map, or coverage for `Legacy`/UI tests should supply a `RunTestsInBcContainer` override to collect coverage through BcContainerHelper.
+
 ### New `doNotPerformUpgrade` setting
 
 AL-Go now supports a new `doNotPerformUpgrade` setting that is passed through to `Run-AlPipeline`. Use it to skip the upgrade phase while still running the rest of the pipeline.

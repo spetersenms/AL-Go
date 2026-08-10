@@ -175,6 +175,13 @@ function GetDefaultSettings
         "doNotPerformUpgrade"                           = $false
         "doNotRunTests"                                 = $false
         "useSeparateTestAction"                         = $false
+        "enableCodeCoverage"                            = $false
+        "codeCoverageSetup"                             = [ordered]@{
+            "trackingType"                              = "PerRun"
+            "produceCodeCoverageMap"                    = "Disabled"
+            "excludeFilesPattern"                       = @()
+            "filterToRepoObjectIds"                     = $true
+        }
         "doNotRunBcptTests"                             = $false
         "doNotRunPageScriptingTests"                    = $false
         "doNotPublishApps"                              = $false
