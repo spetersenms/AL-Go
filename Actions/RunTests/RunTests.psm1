@@ -45,12 +45,17 @@ function Get-TestAppsToRun {
 
     if ($settings.runTestsInAllInstalledTestApps -and $installTestAppsJson -and (Test-Path $installTestAppsJson)) {
         try {
-            $installedTestApps = @(Get-Content -Path $installTestAppsJson -Raw | ConvertFrom-Json)
+            # Do not wrap the ConvertFrom-Json result in @(...). In Windows PowerShell 5.1
+            # ConvertFrom-Json emits a JSON array as a single object, so @(...) yields a one-element
+            # array whose element is itself the array (System.Object[]); calling .TrimStart on that
+            # element then fails. Assigning the pipeline output directly keeps it as the array, which
+            # enumerates correctly below on both Windows PowerShell 5.1 and PowerShell 7.
+            $installedTestApps = Get-Content -Path $installTestAppsJson -Raw | ConvertFrom-Json
         }
         catch {
             throw "Failed to parse JSON file at path '$installTestAppsJson'. Error: $($_.Exception.Message)"
         }
-        $testApps += @($installedTestApps | ForEach-Object { $_.TrimStart("(").TrimEnd(")") } | Where-Object { $_ -and (Test-Path $_) })
+        $testApps += @($installedTestApps | ForEach-Object { "$_".TrimStart("(").TrimEnd(")") } | Where-Object { $_ -and (Test-Path $_) })
     }
 
     return @($testApps | Select-Object -Unique)
