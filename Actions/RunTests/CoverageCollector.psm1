@@ -111,10 +111,10 @@ function New-CoverageClientSession {
         [string] $tenant = 'default'
     )
 
-    if ($PSVersionTable.PSVersion.Major -lt 7) {
-        throw "Collecting code coverage with the built-in AlTool runner requires PowerShell 7."
-    }
-
+    # The RunTests action runs in the container-bound shell (Windows PowerShell 5.1 by default,
+    # same as RunPipeline), where the BcContainerHelper ClientContext and its WCF dependencies are
+    # available from the GAC. Do not gate coverage collection on PowerShell 7; on PS7 the WCF client
+    # assemblies are downloaded at runtime instead, but the collector works on both.
     $serverConfig = Get-BcContainerServerConfiguration -ContainerName $containerName
     $publicWebBaseUrl = "$($serverConfig.PublicWebBaseUrl)".TrimEnd('/')
     if (-not $publicWebBaseUrl) {
