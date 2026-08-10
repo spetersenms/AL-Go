@@ -63,18 +63,22 @@ function Get-CoverageClientToolFolder {
     Copy-Item -Path (Join-Path $appHandling 'PsTestFunctions.ps1') -Destination $toolFolder -Force
     Copy-Item -Path (Join-Path $appHandling 'ClientContext.ps1') -Destination $toolFolder -Force
 
+    # Copy the full set of test client assemblies from the container, mirroring how
+    # BcContainerHelper's Run-TestsInBcContainer prepares a host-side client session (connectFromHost,
+    # which copies all of 'Test Assemblies/*.dll'). The client DLL has transitive dependencies - for
+    # example System.Threading.Tasks.Extensions.dll, which PsTestFunctions.ps1 loads via
+    # Assembly.LoadFile when Microsoft.Internal.AntiSSRF.dll is present. Copying only a few named DLLs
+    # leaves those dependencies unresolved (LoadFile 'file not found'); copying the whole folder
+    # ensures every dependency resolves from the same location.
+    Copy-ItemFromBcContainer -containerName $containerName -containerPath 'C:\Test Assemblies' -localPath $toolFolder
+
     $clientDllPath = Join-Path $toolFolder 'Microsoft.Dynamics.Framework.UI.Client.dll'
     $newtonSoftDllPath = Join-Path $toolFolder 'Newtonsoft.Json.dll'
-    $antiSSRFDllPath = Join-Path $toolFolder 'Microsoft.Internal.AntiSSRF.dll'
-
-    Copy-FileFromBcContainer -containerName $containerName -containerPath 'C:\Test Assemblies\Microsoft.Dynamics.Framework.UI.Client.dll' -localPath $clientDllPath
-    Copy-FileFromBcContainer -containerName $containerName -containerPath 'C:\Test Assemblies\Newtonsoft.Json.dll' -localPath $newtonSoftDllPath
-    try {
-        Copy-FileFromBcContainer -containerName $containerName -containerPath 'C:\Test Assemblies\Microsoft.Internal.AntiSSRF.dll' -localPath $antiSSRFDllPath
+    if (-not (Test-Path $clientDllPath)) {
+        throw "Microsoft.Dynamics.Framework.UI.Client.dll was not found after copying 'C:\Test Assemblies' from container '$containerName'."
     }
-    catch {
-        # AntiSSRF is not present on every version; the client loads without it when absent.
-        Write-Host "Note: Microsoft.Internal.AntiSSRF.dll was not copied ($($_.Exception.Message)). Continuing."
+    if (-not (Test-Path $newtonSoftDllPath)) {
+        throw "Newtonsoft.Json.dll was not found after copying 'C:\Test Assemblies' from container '$containerName'."
     }
 
     return @{
