@@ -1,0 +1,86 @@
+{
+  "$comment": "Policy for the AL-Go issue triage agent. This file is policy; the workflow and orchestrator are mechanism. JSON rather than YAML so it can be read without adding a PowerShell YAML dependency to every job.",
+
+  "version": "0.1.0",
+
+  "engine": {
+    "$comment": "Guardrails anchored on the production issue-triage agent in microsoft/PowerToys, adjusted for Copilot CLI: --max-ai-credits has a documented floor of 30, so PowerToys' value of 10 (a gh-aw frontmatter setting, a different mechanism) is not valid here. 30 credits is roughly $0.30 per run.",
+    "model": "gpt-5-mini",
+    "maxAiCredits": 30,
+    "maxTurns": 8,
+    "timeoutMinutes": 15
+  },
+
+  "knowledge": {
+    "agent": "issue-triage.agent.md",
+    "schema": "findings.schema.json",
+    "skills": [
+      "skills/al-go-concepts.md",
+      "skills/routing.md",
+      "skills/risk-tiers.md",
+      "skills/completeness.md",
+      "skills/repro.md"
+    ]
+  },
+
+  "repro": {
+    "enabled": true,
+    "harness": "Tests/Repro/Invoke-ActionRepro.ps1",
+    "policy": "Tests/Repro/action-repro-policy.json",
+    "timeoutMinutes": 5
+  },
+
+  "publish": {
+    "$comment": "allowedLabels is a security boundary, not a convenience. The publish job intersects the agent's suggested_labels with this list, so anything unexpected is dropped rather than trusted. blockedLabels is evaluated first. Both reuse AL-Go's existing label vocabulary - see labels.json for why no new labels are introduced.",
+    "mode": "dryRun",
+    "maxLabels": 2,
+    "maxComments": 1,
+    "triggerLabel": "AI Review",
+    "$removeTriggerLabelComment": "Borrowed from the retired github/ai-assessment-comment-labeler, which did this well: removing the trigger label after a run makes re-triage idempotent - add the label again to re-run, rather than having to remove and re-add it. Only done when actually publishing; in dryRun and shadow the label is left alone, because a label silently vanishing with no comment would be baffling.",
+    "removeTriggerLabelAfterPublish": true,
+    "allowedLabels": [
+      "Unrelated to AL-Go",
+      "Need more info"
+    ],
+    "blockedLabels": [
+      "AI Review",
+      "bug",
+      "stale",
+      "duplicate",
+      "wontfix",
+      "accepted",
+      "Fix Ready",
+      "In Preview",
+      "In Progress",
+      "Shipped",
+      "Under Investigation",
+      "Cannot repro",
+      "Workaround provided",
+      "Transferred to backlog",
+      "Work Item",
+      "community contribution"
+    ]
+  },
+
+  "safety": {
+    "neverAutoFixRiskLevels": [ "critical", "unknown" ],
+    "allowIssueClose": false,
+    "enforceIssueNumberMatch": true,
+
+    "$criticalPathsComment": "Checked mechanically against traced_locations at publish time. If a traced file matches, fix_risk is forced to critical regardless of what the model concluded - the model missing that Github-Helper.psm1 is shared surface is exactly the mistake this is here to catch. Prefix match, repository-relative, forward slashes.",
+    "criticalPaths": [
+      "Actions/AL-Go-Helper.ps1",
+      "Actions/Github-Helper.psm1",
+      "Actions/Invoke-AlGoAction.ps1",
+      "Actions/TelemetryHelper.psm1",
+      "Actions/.Modules/ReadSettings.psm1",
+      "Actions/CheckForUpdates/",
+      "Actions/ReadSecrets/",
+      "Actions/VerifyPRChanges/",
+      "Templates/"
+    ],
+
+    "$evidenceComment": "A HIGH-confidence area or a definite fix_risk with no traced location means the model guessed. Downgrade rather than trust it.",
+    "requireTraceForHighConfidence": true
+  }
+}

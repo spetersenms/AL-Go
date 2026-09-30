@@ -1,0 +1,26 @@
+{
+  "id": "real-2256-test-analyzer-no-stack-trace",
+  "source": "https://github.com/microsoft/AL-Go/issues/2256",
+  "issue": {
+    "number": 2256,
+    "title": "[Bug]: Test Result Analyzer fails if no stack trace is available",
+    "body": "### AL-Go version\n\nPreview (all versions)\n\n### Describe the issue\n\nSome times, the Test Results XML file is missing the stack trace, like this:\n\n<img width=\"1810\" height=\"217\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/0317d8b3-b4f1-4aee-b14e-808c1485c154\" />\n\nI cannot repro how the TestResults.xml file without a stack trace ends up being created, but this causes the TestResultsAnalyzer to fail with:\n\nError: Unexpected error when running action. Error Message: The property '#text' cannot be found on this object. Verify that the property exists., StackTrace: at GetTestResultSummaryMD, C:\\a\\_actions\\microsoft\\AL-Go\\main\\Actions\\AnalyzeTests\\TestResultAnalyzer.ps1: line 195 <- at <ScriptBlock>, C:\\a\\_actions\\microsoft\\AL-Go\\main\\Actions\\AnalyzeTests\\AnalyzeTests.ps1: line 19.....\n\n### Expected behavior\n\nNo failure when stack trace isn't available\n\n### Steps to reproduce\n\nThis script shows what is wrong in the code, which uses the PowerShell construct \"#Text\" to capture the innertext - that construct returns NULL instead of empty string if no innertext is available.\n\n```powershell\n# Demonstrates the bug fixed by this PR:\n# .\"#text\" returns $null on empty XML elements, causing .Trim() to throw.\n# .InnerText returns \"\" instead, handling empty nodes safely.\n\n[xml]$xml = @\"\n<nodes>\n  <node message=\"1\">Content</node>\n  <node message=\"2\"></node>\n</nodes>\n\"@\n\nWrite-Host -ForegroundColor Yellow \"FAILING:\"\ntry {\n    foreach ($node in $xml.nodes.node) {\n        Write-Host \"$($node.message)\"\n        Write-Host \"Content: '$($node.\"#text\".Trim())'\"\n    }\n}\ncatch {\n    Write-Host -ForegroundColor Red \"ERROR\"\n}\nWrite-Host\nWrite-Host -ForegroundColor Yellow \"WORKING:\"\nforeach ($node in $xml.nodes.node) {\n    Write-Host \"$($node.message)\"\n    Write-Host \"Content: '$($node.InnerText.Trim())'\"\n}\n```\n\n### Additional context (logs, screenshots, etc.)\n\nI will submit a PR with a fix in 2 minutes.",
+    "labels": [
+      "bug",
+      "Fix Ready",
+      "In Preview",
+      "Shipped"
+    ],
+    "author_association": "CONTRIBUTOR"
+  },
+  "expected": {
+    "fix_risk": "medium",
+    "suggested_area": "al-go",
+    "recommended_lane": "ready-for-maintainer",
+    "reproduction_quality": "SUFFICIENT",
+    "issue_kind": "BUG",
+    "has_missing_information": false,
+    "area_confidence": "HIGH"
+  },
+  "notes": "The reporter explicitly says they cannot reproduce how the malformed XML is produced. That is about the upstream cause, not about the AL-Go defect, which is fully specified: AnalyzeTests fails on a TestResults.xml with no stack trace. Scores whether the agent distinguishes those and does not mark the report incomplete."
+}

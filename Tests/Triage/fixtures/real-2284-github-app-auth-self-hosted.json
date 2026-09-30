@@ -1,0 +1,24 @@
+{
+  "id": "real-2284-github-app-auth-self-hosted",
+  "source": "https://github.com/microsoft/AL-Go/issues/2284",
+  "issue": {
+    "number": 2284,
+    "title": "[Bug]: GitHub App authentication breaks on self-hosted runners",
+    "body": "### AL-Go version\n\n9.0\n\n### Describe the issue\n\nWithout adjusting any settings - other than `githubRunner` - our authentication with github through our own GH-app fails, simply by switching from `windows-latest` to `self-hosted`. Specifically during the \"Download Project Dependencies\" step, which we have setup to download one of our AppSource apps from its own repo (from the same GH org) using the probing paths setting.\n\nThe error seems to be an authorization error at first (http 401), but when running the connection from my own PC (on the same network as the self-hosted runners) the github API returns unprocessable (http 422). \n\nThis has always worked just fine in the past but since we have moved from GH-hosted to self-hosted this has been giving us trouble. Up until about last week I thought this might be a network-related issue, but we have since gotten a new (way faster) connection and we experience no other networking issues.\n\nOur ghTokenWorkflow secret is stored in Azure, but this connection seems to be fine, and the secret value is retrieved and masked.\n\nAttaching two log downloads, one for a failed self-hosted PR build, and one for a cancelled GH-hosted PR build where the download dependencies succeeded.\n\n### Expected behavior\n\nAuthentication should keep working... right?\n\n### Steps to reproduce\n\n1. PTE repo with probing paths setup to another AL-Go repo for an AppSource app\n2. Setup authentication to GH through a GH-app, with the ghTokenWorkflow secret stored in Azure\n3. Have a successful CI/CD run in the AppSource app repo\n4. Create a PR for the PTE, and run the PR build\n\n### Additional context (logs, screenshots, etc.)\n\n[Self-hosted PR build (failed).zip](https://github.com/user-attachments/files/29082966/Self-hosted.PR.build.failed.zip)\n\n[GH-hosted PR build (cancelled).zip](https://github.com/user-attachments/files/29082980/GH-hosted.PR.build.cancelled.zip)\n\nAlso see #2271 ",
+    "labels": [
+      "bug",
+      "Under Investigation",
+      "Workaround provided"
+    ],
+    "author_association": "NONE"
+  },
+  "expected": {
+    "fix_risk": "critical",
+    "suggested_area": "al-go",
+    "recommended_lane": "needs-human-fix",
+    "issue_kind": "BUG",
+    "has_missing_information": false,
+    "area_confidence": "HIGH"
+  },
+  "notes": "Looks environmental - it only reproduces on self-hosted runners - so the tempting answer is user-config. It is actually AL-Go token handling that does not tolerate runner clock drift. Because a fix touches authentication, the risk tier is critical regardless of how small the change is."
+}

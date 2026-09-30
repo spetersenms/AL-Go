@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/AL-Go/Tests/Repro/repro-manifest.schema.json",
+  "title": "AL-Go action repro manifest",
+  "description": "Describes a single isolated invocation of an AL-Go action, reconstructed from a bug report. Produced by the issue-triage agent or written by hand, and consumed by Tests/Repro/Invoke-ActionRepro.ps1.",
+  "type": "object",
+  "required": [ "action" ],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "Name of the action folder under Actions/, for example 'CalculateArtifactNames'. Must be a plain folder name with no path separators.",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Parameters passed to the action script. AL-Go action parameters are always String, Int32 or Boolean.",
+      "additionalProperties": {
+        "type": [ "string", "integer", "boolean" ]
+      }
+    },
+    "script": {
+      "type": "string",
+      "description": "Optional entry script file name within the action folder. Only needed when the action has several candidate scripts and none is named <action>.ps1 or <action>.Action.ps1.",
+      "pattern": "^[A-Za-z0-9._-]+\\.ps1$"
+    },
+    "settings": {
+      "type": "object",
+      "description": "AL-Go settings made available to the action as the Settings environment variable (compressed JSON)."
+    },
+    "secrets": {
+      "type": "object",
+      "description": "Placeholder secret values made available as the Secrets environment variable. Use fake values only. Every value is masked in the result.",
+      "additionalProperties": { "type": "string" }
+    },
+    "env": {
+      "type": "object",
+      "description": "Additional environment variables, typically GITHUB_* values such as GITHUB_REF_NAME or GITHUB_EVENT_NAME.",
+      "additionalProperties": { "type": "string" }
+    },
+    "files": {
+      "type": "object",
+      "description": "Files to seed into the scratch workspace before the action runs. Keys are workspace-relative paths, values are file contents.",
+      "additionalProperties": { "type": "string" }
+    },
+    "issue": {
+      "type": [ "integer", "string" ],
+      "description": "Issue number this repro was reconstructed from, for traceability."
+    },
+    "reported": {
+      "type": "string",
+      "description": "The behaviour the reporter observed, in their words."
+    },
+    "expected": {
+      "type": "string",
+      "description": "The behaviour the reporter expected."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Any assumptions made while reconstructing the manifest, especially values that were guessed rather than stated in the issue."
+    }
+  }
+}

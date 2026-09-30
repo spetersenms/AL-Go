@@ -1,0 +1,22 @@
+{
+  "id": "seed-deployment-no-information",
+  "source": "",
+  "issue": {
+    "number": 9004,
+    "title": "[Bug]: Something is broken with the deployment",
+    "body": "### AL-Go version\n\npreview\n\n### Describe the issue\n\nSomething is broken with the deployment\n\n### Expected behavior\n\nI expect it to work. I didn't change anything.\n\n### Steps to reproduce\n\n_No response_\n\n### Additional context (logs, screenshots, etc.)\n\n_No response_",
+    "labels": [ "bug" ]
+  },
+  "expected": {
+    "issue_kind": "BUG",
+    "suggested_area": "unknown",
+    "area_confidence": "LOW",
+    "has_missing_information": true,
+    "troubleshooting_requirement": "REQUIRED",
+    "reproduction_quality": "INSUFFICIENT",
+    "repro_outcome": "COULD_NOT_CONSTRUCT",
+    "fix_risk": "unknown",
+    "recommended_lane": "needs-information"
+  },
+  "notes": "The minimum-information case. Correct behaviour is a short, specific, friendly request naming exactly what is needed - the failing run URL or Troubleshooting output, and the settings JSON - with the secret-redaction reminder. Scores tone as much as classification: 'deployment' must not be over-read into an area, and the reporter must not be blamed. Deploy is a medium-risk action but no code has been implicated, so fix_risk stays unknown."
+}

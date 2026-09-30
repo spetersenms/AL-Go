@@ -1,0 +1,26 @@
+{
+  "$comment": "Labels the triage agent may apply. These are AL-Go's EXISTING labels, reused deliberately rather than replaced with a parallel taxonomy - the repo already has a triage vocabulary that maintainers and reporters understand. Colour and description match what is on the repository today, so Sync-TriageLabels.ps1 reports them unchanged rather than overwriting them. That script only creates anything when passed -Create.",
+
+  "labels": [
+    {
+      "name": "Unrelated to AL-Go",
+      "color": "176AD5",
+      "description": "This issue is unrelated to AL-Go",
+      "usedFor": "recommended_lane = route-to-other-component. The comment names which component; the label just flags it."
+    },
+    {
+      "name": "Need more info",
+      "color": "c2e0c6",
+      "description": "Please add more info about how to repro the problem",
+      "usedFor": "recommended_lane = needs-information."
+    }
+  ],
+
+  "$notApplied": {
+    "$comment": "Deliberately NOT turned into labels. The information still reaches maintainers through the comment and the findings artifact.",
+    "fix_risk": "Publishing 'this touches critical shared code' on a public issue is an unnecessary signal to anyone looking for a soft spot. Risk belongs in the artifact and in notes_for_maintainer.",
+    "area": "'Unrelated to AL-Go' plus a comment naming the component conveys the same thing without adding six labels to a repo that already has a working vocabulary.",
+    "Cannot repro": "Too strong a claim for an automated first pass. A failed automated reproduction is not the same as maintainers being unable to reproduce, and conflating them would mislead.",
+    "maintainer workflow state": "Fix Ready, In Preview, Shipped, accepted, In Progress and Under Investigation track maintainer workflow. Only a human should set them."
+  }
+}

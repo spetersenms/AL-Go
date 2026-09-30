@@ -1,0 +1,22 @@
+{
+  "id": "seed-reference-docs-no-detail",
+  "source": "",
+  "issue": {
+    "number": 9002,
+    "title": "[Bug]: Deploy Reference documentation is not working",
+    "body": "### AL-Go version\n\npreview\n\n### Describe the issue\n\nDeploy Reference documentation is not working. It worked yesterday but now it doesn't.\n\n### Expected behavior\n\nIt works\n\n### Steps to reproduce\n\nGenerate reference documentation\n\n### Additional context (logs, screenshots, etc.)\n\n_No response_",
+    "labels": [ "bug" ]
+  },
+  "expected": {
+    "issue_kind": "BUG",
+    "suggested_area": "unknown",
+    "area_confidence": "LOW",
+    "has_missing_information": true,
+    "troubleshooting_requirement": "REQUIRED",
+    "reproduction_quality": "INSUFFICIENT",
+    "repro_outcome": "COULD_NOT_CONSTRUCT",
+    "fix_risk": "unknown",
+    "recommended_lane": "needs-information"
+  },
+  "notes": "Every template field is filled in, yet nothing actionable is present. Scores whether the agent judges completeness by usable evidence rather than by field presence. 'preview' plus 'it worked yesterday' should prompt asking which template commit is pinned. Also checks the agent resists guessing an area from the title and does not claim fix_risk low for unidentified code."
+}

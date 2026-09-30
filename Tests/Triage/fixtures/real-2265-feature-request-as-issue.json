@@ -1,0 +1,16 @@
+{
+  "id": "real-2265-feature-request-as-issue",
+  "source": "https://github.com/microsoft/AL-Go/issues/2265",
+  "issue": {
+    "number": 2265,
+    "title": "move the BuildInitialize hook to after determine build project",
+    "body": "### ❔What, Why & How\r\n\r\nI would very much like to use the new BuildInitialize hook with my Fkh integration to AL-Go, but I need to know whether the project is going to be build or not:-)\r\n",
+    "labels": [],
+    "author_association": "CONTRIBUTOR"
+  },
+  "expected": {
+    "recommended_lane": "redirect-to-discussions",
+    "issue_kind": "FEATURE_REQUEST"
+  },
+  "notes": "Filed as an issue but it is a feature request, with no bug template and no logs. Scores whether the agent redirects to Discussions rather than demanding template fields. Only issue_kind and lane are asserted: area and risk are not meaningful for a feature request."
+}

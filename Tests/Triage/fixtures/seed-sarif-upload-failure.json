@@ -1,0 +1,21 @@
+{
+  "id": "seed-sarif-upload-failure",
+  "source": "",
+  "issue": {
+    "number": 9001,
+    "title": "[Bug]: trackALAlertsInGitHub fails on the upload sarif file step",
+    "body": "### AL-Go version\n\npreview\n\n### Describe the issue\n\ntrackALAlertsInGitHub is failing on the upload sarif file step:\nhttps://github.com/microsoft/MyApps/actions/runs/181080738481\n\n### Expected behavior\n\nIt should upload the sarif file and display the warnings on the PR\n\n### Steps to reproduce\n\n- Enable trackALAlertsInGitHub\n- Run a CI/CD\n- Open a Pull Request that introduces a new warning\n\n### Additional context (logs, screenshots, etc.)\n```\n  ##[debug]response status: 202\n  Successfully uploaded results\n  ::endgroup::\n::group::Waiting for processing to finish\nWaiting for processing to finish\n  Analysis upload status is failed.\n  ::endgroup::\nError: Code Scanning could not process the submitted SARIF file:\nSARIF URI scheme \"c\" did not match the checkout URI scheme \"file\"\n```",
+    "labels": [ "bug" ]
+  },
+  "expected": {
+    "issue_kind": "BUG",
+    "suggested_area": "al-go",
+    "area_confidence": "HIGH",
+    "has_missing_information": false,
+    "troubleshooting_requirement": "NOT_APPLICABLE",
+    "reproduction_quality": "SUFFICIENT",
+    "fix_risk": "medium",
+    "recommended_lane": "ready-for-maintainer"
+  },
+  "notes": "Complete report with a decisive error message. The SARIF URI scheme mismatch is a path-handling defect in AL-Go's own code analysis log processing (ProcessALCodeAnalysisLogs), which is why the area is al-go with HIGH confidence. Scores whether the agent recognises that a Windows drive-letter path leaked into a file: URI. Medium risk: on the CI path but not in shared or template code. Also checks the agent does not ask for logs when logs are already present."
+}

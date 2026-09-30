@@ -1,0 +1,19 @@
+{
+  "id": "seed-al-compiler-null-reference",
+  "source": "",
+  "issue": {
+    "number": 9003,
+    "title": "[Bug]: Build fails with Object reference not set when compiling table extensions",
+    "body": "### AL-Go version\n\nv6.2\n\n### Describe the issue\n\nThe CI/CD pipeline fails during the build step with error \"Object reference not set to an instance of an object\" when trying to compile AL code that contains table extensions. This happens consistently across multiple repositories.\n\n### Expected behavior\n\nThe build should complete successfully and generate the app file without any compilation errors.\n\n### Steps to reproduce\n\n1. Create a new AL project with AL-Go templates\n2. Add a table extension to an existing table (e.g. Customer table)\n3. Commit changes to trigger CI/CD pipeline\n4. Pipeline fails during build step\n\n### Additional context (logs, screenshots, etc.)\n\nBuild log shows:\n```\nError AL0001: Object reference not set to an instance of an object\n  at Microsoft.Dynamics.Nav.CodeAnalysis.Compilation.GetDiagnostics()\n```\nScreenshot attached showing the full error in GitHub Actions.",
+    "labels": [ "bug" ]
+  },
+  "expected": {
+    "issue_kind": "BUG",
+    "suggested_area": "bc-platform",
+    "area_confidence": "HIGH",
+    "has_missing_information": false,
+    "reproduction_quality": "SUFFICIENT",
+    "recommended_lane": "route-to-other-component"
+  },
+  "notes": "The key routing case. The report is complete and well written, and it fails inside an AL-Go pipeline, so a naive triager marks it 'al-go, ready for maintainer'. The AL0001 code and the Microsoft.Dynamics.Nav.CodeAnalysis stack frame place it in the AL compiler, downstream of the Run-AlPipeline handoff. Correct outcome is to route it out, not to work it. fix_risk is deliberately not asserted because no AL-Go code is implicated - expect unknown."
+}

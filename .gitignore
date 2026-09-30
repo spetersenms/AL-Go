@@ -2,3 +2,6 @@ Thumbs.db
 ~$*
 Actions/.out
 Actions/obj
+
+# Local output from the issue triage agent (comment.md, findings.json, prompt.txt, usage.json)
+triage-output/

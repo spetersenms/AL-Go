@@ -1,0 +1,25 @@
+{
+  "id": "real-2211-release-test-apps-only",
+  "source": "https://github.com/microsoft/AL-Go/issues/2211",
+  "issue": {
+    "number": 2211,
+    "title": "[Bug]: Cant create a release if project does contain test app only",
+    "body": "### AL-Go version\n\n9.0\n\n### Describe the issue\n\nThe release workflow encounters an error if a project contains only a test app and no other apps.\n\nDetermining Artifacts for release\n```\nGet settings from env\nprojects:\n- ExtendedTests\n- Main\nRepo Artifacts count: 14\nDownloaded Artifacts count: 14\nAnalyzing artifacts for project ExtendedTests\nGrab latest\nEnabling Microsoft telemetry...\nError: Unexpected error when running action. Error Message: No artifacts found for this project, StackTrace: at <ScriptBlock>, D:\\a\\_actions\\microsoft\\AL-Go-Actions\\v9.0\\DetermineArtifactsForRelease\\DetermineArtifactsForRelease.ps1: line 67 <- at <ScriptBlock>, D:\\a\\_actions\\microsoft\\AL-Go-Actions\\v9.0\\DetermineArtifactsForRelease\\DetermineArtifactsForRelease.ps1: line 43 <- at <ScriptBlock>, D:\\a\\_temp\\48804e17-52ac-4f89-8db9-2ce878905866.ps1: line 3 <- at <ScriptBlock>, D:\\a\\_actions\\microsoft\\AL-Go-Actions\\v9.0\\Invoke-AlGoAction.ps1: line 21 <- at <ScriptBlock>, D:\\a\\_temp\\48804e17-52ac-4f89-8db9-2ce878905866.ps1: line 2 <- at <ScriptBlock>, <No file>: line 1\nError: Process completed with exit code 1.\n```\n\n### Expected behavior\n\nRelease should be possible with test only projects\n\n### Steps to reproduce\n\n1. Create a new PTE Repo.\n1. Create App in Project A\n1. Create TestApp in Project A\n1. Create TestApp in Project B\n1. Wait for CI\n1. Create Release\n\n### Additional context (logs, screenshots, etc.)\n\nSimplified Repo: https://github.com/ChrisBlankDe/ALGoOnlyTestAppInProject\n\nLogs: [logs_64541666874.zip](https://github.com/user-attachments/files/26707108/logs_64541666874.zip)",
+    "labels": [
+      "bug",
+      "Fix Ready",
+      "Shipped"
+    ],
+    "author_association": "CONTRIBUTOR"
+  },
+  "expected": {
+    "fix_risk": "medium",
+    "suggested_area": "al-go",
+    "recommended_lane": "ready-for-maintainer",
+    "reproduction_quality": "SUFFICIENT",
+    "issue_kind": "BUG",
+    "has_missing_information": false,
+    "area_confidence": "HIGH"
+  },
+  "notes": "A clean, well specified AL-Go bug in DetermineArtifactsForRelease with the failing log inline. Good Tier 1 reproduction candidate: the action is classified needs-api, so a manifest can drive it directly. Scores the straightforward path, including staying quiet rather than asking for information already present."
+}

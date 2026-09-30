@@ -1,0 +1,24 @@
+{
+  "id": "real-1767-bch-container-server-instance",
+  "source": "https://github.com/microsoft/AL-Go/issues/1767",
+  "issue": {
+    "number": 1767,
+    "title": "[Bug]: cloudDevEnv.ps1 - Unable to locate the server instance: MicrosoftDynamicsNavServer$BC",
+    "body": "### AL-Go version\n\npreview\n\n### Describe the issue\n\nWhen running the cloudDevEnv.ps1 script, I receive this error:\n```log\nError: Unable to locate the server instance: MicrosoftDynamicsNavServer$BC\n```\n\n### Expected behavior\n\nI expect the script to find my server instance\n\n### Steps to reproduce\n\n1. Run cloudDevEnv.ps1 in VSCode\n2. Select Reuse existing environment (not the default option)\n3. Wait until after Container is creatd (`Creating Container took 107 seconds`)\n\n\n### Additional context (logs, screenshots, etc.)\n\n```log\nReady for connections!\nReading CustomSettings.config from bcServerFilesOnly\nCleanup old dotnet core assemblies\n\nCreating Container took 107 seconds\nUnable to locate the server instance: MicrosoftDynamicsNavServer$BC\n\nContainer Free Physical Memory: 9.7Gb\nDisk C: Free 124Gb from 127Gb\n\nServices in container bcServerFilesOnly:\nPublish-BcContainerApp Telemetry Correlation Id: db884766-95a4-4467-ae47-c6cd2ce015d6\nRemoving container\nRemoving Session bcServerFilesOnly\nRemoving container bcServerFilesOnly\nRemoving entries from hosts\nRemoving bcServerFilesOnly from container hosts file\nRemoving bcServerFilesOnly-* from container hosts file\nRemoving Desktop shortcuts\nRemoving C:\\ProgramData\\BcContainerHelper\\Extensions\\bcServerFilesOnly\nRun-AlPipeline Telemetry Correlation Id: ef192ab9-7e9d-413f-a3b5-873f9c1ff5d7\nError: Unable to locate the server instance: MicrosoftDynamicsNavServer$BC\nStacktrace: at Invoke-ScriptInBcContainer, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\ContainerHandling\\Invoke-ScriptInNavContainer.ps1: line 307\nat Get-BcContainerAppInfo, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Get-NavContainerAppInfo.ps1: line 76\nat Publish-BcContainerApp, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Publish-NavContainerApp.ps1: line 131\nat <ScriptBlock>, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Run-AlPipeline.ps1: line 1188\nat <ScriptBlock>, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Run-AlPipeline.ps1: line 1463\nat <ScriptBlock>, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Run-AlPipeline.ps1: line 1389\nat <ScriptBlock>, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Run-AlPipeline.ps1: line 1281\nat Run-AlPipeline, C:\\ProgramData\\BcContainerHelper\\6.1.7-preview1335\\BcContainerHelper\\AppHandling\\Run-AlPipeline.ps1: line 1266\nat CreateDevEnv, C:\\Users\\Job.Louage\\AppData\\Local\\Temp\\e01359bb-0385-4397-961c-cb42c061ae5e\\AL-Go-Helper.ps1: line 2053\nat <ScriptBlock>, C:\\Users\\Job.Louage\\AL\\9altitudes\\PTE-BC-9altitudes\\.AL-Go\\cloudDevEnv.ps1: line 86\nat <ScriptBlock>, <No file>: line 1\n```\n\n",
+    "labels": [
+      "bug",
+      "Workaround provided",
+      "stale"
+    ],
+    "author_association": "NONE"
+  },
+  "expected": {
+    "has_missing_information": false,
+    "suggested_area": "bccontainerhelper",
+    "area_confidence": "MEDIUM",
+    "recommended_lane": "route-to-other-component",
+    "issue_kind": "BUG",
+    "reproduction_quality": "SUFFICIENT"
+  },
+  "notes": "The hardest routing shape in the corpus: the entry point is cloudDevEnv.ps1, which AL-Go ships, but the error appears after container creation and comes from BcContainerHelper container handling. Correct answer is bccontainerhelper, and deliberately at MEDIUM rather than HIGH confidence, because an AL-Go script started the sequence and could in principle have passed bad input. Scores calibration, not just classification."
+}

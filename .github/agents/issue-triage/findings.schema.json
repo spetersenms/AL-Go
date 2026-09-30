@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/microsoft/AL-Go/.github/agents/issue-triage/findings.schema.json",
+  "title": "AL-Go issue triage findings",
+  "description": "The typed contract the triage agent fills in. The agent never writes prose directly to an issue: it produces this object, and a separate privileged job renders it into a comment and labels. Validating against this schema at the publish boundary is what makes output-side prompt injection ineffective, so every field is constrained and additionalProperties is false.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "issue_number",
+    "issue_kind",
+    "summary",
+    "suggested_area",
+    "area_confidence",
+    "area_evidence",
+    "traced_locations",
+    "has_missing_information",
+    "missing_information",
+    "troubleshooting_requirement",
+    "reproduction_quality",
+    "repro_outcome",
+    "duplicate_candidates",
+    "fix_risk",
+    "fix_risk_reason",
+    "recommended_lane"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Version of this contract. The publish job rejects anything it does not recognise."
+    },
+    "issue_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The issue this triage applies to. The publish job must verify this matches the triggering issue and refuse to post anywhere else."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "One or two sentences describing the reported problem, in the agent's own words."
+    },
+    "issue_kind": {
+      "enum": [ "BUG", "QUESTION", "FEATURE_REQUEST", "OTHER" ],
+      "description": "BUG when the report follows the bug template and describes a defect. Questions and feature requests belong in Discussions and should be redirected."
+    },
+    "suggested_area": {
+      "enum": [ "al-go", "bccontainerhelper", "bc-platform", "bc-saas", "github", "user-config", "unknown" ],
+      "description": "Which component most likely owns the problem. See skills/routing.md for the signature table."
+    },
+    "area_confidence": {
+      "enum": [ "HIGH", "MEDIUM", "LOW" ],
+      "description": "HIGH only when a concrete signal was found, such as a stack frame in a named file. Absence of evidence is LOW, never HIGH."
+    },
+    "area_evidence": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "The specific signal that drove the routing decision: the failing script and line, or the BcContainerHelper cmdlet in the stack. Required, because a routing decision a maintainer cannot check is worth very little. Write 'No concrete signal found' if there genuinely is none - and then area_confidence must be LOW."
+    },
+    "traced_locations": {
+      "type": "array",
+      "maxItems": 10,
+      "description": "Source locations found by actually searching the repository, not guessed. An empty array is allowed only with area_confidence LOW: HIGH confidence or a non-unknown fix_risk without any traced location is rejected at publish, because guessing which file is at fault is the single most misleading thing this agent can do.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "file", "line", "why" ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "Repository-relative path, for example Actions/Github-Helper.psm1."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Line number. Required: `git grep -n` gives this for free, and 'somewhere in this file' wastes the reader's time. If you cannot name a line, you have not traced it."
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "The actual line or few lines of code, quoted verbatim - not paraphrased. A maintainer should be able to confirm the diagnosis without opening the file."
+          },
+          "why": {
+            "type": "string",
+            "maxLength": 400,
+            "description": "What this location has to do with the reported symptom, specifically. 'Handles the artifact logic' is useless; 'throws when no release matches, with no fallback to latest' is useful."
+          }
+        }
+      }
+    },
+    "has_missing_information": {
+      "type": "boolean",
+      "description": "Whether information genuinely needed to investigate is absent. Not simply whether a template field was left blank."
+    },
+    "missing_information": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "A concise sentence naming only the important missing items, or 'None'."
+    },
+    "linked_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The workflow run the reporter linked, if any. Most reporters' repositories are private, so an unreadable run is the common case and is not the reporter's fault.",
+      "properties": {
+        "url": { "type": "string", "maxLength": 500 },
+        "accessible": { "type": "boolean" },
+        "conclusion": { "type": "string", "maxLength": 60 }
+      }
+    },
+    "troubleshooting_requirement": {
+      "enum": [ "REQUIRED", "RECOMMENDED", "OPTIONAL", "NOT_APPLICABLE" ],
+      "description": "Whether the reporter should run the Troubleshooting workflow. REQUIRED when no usable logs exist and the symptom cannot be traced statically."
+    },
+    "algo_version": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "The AL-Go version as stated by the reporter, normalized, or 'Not provided'."
+    },
+    "fixed_in_release": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "If the symptom matches a RELEASENOTES.md entry newer than the reporter's version, the release that fixed it. Empty otherwise."
+    },
+    "reproduction_quality": {
+      "enum": [ "SUFFICIENT", "INSUFFICIENT", "NOT_APPLICABLE" ],
+      "description": "Whether the reported steps are enough to investigate."
+    },
+    "repro_outcome": {
+      "enum": [ "REPRODUCED", "NOT_REPRODUCED", "NOT_ATTEMPTED", "COULD_NOT_CONSTRUCT" ],
+      "description": "Result of the Tier 1 action-script repro. COULD_NOT_CONSTRUCT is an expected, common and honest outcome - most notably for actions classified 'unsafe' in the repro policy - and must not be presented to the reporter as a dismissal."
+    },
+    "repro_manifest": {
+      "type": "object",
+      "description": "The repro manifest that was run, conforming to Tests/Repro/repro-manifest.schema.json. Present only when repro_outcome is REPRODUCED or NOT_REPRODUCED."
+    },
+    "duplicate_candidates": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "Up to five possible duplicates, most likely first. Empty when none found.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "number", "reason", "confidence" ],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string", "maxLength": 300 },
+          "confidence": { "enum": [ "HIGH", "MEDIUM", "LOW" ] }
+        }
+      }
+    },
+    "fix_risk": {
+      "enum": [ "low", "medium", "critical", "unknown" ],
+      "description": "Blast radius of a likely fix, from skills/risk-tiers.md. Use 'unknown' when the affected code could not be identified - never guess 'low'."
+    },
+    "fix_risk_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "Why that risk level, naming the files or areas a fix would touch."
+    },
+    "recommended_lane": {
+      "enum": [
+        "needs-information",
+        "redirect-to-discussions",
+        "route-to-other-component",
+        "already-fixed-upgrade",
+        "possible-duplicate",
+        "ready-for-maintainer",
+        "needs-human-fix"
+      ],
+      "description": "What should happen next. 'needs-human-fix' is required whenever fix_risk is critical."
+    },
+    "suggested_labels": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "Labels to apply. The publish job intersects this with its own allow-list, so anything unexpected here is silently dropped rather than trusted.",
+      "items": { "type": "string", "maxLength": 60 }
+    },
+    "notes_for_maintainer": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Detail useful to a maintainer but not posted to the issue, such as the traced code path or assumptions made while reconstructing the repro."
+    }
+  }
+}

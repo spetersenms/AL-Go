@@ -1,0 +1,27 @@
+{
+  "id": "real-2285-settings-schema-null",
+  "source": "https://github.com/microsoft/AL-Go/issues/2285",
+  "issue": {
+    "number": 2285,
+    "title": "[Bug]: Settings broken (\"*\":  null) after Update Al-Go System Files",
+    "body": "### AL-Go version\n\n9.0\n\n### Describe the issue\n\nWhen the project definition just contains the schema link and Update AL-Go System Files is executed the resulting settings contains an unknowen element which breaks the other pipelines.\nbroken settings:\n\n```json\n{\n    \"$schema\":  \"https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.0/.Modules/settings.schema.json\",\n    \"*\":  null\n}\n```\n\n### Expected behavior\n\nsettings should be valid after update al-go settings file\n\n### Steps to reproduce\n\ncreate a project with empty settings file (just \"$schema\").\nupdate al-go system files from an template which also adds no setting.\n\n### Additional context (logs, screenshots, etc.)\n\nsource of behaviour ist this line: https://github.com/microsoft/AL-Go/blob/17d656a4fde5f320c4496f80198ce5269f0e296e/Actions/CheckForUpdates/CheckForUpdates.HelperFunctions.ps1#L730\n\nSample Code to validate:\n```powershell\n'{ \"$schema\": \"https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.0/.Modules/settings.schema.json\"}' | convertfrom-json | Select-Object @{ Name = '$schema'; Expression = { $_.'$schema' } }, * -ExcludeProperty '$schema' | convertto-json\n```\nResult in pwsh:\n```\n{\n  \"$schema\": \"https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.0/.Modules/settings.schema.json\"\n}\n```\nResult in windows powershell:\n```\n{\n    \"$schema\":  \"https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.0/.Modules/settings.schema.json\",\n    \"*\":  null\n}\n```\n\n",
+    "labels": [
+      "bug",
+      "Fix Ready",
+      "In Preview",
+      "Shipped"
+    ],
+    "author_association": "CONTRIBUTOR"
+  },
+  "expected": {
+    "reproduction_quality": "SUFFICIENT",
+    "has_missing_information": false,
+    "fix_risk": "critical",
+    "recommended_lane": "needs-human-fix",
+    "area_confidence": "HIGH",
+    "troubleshooting_requirement": "NOT_APPLICABLE",
+    "issue_kind": "BUG",
+    "suggested_area": "al-go"
+  },
+  "notes": "CheckForUpdates rewrites consumers workflow and settings files, so it sits in the critical tier: a bug here can break everyone ability to update, including the ability to ship the fix. The report itself is complete and the broken JSON is pasted inline, so a naive triager marks it ready-for-maintainer and medium risk. Correct outcome is critical plus needs-human-fix."
+}
