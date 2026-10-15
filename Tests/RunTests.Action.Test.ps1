@@ -41,6 +41,8 @@ Describe "RunTests Action Tests" {
     BeforeEach {
         $script:previousContainerCredential = $ENV:containerCredential
         $script:previousContainerName = $ENV:containerName
+        $script:previousContainerPlatformVersion = $ENV:containerPlatformVersion
+        $script:previousContainerPlatformVersionReason = $ENV:containerPlatformVersionReason
         $script:previousRunTestsToken = $ENV:_token
         $script:previousTokenObservationPath = $ENV:_runTestsTokenObservationPath
         $script:previousGitHubWorkspace = $ENV:GITHUB_WORKSPACE
@@ -59,6 +61,18 @@ Describe "RunTests Action Tests" {
         }
         else {
             $ENV:containerName = $script:previousContainerName
+        }
+        if ($null -eq $script:previousContainerPlatformVersion) {
+            Remove-Item Env:\containerPlatformVersion -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:containerPlatformVersion = $script:previousContainerPlatformVersion
+        }
+        if ($null -eq $script:previousContainerPlatformVersionReason) {
+            Remove-Item Env:\containerPlatformVersionReason -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:containerPlatformVersionReason = $script:previousContainerPlatformVersionReason
         }
         if ($null -eq $script:previousRunTestsToken) {
             Remove-Item Env:\_token -ErrorAction SilentlyContinue
@@ -143,6 +157,8 @@ Describe "RunTests Action Tests" {
         $ENV:GITHUB_WORKSPACE = $TestDrive
         $ENV:Settings = '{}'
         $ENV:containerName = 'test-container'
+        $ENV:containerPlatformVersion = '30.0.56026.0'
+        $ENV:containerPlatformVersionReason = ''
         $ENV:_runTestsTokenObservationPath = Join-Path $TestDrive 'observed-token.txt'
         $ENV:containerCredential = [Convert]::ToBase64String(
             [Text.Encoding]::UTF8.GetBytes('{"username":"test-user","password":"test-password"}')
@@ -177,11 +193,16 @@ Describe "RunTests Action Tests" {
         $ENV:GITHUB_WORKSPACE = $TestDrive
         $ENV:Settings = @{
             useSeparateTestAction = @{
-                enabled  = $true
-                testType = 'IntegrationTest'
+                enabled                 = $true
+                testType                = 'IntegrationTest'
+                codeCoverageEnabled     = $true
+                codeCoverageMode        = 'line'
+                codeCoverageFormats     = @('bc-json')
             }
         } | ConvertTo-Json -Depth 4
         $ENV:containerName = 'test-container'
+        $ENV:containerPlatformVersion = '30.0.56026.0'
+        $ENV:containerPlatformVersionReason = ''
         $ENV:containerCredential = [Convert]::ToBase64String(
             [Text.Encoding]::UTF8.GetBytes('{"username":"test-user","password":"test-password"}')
         )
@@ -194,6 +215,9 @@ Describe "RunTests Action Tests" {
             $settings.useSeparateTestAction | Should -BeOfType System.Collections.Hashtable
             $settings.useSeparateTestAction.enabled | Should -BeTrue
             $settings.useSeparateTestAction.testType | Should -Be 'IntegrationTest'
+            $settings.useSeparateTestAction.codeCoverageEnabled | Should -BeTrue
+            $settings.useSeparateTestAction.codeCoverageMode | Should -Be 'line'
+            $settings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json')
             return @{ testFolders = @() }
         }
         Mock Get-ScriptOverrides { return @{} }
@@ -204,7 +228,9 @@ Describe "RunTests Action Tests" {
         Should -Invoke AnalyzeRepo -Times 1 -Exactly
         Should -Invoke GetAlToolPath -Times 0 -Exactly
         Should -Invoke Invoke-AlGoTestRun -Times 1 -Exactly -ParameterFilter {
-            $getAlToolPath -is [scriptblock]
+            $getAlToolPath -is [scriptblock] -and
+            $containerPlatformVersion -eq '30.0.56026.0' -and
+            $containerPlatformVersionReason -eq ''
         }
     }
 

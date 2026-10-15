@@ -237,6 +237,7 @@
 
             $script:expectedToolDirectory = Get-AlToolInstallDirectory
             $script:expectedAlToolPath = Join-Path $script:expectedToolDirectory (Get-AlToolExecutableName)
+            $script:expectedAlToolVersion = '99.1.2-preview'
             if (Test-Path -LiteralPath $script:expectedToolDirectory) {
                 Remove-Item -LiteralPath $script:expectedToolDirectory -Recurse -Force
             }
@@ -245,9 +246,9 @@
 
             Mock Invoke-AlNativeCommand {
                 return [PSCustomObject]@{
-                    StandardOutput = [string[]]@('1.2.3')
+                    StandardOutput = [string[]]@($script:expectedAlToolVersion)
                     StandardError  = [string[]]@()
-                    Output         = [string[]]@('1.2.3')
+                    Output         = [string[]]@($script:expectedAlToolVersion)
                     ExitCode       = [int] 0
                 }
             }
@@ -307,7 +308,30 @@
             }
         }
 
-        It 'Installs the prerelease tool into the deterministic job directory only once' {
+        It 'Accepts any version reported by a valid persisted AlTool executable' {
+            $env:AlToolPath = $script:fakeAlToolPath
+            New-TestAlToolExecutable -Path $script:expectedAlToolPath | Out-Null
+            Mock Invoke-AlNativeCommand {
+                return [PSCustomObject]@{
+                    StandardOutput = [string[]]@('29.0.0-beta')
+                    StandardError  = [string[]]@()
+                    Output         = [string[]]@('29.0.0-beta')
+                    ExitCode       = [int] 0
+                }
+            }
+
+            GetAlToolPath | Should -Be $script:fakeAlToolPath
+
+            $env:AlToolPath | Should -Be $script:fakeAlToolPath
+            Should -Invoke Invoke-AlNativeCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -eq $script:fakeAlToolPath -and $ArgumentList[0] -eq '--version'
+            }
+            Should -Invoke Invoke-AlNativeCommand -Times 0 -Exactly -ParameterFilter {
+                $FilePath -eq 'dotnet'
+            }
+        }
+
+        It 'Installs the latest prerelease tool into the deterministic job directory only once' {
             $pathBefore = $env:PATH
             Mock Get-Command { throw 'Global AlTool discovery must not run.' } -ParameterFilter { $Name -eq 'al' }
             Mock New-Object { throw 'An installation mutex must not be created.' } -ParameterFilter {
@@ -324,9 +348,9 @@
                     }
                 }
                 return [PSCustomObject]@{
-                    StandardOutput = [string[]]@('1.2.3')
+                    StandardOutput = [string[]]@($script:expectedAlToolVersion)
                     StandardError  = [string[]]@()
-                    Output         = [string[]]@('1.2.3')
+                    Output         = [string[]]@($script:expectedAlToolVersion)
                     ExitCode       = [int] 0
                 }
             }
@@ -432,9 +456,9 @@
                     }
                 }
                 return [PSCustomObject]@{
-                    StandardOutput = [string[]]@('1.2.3')
+                    StandardOutput = [string[]]@($script:expectedAlToolVersion)
                     StandardError  = [string[]]@()
-                    Output         = [string[]]@('1.2.3')
+                    Output         = [string[]]@($script:expectedAlToolVersion)
                     ExitCode       = [int] 0
                 }
             }
@@ -475,7 +499,7 @@
                 Should -Throw "*expected executable '$script:expectedAlToolPath' does not exist*"
         }
 
-        It 'Reports AlTool version failure explicitly' {
+        It 'Surfaces installation failure after rejecting a stale job-scoped executable' {
             New-TestAlToolExecutable -Path $script:expectedAlToolPath | Out-Null
             Mock Invoke-AlNativeCommand {
                 return [PSCustomObject]@{
@@ -487,7 +511,7 @@
             }
 
             { GetAlToolPath } |
-                Should -Throw "*'al --version'*exited with code 11*version stderr*"
+                Should -Throw "*dotnet tool install exited with code 11*version stderr*"
         }
     }
 

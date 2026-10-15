@@ -586,10 +586,11 @@ function Get-AlToolExecutableName {
 
 <#
 .SYNOPSIS
-    Resolves the AlTool executable, installing the prerelease dotnet tool when needed.
+    Resolves the latest prerelease AlTool executable, installing it when needed.
 .DESCRIPTION
-    Reuses a valid path from AlToolPath or the deterministic job-scoped tool directory. Otherwise,
-    installs the prerelease package into that directory with dotnet tool install --tool-path.
+    Reuses a path from AlToolPath or the deterministic job-scoped tool directory when it can report
+    its version. Otherwise, installs the latest prerelease package into that directory with
+    dotnet tool install --prerelease --tool-path.
     Newly resolved paths are stored in the current process and GITHUB_ENV for later action steps.
 .OUTPUTS
     [string] The full path to the AlTool executable.
@@ -597,7 +598,12 @@ function Get-AlToolExecutableName {
 function GetAlToolPath {
     if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath) -and
         (Test-Path -LiteralPath $env:AlToolPath -PathType Leaf)) {
-        return Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($env:AlToolPath))
+        try {
+            return Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($env:AlToolPath))
+        }
+        catch {
+            Write-Host "::Warning::Ignoring the persisted AlToolPath because executable validation failed. $($_.Exception.Message)"
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath)) {
@@ -606,14 +612,25 @@ function GetAlToolPath {
 
     $toolDirectory = Get-AlToolInstallDirectory
     $alToolPath = Join-Path $toolDirectory (Get-AlToolExecutableName)
-    if (-not (Test-Path -LiteralPath $alToolPath -PathType Leaf)) {
+    $installRequired = $true
+    if (Test-Path -LiteralPath $alToolPath -PathType Leaf) {
+        try {
+            $alToolPath = Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath))
+            $installRequired = $false
+        }
+        catch {
+            Write-Host "::Warning::Replacing the job-scoped AlTool installation because executable validation failed. $($_.Exception.Message)"
+        }
+    }
+
+    if ($installRequired) {
         if (Test-Path -LiteralPath $toolDirectory) {
-            Write-Host "Removing incomplete AlTool installation from '$toolDirectory'."
+            Write-Host "Removing incomplete or stale AlTool installation from '$toolDirectory'."
             Remove-Item -LiteralPath $toolDirectory -Recurse -Force
         }
         New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
 
-        Write-Host "Installing '$alToolPackageId' (prerelease) into '$toolDirectory'..."
+        Write-Host "Installing latest prerelease '$alToolPackageId' into '$toolDirectory'..."
         $installResult = Invoke-AlNativeCommand -FilePath "dotnet" -ArgumentList @(
             "tool", "install", $alToolPackageId, "--prerelease", "--tool-path", $toolDirectory
         )
@@ -627,7 +644,9 @@ function GetAlToolPath {
         throw "The AlTool installation command completed, but the expected executable '$alToolPath' does not exist."
     }
 
-    $alToolPath = Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath))
+    if ($installRequired) {
+        $alToolPath = Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath))
+    }
 
     $env:AlToolPath = $alToolPath
     if ($env:GITHUB_ENV) {

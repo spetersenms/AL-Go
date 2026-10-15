@@ -14,9 +14,19 @@ By default, AlTool runs enabled normal tests for each app through one batch and 
 
 To use another test runner, add a `RunTestsInBcContainer` override script under the project's `.AL-Go` folder. The override replaces AlTool execution and receives the standard BcContainerHelper test parameters once per test app, including the configured `testType` parameter. Custom overrides may interpret additional values such as `Legacy`.
 
+## Code coverage
+
+Set `useSeparateTestAction.codeCoverageEnabled` to `true` to collect coverage with the built-in AlTool runner. Coverage uses the latest prerelease `Microsoft.Dynamics.BusinessCentral.Development.Tools` package and requires container platform 30.0.56026.0 or later. After RunPipeline creates the container, it hands the actual platform version to RunTests. Missing, malformed, older, or failed version detection produces a warning and tests continue normally without coverage. Once the platform requirement is confirmed, collection or export errors fail the run instead of silently retrying without coverage.
+
+`codeCoverageMode` accepts `procedure`, `line`, or `all` and defaults to `all`. `codeCoverageFormats` accepts `bc-json` and `cobertura` and defaults to both. Existing app and test folders in the current AL-Go project are passed automatically as source roots to improve source mapping. Source roots do not limit coverage scope; shared apps are analyzed in their own project jobs.
+
+Each selected test app writes to `.buildartifacts/CodeCoverage/<app-id>/`, preserving the fixed `coverage.bc.json` and `coverage.cobertura.xml` names without overwriting another app. Before execution, `coverage-status.json` lists every selected app and its output directory. Its per-app state distinguishes complete, incomplete, failed, unsupported, and not-yet-run coverage so a future analyzer can avoid presenting partial aggregate data. Coverage artifacts are retained and uploaded even when tests fail. BC JSON remains the authoritative input for a future analyzer; this preview does not add coverage dashboards, percentages, or aggregation.
+
 ### Known limitations
 
 The built-in AlTool execution path does not run `Legacy` test-type codeunits or tests that require UI or client-callback interaction. Repositories that rely on those should execute their tests through BcContainerHelper by supplying a `RunTestsInBcContainer` override script as described above.
+
+The current live E2E environment does not guarantee container platform 30.0.56026.0 or later. Automated tests therefore cover older and unavailable platform-version handoffs; live coverage collection awaits a deterministic BC30-capable E2E environment.
 
 ## INPUT
 

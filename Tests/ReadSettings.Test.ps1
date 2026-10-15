@@ -286,16 +286,23 @@ InModuleScope ReadSettings { # Allows testing of private functions
             $defaultSettings.useSeparateTestAction | Should -BeOfType System.Collections.Specialized.OrderedDictionary
             $defaultSettings.useSeparateTestAction.enabled | Should -BeFalse
             $defaultSettings.useSeparateTestAction.testType | Should -Be ''
+            $defaultSettings.useSeparateTestAction.codeCoverageEnabled | Should -BeFalse
+            $defaultSettings.useSeparateTestAction.codeCoverageMode | Should -Be 'all'
+            $defaultSettings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json', 'cobertura')
             $defaultSettings.Contains('testType') | Should -BeFalse
 
             $customSettings = [PSCustomObject]@{
                 useSeparateTestAction = [PSCustomObject]@{
-                    testType = 'Legacy'
+                    testType            = 'Legacy'
+                    codeCoverageFormats = @('bc-json')
                 }
             }
             MergeCustomObjectIntoOrderedDictionary -dst $defaultSettings -src $customSettings
             $defaultSettings.useSeparateTestAction.enabled | Should -BeFalse
             $defaultSettings.useSeparateTestAction.testType | Should -Be 'Legacy'
+            $defaultSettings.useSeparateTestAction.codeCoverageEnabled | Should -BeFalse
+            $defaultSettings.useSeparateTestAction.codeCoverageMode | Should -Be 'all'
+            $defaultSettings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json')
         }
 
         It 'Validates only the complex separate test setting shape' -Skip:($PSVersionTable.PSVersion.Major -lt 7) {
@@ -305,6 +312,9 @@ InModuleScope ReadSettings { # Allows testing of private functions
             $settings = GetDefaultSettings
             $settings.useSeparateTestAction.enabled = $true
             $settings.useSeparateTestAction.testType = 'IntegrationTest'
+            $settings.useSeparateTestAction.codeCoverageEnabled = $true
+            $settings.useSeparateTestAction.codeCoverageMode = 'line'
+            $settings.useSeparateTestAction.codeCoverageFormats = @('bc-json')
             Test-Json -json (ConvertTo-Json $settings -Depth 99) -schema $schema | Should -BeTrue
 
             $legacySettings = GetDefaultSettings
@@ -313,6 +323,20 @@ InModuleScope ReadSettings { # Allows testing of private functions
 
             $settings.useSeparateTestAction.Add('unexpected', $true)
             Test-Json -json (ConvertTo-Json $settings -Depth 99) -schema $schema -ErrorAction SilentlyContinue | Should -BeFalse
+
+            foreach ($invalidMode in @('statement', 'ALL')) {
+                $invalidSettings = GetDefaultSettings
+                $invalidSettings.useSeparateTestAction.codeCoverageMode = $invalidMode
+                Test-Json -json (ConvertTo-Json $invalidSettings -Depth 99) -schema $schema -ErrorAction SilentlyContinue |
+                    Should -BeFalse
+            }
+
+            foreach ($invalidFormats in @(@(), @('lcov'), @('bc-json', 'bc-json'))) {
+                $invalidSettings = GetDefaultSettings
+                $invalidSettings.useSeparateTestAction.codeCoverageFormats = $invalidFormats
+                Test-Json -json (ConvertTo-Json $invalidSettings -Depth 99) -schema $schema -ErrorAction SilentlyContinue |
+                    Should -BeFalse
+            }
         }
 
         It 'Default settings match schema' -Skip:($PSVersionTable.PSVersion.Major -lt 7) {

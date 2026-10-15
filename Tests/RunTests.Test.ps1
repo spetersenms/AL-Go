@@ -73,6 +73,15 @@ Describe 'RunTests.psm1 Tests' {
         Mock -ModuleName RunTests Get-BcContainerEventLog { return $script:eventLogSource }
     }
 
+    It 'Associates coverage status by app ID without positional counters' {
+        $moduleText = Get-Content -LiteralPath (
+            Join-Path $PSScriptRoot '../Actions/RunTests/RunTests.psm1'
+        ) -Raw -Encoding UTF8
+
+        $moduleText | Should -Not -Match '\$coverageRunIndex|\$currentCoverageRunIndex'
+        $moduleText | Should -Match '\$coverageRunsByAppId\["\$\(\$testApp\.Id\)"\]'
+    }
+
     Context 'Get-TestAppsToRun' {
         It 'Collects compiled test apps from the build artifacts folder' {
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
@@ -213,11 +222,17 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
-        It 'Selects a compiled app only once when the installed list contains the same path' {
+        It 'Selects an app ID only once when compiled and installed paths differ' {
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
             $compiledAppPath = Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'TestApps') 'App1.Test.app'
+            $installedAppPath = Join-Path $projectPath 'InstalledCopy.app'
+            New-Item -Path $installedAppPath -ItemType File -Force | Out-Null
+            $compiledAppId = "$($script:compiledAppMetadataByPath[[System.IO.Path]::GetFullPath($compiledAppPath)].id)"
+            $script:compiledAppMetadataByPath[[System.IO.Path]::GetFullPath($installedAppPath)] = [PSCustomObject]@{
+                id = $compiledAppId; name = 'Installed Copy'
+            }
             $installJson = Join-Path $projectPath 'installTestApps.json'
-            ConvertTo-Json @($compiledAppPath) | Set-Content -Path $installJson -Encoding UTF8
+            ConvertTo-Json @($installedAppPath) | Set-Content -Path $installJson -Encoding UTF8
             $settings = @{
                 runTestsInAllInstalledTestApps = $true
                 testFolders                    = @(Get-TestFoldersForProject -ProjectPath $projectPath)
@@ -287,6 +302,81 @@ Describe 'RunTests.psm1 Tests' {
                 Should -Throw "*Failed to read compiled test app metadata*Broken.Test.app*app name*"
 
             Remove-Item -Path $projectPath -Recurse -Force
+        }
+    }
+
+    Context 'Resolve-CodeCoverageSourceRoots' {
+        It 'Returns canonical existing project roots with deterministic deduplication' {
+            $projectPath = Join-Path $TestDrive 'Project'
+            foreach ($folder in @('App', 'Test')) {
+                New-Item -Path (Join-Path $projectPath $folder) -ItemType Directory -Force | Out-Null
+            }
+            $settings = @{
+                appFolders  = @('App', '.\App', 'Missing')
+                testFolders = @('Test')
+            }
+
+            InModuleScope RunTests -Parameters @{
+                Settings    = $settings
+                ProjectPath = $projectPath
+            } {
+                $rootData = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
+                $rootData | Should -Be @(
+                    [System.IO.Path]::GetFullPath((Join-Path $ProjectPath 'App')),
+                    [System.IO.Path]::GetFullPath((Join-Path $ProjectPath 'Test'))
+                )
+            }
+        }
+
+        It 'Uses ordinal source root ordering independent of the current culture' {
+            $projectPath = Join-Path $TestDrive 'Project'
+            $umlautFolder = "Project$([char]0x00E4)"
+            foreach ($folder in @('Projectz', $umlautFolder)) {
+                New-Item -Path (Join-Path $projectPath $folder) -ItemType Directory -Force | Out-Null
+            }
+            $settings = @{
+                appFolders  = @($umlautFolder, 'Projectz')
+                testFolders = @()
+            }
+
+            InModuleScope RunTests -Parameters @{
+                Settings    = $settings
+                ProjectPath = $projectPath
+            } {
+                $originalCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+                try {
+                    [System.Threading.Thread]::CurrentThread.CurrentCulture =
+                        [System.Globalization.CultureInfo]::GetCultureInfo('de-DE')
+                    $germanRoots = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
+                    [System.Threading.Thread]::CurrentThread.CurrentCulture =
+                        [System.Globalization.CultureInfo]::GetCultureInfo('sv-SE')
+                    $swedishRoots = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
+
+                    $germanRoots | Should -Be $swedishRoots
+                }
+                finally {
+                    [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+                }
+            }
+        }
+
+    }
+
+    Context 'Get-CodeCoveragePlatformCapability' {
+        It 'Supports container platform <PlatformVersion>' -TestCases @(
+            @{ PlatformVersion = '30.0.56026.0' },
+            @{ PlatformVersion = '31.0.0.0' }
+        ) {
+            param($PlatformVersion)
+
+            InModuleScope RunTests -Parameters @{ HandoffVersion = $PlatformVersion } {
+                $capability = Get-CodeCoveragePlatformCapability `
+                    -platformVersion $HandoffVersion `
+                    -platformVersionReason ''
+
+                $capability.Supported | Should -BeTrue
+                $capability.Reason | Should -Match 'supports code coverage'
+            }
         }
     }
 
@@ -775,6 +865,7 @@ Describe 'RunTests.psm1 Tests' {
     Context 'Invoke-AlGoTestRun (default AlTool runner)' {
         It 'Runs the AlTool runner for every test app when no override is supplied' {
             Mock -ModuleName RunTests Invoke-AlToolTestRun { return $true }
+            Mock -ModuleName RunTests OutputWarning {}
             $script:alToolPathResolutionCount = 0
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
             $settings = @{
@@ -795,7 +886,9 @@ Describe 'RunTests.psm1 Tests' {
             }
             {
                 Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' `
-                    -credential $testCredential -getAlToolPath $getAlToolPath
+                    -credential $testCredential -getAlToolPath $getAlToolPath `
+                    -containerPlatformVersion 'not-a-version' `
+                    -containerPlatformVersionReason 'lookup should be ignored'
             } | Should -Not -Throw
 
             Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 2 -Exactly
@@ -803,6 +896,231 @@ Describe 'RunTests.psm1 Tests' {
                 $TestType -eq '' -and $AlToolPath -eq 'C:\dotnet-tools\al.exe'
             }
             $script:alToolPathResolutionCount | Should -Be 1
+            Should -Invoke -ModuleName RunTests OutputWarning -Times 0 -Exactly
+            Test-Path -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') 'coverage-status.json'
+            ) | Should -BeFalse
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Tracks supported coverage completeness in unique stable output directories for every app' {
+            $script:capturedCoverageRuns = @()
+            $script:coverageStatusBeforeRuns = @()
+            $script:coverageInvocation = 0
+            Mock -ModuleName RunTests Invoke-AlToolTestRun {
+                param(
+                    $ExtensionId,
+                    $AppName,
+                    $CoverageMode,
+                    $CoverageOutputPath,
+                    [string[]] $CoverageFormats,
+                    [string[]] $CoverageSourceRoots,
+                    [ref] $CoverageIsComplete
+                )
+                $coverageRootAtInvocation = Split-Path -Path $CoverageOutputPath -Parent
+                $status = Get-Content -LiteralPath (Join-Path $coverageRootAtInvocation 'coverage-status.json') `
+                    -Raw -Encoding UTF8 | ConvertFrom-Json
+                $script:coverageStatusBeforeRuns += ,@($status.runs | ForEach-Object { $_.state })
+                $script:capturedCoverageRuns += [PSCustomObject]@{
+                    ExtensionId        = $ExtensionId
+                    AppName            = $AppName
+                    CoverageMode       = $CoverageMode
+                    CoverageOutputPath = $CoverageOutputPath
+                    CoverageFormats    = @($CoverageFormats)
+                    CoverageSourceRoots = @($CoverageSourceRoots)
+                }
+                $script:coverageInvocation++
+                $CoverageIsComplete.Value = ($script:coverageInvocation -eq 1)
+                return $true
+            }
+            $appOneId = [Guid]::NewGuid().ToString()
+            $appTwoId = [Guid]::NewGuid().ToString()
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app') -CompiledAppIds @{
+                'App1.Test.app' = $appOneId
+                'App2.Test.app' = $appTwoId
+            }
+            New-Item -Path (Join-Path $projectPath 'App') -ItemType Directory -Force | Out-Null
+            $testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+            $settings = @{
+                doNotRunTests                  = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName                    = ''
+                treatTestFailuresAsWarnings    = $false
+                appFolders                     = @('App')
+                testFolders                    = $testFolders
+                useSeparateTestAction           = @{
+                    enabled                 = $true
+                    testType                = ''
+                    codeCoverageEnabled     = $true
+                    codeCoverageMode        = 'all'
+                    codeCoverageFormats     = @('bc-json', 'cobertura')
+                }
+            }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -containerName 'test' -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe' `
+                -containerPlatformVersion '30.0.56026.0'
+
+            Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 2 -Exactly
+            $script:capturedCoverageRuns.Count | Should -Be 2
+            $script:coverageStatusBeforeRuns[0] | Should -Be @('running', 'pending')
+            $script:coverageStatusBeforeRuns[1] | Should -Be @('complete', 'running')
+            $script:capturedCoverageRuns[0].CoverageMode | Should -Be 'all'
+            $script:capturedCoverageRuns[0].CoverageFormats | Should -Be @('bc-json', 'cobertura')
+            $script:capturedCoverageRuns[0].CoverageSourceRoots | Should -Contain (
+                [System.IO.Path]::GetFullPath((Join-Path $projectPath 'App'))
+            )
+            foreach ($testFolder in $testFolders) {
+                $script:capturedCoverageRuns[0].CoverageSourceRoots | Should -Contain (
+                    [System.IO.Path]::GetFullPath((Join-Path $projectPath $testFolder))
+                )
+            }
+            $script:capturedCoverageRuns[0].CoverageSourceRoots.Count | Should -Be 3
+            $script:capturedCoverageRuns[0].CoverageOutputPath |
+                Should -Be (Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') $appOneId)
+            $script:capturedCoverageRuns[1].CoverageOutputPath |
+                Should -Be (Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') $appTwoId)
+            $script:capturedCoverageRuns[0].CoverageOutputPath |
+                Should -Not -Be $script:capturedCoverageRuns[1].CoverageOutputPath
+            $coverageRoot = Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
+            $coverageStatus = Get-Content -LiteralPath (Join-Path $coverageRoot 'coverage-status.json') `
+                -Raw -Encoding UTF8 | ConvertFrom-Json
+            $coverageStatus.PSObject.Properties.Name | Should -Be @('runs')
+            $coverageStatus.runs.Count | Should -Be 2
+            $coverageStatus.runs[0].PSObject.Properties.Name |
+                Should -Be @('appId', 'appName', 'outputDirectory', 'state')
+            $coverageStatus.runs[0].appId | Should -Be $appOneId
+            $coverageStatus.runs[0].outputDirectory | Should -Be "CodeCoverage/$appOneId"
+            $coverageStatusByAppId = @{}
+            foreach ($run in $coverageStatus.runs) {
+                $coverageStatusByAppId[$run.appId] = $run.state
+            }
+            $coverageStatusByAppId[$appOneId] | Should -Be 'complete'
+            $coverageStatusByAppId[$appTwoId] | Should -Be 'incomplete'
+            ($coverageStatus | ConvertTo-Json -Depth 5) | Should -Not -Match 'admin|password|sourceRoot|diagnostic|format|mode'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Warns and runs normally without coverage when <Case>' -TestCases @(
+            @{
+                Case            = 'the platform is below the boundary'
+                PlatformVersion = '30.0.56025.999'
+                HandoffReason   = ''
+            },
+            @{
+                Case            = 'the platform version is malformed'
+                PlatformVersion = 'not-a-version'
+                HandoffReason   = ''
+            },
+            @{
+                Case            = 'platform version lookup failed'
+                PlatformVersion = ''
+                HandoffReason   = 'Get-BcContainerPlatformVersion failed (RuntimeException).'
+            },
+            @{
+                Case            = 'the platform handoff is missing'
+                PlatformVersion = ''
+                HandoffReason   = ''
+            }
+        ) {
+            param($Case, $PlatformVersion, $HandoffReason)
+
+            $null = $Case
+            Mock -ModuleName RunTests OutputWarning {}
+            $script:coverageDowngradeBoundParameters = @()
+            Mock -ModuleName RunTests Invoke-AlToolTestRun {
+                $script:coverageDowngradeBoundParameters = @($PSBoundParameters.Keys)
+                return $true
+            }
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $staleCoveragePath = Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') 'stale-app'
+            New-Item -Path $staleCoveragePath -ItemType Directory -Force | Out-Null
+            Set-Content -Path (Join-Path $staleCoveragePath 'coverage.bc.json') -Value '{}' -Encoding UTF8
+            $settings = @{
+                doNotRunTests                  = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName                    = ''
+                treatTestFailuresAsWarnings    = $false
+                testFolders                    = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction           = @{
+                    enabled                 = $true
+                    testType                = ''
+                    codeCoverageEnabled     = $true
+                    codeCoverageMode        = 'all'
+                    codeCoverageFormats     = @('bc-json', 'cobertura')
+                }
+            }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -containerName 'test' -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe' `
+                -containerPlatformVersion $PlatformVersion `
+                -containerPlatformVersionReason $HandoffReason
+
+            Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 1 -Exactly
+            $script:coverageDowngradeBoundParameters | Should -Not -Contain 'CoverageMode'
+            $script:coverageDowngradeBoundParameters | Should -Not -Contain 'CoverageOutputPath'
+            Should -Invoke -ModuleName RunTests OutputWarning -Times 1 -Exactly -ParameterFilter {
+                $message -like '*container platform 30.0.56026.0*continue without coverage*'
+            }
+            $coverageRoot = Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
+            Test-Path -LiteralPath $staleCoveragePath | Should -BeFalse
+            $coverageStatus = Get-Content -LiteralPath (Join-Path $coverageRoot 'coverage-status.json') `
+                -Raw -Encoding UTF8 | ConvertFrom-Json
+            $coverageStatus.runs.Count | Should -Be 1
+            $coverageStatus.runs[0].state | Should -Be 'unsupported'
+            Test-Path -LiteralPath (Join-Path $coverageRoot $coverageStatus.runs[0].appId) |
+                Should -BeFalse
+            ($coverageStatus | ConvertTo-Json -Depth 5) | Should -Not -Match 'admin|password|platform'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Propagates coverage failure without downgrading after platform support is established' {
+            Mock -ModuleName RunTests OutputWarning {}
+            Mock -ModuleName RunTests Invoke-AlToolTestRun {
+                throw 'coverage export failed'
+            }
+            $appOneId = [Guid]::NewGuid().ToString()
+            $appTwoId = [Guid]::NewGuid().ToString()
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app') -CompiledAppIds @{
+                'App1.Test.app' = $appOneId
+                'App2.Test.app' = $appTwoId
+            }
+            $settings = @{
+                doNotRunTests                  = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName                    = ''
+                treatTestFailuresAsWarnings    = $false
+                testFolders                    = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction           = @{
+                    enabled                 = $true
+                    testType                = ''
+                    codeCoverageEnabled     = $true
+                    codeCoverageMode        = 'all'
+                    codeCoverageFormats     = @('bc-json')
+                }
+            }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                    -containerName 'test' -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe' `
+                    -containerPlatformVersion '30.0.56026.0'
+            } | Should -Throw '*coverage export failed*'
+
+            Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 1 -Exactly -ParameterFilter {
+                $CoverageMode -eq 'all' -and
+                $CoverageFormats -eq @('bc-json') -and
+                -not [string]::IsNullOrWhiteSpace($CoverageOutputPath)
+            }
+            Should -Invoke -ModuleName RunTests OutputWarning -Times 0 -Exactly
+            $coverageStatus = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') 'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            $coverageStatusByAppId = @{}
+            foreach ($run in $coverageStatus.runs) {
+                $coverageStatusByAppId[$run.appId] = $run.state
+            }
+            $coverageStatusByAppId[$appOneId] | Should -Be 'failed'
+            $coverageStatusByAppId[$appTwoId] | Should -Be 'pending'
             Remove-Item -Path $projectPath -Recurse -Force
         }
 

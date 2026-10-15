@@ -100,4 +100,6 @@ Invoke-AlGoTestRun `
     -credential $credential `
     -installTestAppsJson $installTestAppsJson `
     -runTestsOverride $runTestsOverride `
-    -getAlToolPath ${function:GetAlToolPath}
+    -getAlToolPath ${function:GetAlToolPath} `
+    -containerPlatformVersion $ENV:containerPlatformVersion `
+    -containerPlatformVersionReason $ENV:containerPlatformVersionReason
