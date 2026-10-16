@@ -27,6 +27,16 @@ $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-S
 . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
 Import-Module (Join-Path $PSScriptRoot "AnalyzeCodeCoverage.psm1" -Resolve) -Force -DisableNameChecking
 
+function Write-CoverageAnalysisDetails {
+    Param([hashtable] $Model)
+
+    $details = @($Model.Reasons) + @($Model.LineReasons) +
+        @($Model.ProcedureReasons) + @($Model.Notices)
+    foreach ($detail in @($details | Select-Object -Unique)) {
+        Write-Host "Code coverage analysis detail: $detail"
+    }
+}
+
 $workspace = $env:GITHUB_WORKSPACE
 if ([string]::IsNullOrWhiteSpace($workspace)) {
     $workspace = (Get-Location).Path
@@ -59,12 +69,14 @@ if ($scope -eq "project") {
     if ($writeSummary) {
         $model = Get-ProjectCoverageModel -CoveragePath $resolvedCoveragePath `
             -Project $project -RepositoryRoot $workspace
+        Write-CoverageAnalysisDetails -Model $model
         $summary = New-ProjectCoverageSummary -Model $model
     }
 }
 else {
     $model = Get-RepositoryCoverageModel -CoveragePath $resolvedCoveragePath `
         -BuildOrderJson $buildOrderJson -RepositoryRoot $workspace
+    Write-CoverageAnalysisDetails -Model $model
     $summary = New-RepositoryCoverageSummary -Model $model
 }
 

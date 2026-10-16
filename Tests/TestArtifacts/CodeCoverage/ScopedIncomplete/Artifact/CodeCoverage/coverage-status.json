@@ -11,14 +11,14 @@
   ],
   "runs": [
     {
-      "appId": "run-a",
-      "appName": "Tests A",
+      "appId": "2ac2061d-0912-4cff-96d6-8498e9aff57f",
+      "appName": "App1.abc.Test",
       "outputDirectory": "CodeCoverage/run-a",
       "state": "incomplete"
     },
     {
-      "appId": "run-b",
-      "appName": "Tests B",
+      "appId": "be11fd2f-8f16-40b7-bd82-47a87db3534b",
+      "appName": "app1.Test",
       "outputDirectory": "CodeCoverage/run-b",
       "state": "incomplete"
     }
