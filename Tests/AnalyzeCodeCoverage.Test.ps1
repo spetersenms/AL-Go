@@ -110,41 +110,40 @@ Describe "AnalyzeCodeCoverage" {
     It "parses the actual schema and counts only executable lines in line mode" {
         $model = Get-ProjectCoverageModel -CoveragePath (Join-Path $fixtures "Line")
         $model.Complete | Should -BeTrue
+        $model.LineComplete | Should -BeTrue
         $model.Mode | Should -Be "line"
         $model.Lines.Count | Should -Be 2
         (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
-        $model.Methods.Count | Should -Be 0
         $model.Runs[0].LineComplete | Should -BeTrue
         (Get-CoverageMetrics $model.Runs[0].Lines).Covered | Should -Be 1
         $summary = New-ProjectCoverageSummary $model
         $summary | Should -Match "Line coverage"
         $summary | Should -Not -Match "Procedure coverage"
         $summary | Should -Match "### Application coverage"
-        $summary | Should -Match "No regular apps were available"
+        $summary | Should -Match "\| Line app \| 1/2 \| 50% \|"
     }
 
-    It "resolves report-local procedure edges in procedure mode" {
+    It "does not expose procedure-only reports as coverage" {
         $model = Get-ProjectCoverageModel -CoveragePath (Join-Path $fixtures "Procedure")
-        $model.Complete | Should -BeTrue
-        $model.Methods.Count | Should -Be 2
-        (Get-CoverageMetrics $model.Methods).Covered | Should -Be 1
+        $model.Complete | Should -BeFalse
+        $model.LineComplete | Should -BeFalse
         $summary = New-ProjectCoverageSummary $model
-        $summary | Should -Match "Procedure coverage"
-        $summary | Should -Not -Match "\*\*Line coverage:\*\*"
+        $summary | Should -Match "\*\*Line coverage:\*\* unavailable"
+        $summary | Should -Not -Match "\*\*Procedure coverage"
         $summary | Should -Match "No regular apps were available"
     }
 
-    It "OR-unions overlapping runs in all mode without using local method IDs" {
+    It "OR-unions executable lines from historical all-mode reports" {
         $model = Get-ProjectCoverageModel -CoveragePath (Join-Path $fixtures "All")
         $model.Complete | Should -BeTrue
+        $model.LineComplete | Should -BeTrue
         $model.Runs.Count | Should -Be 2
         $model.Lines.Count | Should -Be 2
         (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
-        $model.Methods.Count | Should -Be 2
-        (Get-CoverageMetrics $model.Methods).Covered | Should -Be 1
         $summary = New-ProjectCoverageSummary $model
         $summary | Should -Match "Top 10 uncovered objects"
         $summary | Should -Match "Report 50300"
+        $summary | Should -Not -Match "Procedure"
         $summary | Should -Not -Match "src/Shared\.Report\.al"
         $summary | Should -Not -Match "\| Source \|"
     }
@@ -156,7 +155,6 @@ Describe "AnalyzeCodeCoverage" {
         $summary | Should -Match "Coverage data is incomplete"
         $summary | Should -Match "action logs and raw CodeCoverage artifact"
         $summary | Should -Not -Match "bc-json coverage format"
-        $summary | Should -Match "Cobertura Tests"
         $summary | Should -Match "No regular apps were available"
         $summary | Should -Not -Match "%"
         $summary | Should -Not -Match "Top 10 uncovered objects"
@@ -212,7 +210,7 @@ Describe "AnalyzeCodeCoverage" {
         (New-ProjectCoverageSummary $model) | Should -Not -Match "%"
     }
 
-    It "suppresses metrics when global incompleteness cannot be safely scoped" {
+    It "does not let the raw global completeness flag suppress regular-app lines" {
         $root = Join-Path $TestDrive "IncompleteReport"
         Copy-CoverageFixture -Name "Line" -Destination $root
         $reportPath = Join-Path $root "CodeCoverage\line-app\coverage.bc.json"
@@ -220,12 +218,13 @@ Describe "AnalyzeCodeCoverage" {
         $report.complete = $false
         $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding UTF8
         $model = Get-ProjectCoverageModel -CoveragePath $root
-        $model.Complete | Should -BeFalse
+        $model.Complete | Should -BeTrue
+        $model.LineComplete | Should -BeTrue
         $summary = New-ProjectCoverageSummary $model
-        $summary | Should -Match "Coverage data is incomplete"
+        $summary | Should -Not -Match "Coverage data is incomplete"
         $summary | Should -Not -Match "globally incomplete"
-        $summary | Should -Not -Match "%"
-        $summary | Should -Not -Match "uncovered objects"
+        $summary | Should -Match "50\.0%"
+        $summary | Should -Match "uncovered objects"
     }
 
     It "escapes report-derived Markdown and HTML and bounds values" {
@@ -257,18 +256,17 @@ Describe "AnalyzeCodeCoverage" {
 
     It "bounds the entire UTF-8 summary below 900KB" {
         $model = Get-ProjectCoverageModel -CoveragePath (Join-Path $fixtures "Line")
-        $runs = @()
+        $apps = @()
         foreach ($index in 1..7000) {
-            $runs += @{
+            $apps += @{
                 AppId = "$index"
-                AppName = ("Long app " + ("x" * 150))
-                State = "complete"
+                AppName = ("Long app $index " + ("x" * 150))
+                RootIdentity = "src/$index"
                 LineComplete = $false
                 Lines = @{}
-                Reasons = @()
             }
         }
-        $model.Runs = $runs
+        $model.Apps = $apps
         $summary = New-ProjectCoverageSummary $model
         [System.Text.Encoding]::UTF8.GetByteCount($summary) | Should -BeLessOrEqual 921600
         $summary | Should -Match "Summary truncated"
@@ -294,7 +292,7 @@ Describe "AnalyzeCodeCoverage" {
         $summary | Should -Not -Match "\*\*Line coverage:\*\* [0-9]"
         $summary | Should -Not -Match "Top 10 uncovered objects"
         $summary | Should -Match "No regular apps were available"
-        $summary | Should -Match "<summary>Per-test-app runs</summary>"
+        $summary | Should -Not -Match "Test-app runs|Per-test-app runs"
     }
 
     It "requires artifacts from every dependency depth" {
@@ -334,11 +332,9 @@ Describe "AnalyzeCodeCoverage" {
         $model.Complete | Should -BeTrue
         $model.Lines.Count | Should -Be 1
         (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
-        $model.Methods.Count | Should -Be 1
-        (Get-CoverageMetrics $model.Methods).Covered | Should -Be 1
         $summary = New-RepositoryCoverageSummary $model
         $summary | Should -Match "\*\*Line coverage:"
-        $summary | Should -Match "\*\*Procedure coverage:"
+        $summary | Should -Not -Match "Procedure"
         $summary | Should -Match "Project A"
         $summary | Should -Match "Project B"
     }
@@ -364,7 +360,6 @@ Describe "AnalyzeCodeCoverage" {
         $model.Projects.Count | Should -Be 2
         $model.Lines.Count | Should -Be 1
         (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
-        $model.Methods.Count | Should -Be 1
         $model.Apps.Count | Should -Be 1
         $model.Apps[0].LineComplete | Should -BeTrue
         (Get-CoverageMetrics $model.Apps[0].Lines).Covered | Should -Be 1
@@ -461,7 +456,7 @@ Describe "AnalyzeCodeCoverage" {
 
         $summary = New-ProjectCoverageSummary $model
 
-        $summary | Should -Match "(?s)### Application coverage.*A\\\|&lt;script&gt; app.*Zulu app.*### Test-app runs"
+        $summary | Should -Match "(?s)### Application coverage.*A\\\|&lt;script&gt; app.*Zulu app"
         $summary | Should -Not -Match "<script>"
     }
 
@@ -540,12 +535,12 @@ Describe "AnalyzeCodeCoverage" {
         $model = Get-RepositoryCoverageModel -CoveragePath $downloads -BuildOrderJson $buildOrder -RepositoryRoot $TestDrive
         $summary = New-RepositoryCoverageSummary $model
         $model.Complete | Should -BeFalse
-        $summary | Should -Match "Project A.*100.0%.*100.0%"
+        $summary | Should -Match "Project A.*100.0%"
         $summary | Should -Match "Missing project"
         $summary | Should -Match "\*\*Line coverage:\*\* unavailable"
         $summary | Should -Not -Match "\*\*Line coverage:\*\* [0-9]"
         $summary | Should -Not -Match "Top 10 uncovered objects"
-        $summary | Should -Match "<summary>Per-test-app runs</summary>"
+        $summary | Should -Not -Match "Per-test-app runs"
     }
 
     It "maps only source paths that resolve to existing repository files" {
@@ -580,14 +575,14 @@ Describe "AnalyzeCodeCoverage" {
             -BuildOrderJson $buildOrder -RepositoryRoot $repositoryRoot
         $summary = New-RepositoryCoverageSummary $model
 
-        $model.Complete | Should -BeTrue
+        $model.Complete | Should -BeFalse
+        $model.LineComplete | Should -BeFalse
         $model.Lines.Count | Should -Be 0
-        $model.Methods.Count | Should -Be 0
-        ($model.ExcludedLineFacts + $model.ExcludedMethodFacts) | Should -Be 2
+        $model.ExcludedLineFacts | Should -Be 1
         $summary | Should -Not -Match "Excluded coverage facts"
-        $summary | Should -Match "not available"
+        $summary | Should -Match "unavailable"
         $summary | Should -Not -Match "\*\*Line coverage:\*\* 100\.0%"
-        $summary | Should -Not -Match "\*\*Procedure coverage:\*\* 100\.0%"
+        $summary | Should -Not -Match "Procedure coverage"
     }
 
     It "decodes unprefixed exporter paths only against the primary source root" {
@@ -655,14 +650,6 @@ Describe "AnalyzeCodeCoverage" {
         $resolved.LocalMappingFailed | Should -BeTrue
     }
 
-    It "treats method identity failures for a repository-root source as local" {
-        InModuleScope AnalyzeCodeCoverage {
-            Test-CoverageDiagnosticReferencesIncludedRoot `
-                -Diagnostic "Coverage method identity resolution failed for 'C:\runner\repo': error AL0185" `
-                -SourceRoots @(".") | Should -BeTrue
-        }
-    }
-
     It "rejects coverage files reached through reparse points on Windows" -Skip:([System.IO.Path]::DirectorySeparatorChar -ne '\') {
         $repositoryRoot = Join-Path $TestDrive "Repository"
         $outsideRoot = Join-Path $TestDrive "Outside"
@@ -687,37 +674,34 @@ Describe "AnalyzeCodeCoverage" {
 
         $model = Get-ProjectCoverageModel -CoveragePath $coveragePath -RepositoryRoot $repositoryRoot
 
-        $model.Complete | Should -BeFalse
+        $model.Complete | Should -BeTrue
         $model.LineComplete | Should -BeTrue
-        $model.ProcedureComplete | Should -BeFalse
-        $model.Lines.Count | Should -Be 16
-        $model.Methods.Count | Should -Be 5
+        $model.Lines.Count | Should -Be 2
         $model.ExcludedLineFacts | Should -Be 2
         $lineMetrics = Get-CoverageMetrics $model.Lines
-        $lineMetrics.Covered | Should -Be 10
-        $lineMetrics.Total | Should -Be 16
+        $lineMetrics.Covered | Should -Be 1
+        $lineMetrics.Total | Should -Be 2
         $model.Runs[0].LineComplete | Should -BeTrue
         $model.Runs[1].LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $model.Runs[0].Lines).Covered | Should -Be 6
-        (Get-CoverageMetrics $model.Runs[0].Lines).Total | Should -Be 16
+        (Get-CoverageMetrics $model.Runs[0].Lines).Covered | Should -Be 5
+        (Get-CoverageMetrics $model.Runs[0].Lines).Total | Should -Be 14
         (Get-CoverageMetrics $model.Runs[1].Lines).Covered | Should -Be 5
-        (Get-CoverageMetrics $model.Runs[1].Lines).Total | Should -Be 16
+        (Get-CoverageMetrics $model.Runs[1].Lines).Total | Should -Be 14
         $model.Apps.Count | Should -Be 1
         $model.Apps[0].AppName | Should -Be "app1"
         $model.Apps[0].LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $model.Apps[0].Lines).Covered | Should -Be 3
-        (Get-CoverageMetrics $model.Apps[0].Lines).Total | Should -Be 4
-        $model.ProcedureReasons -join " " | Should -Match "Method identity resolution failed"
+        (Get-CoverageMetrics $model.Apps[0].Lines).Covered | Should -Be 1
+        (Get-CoverageMetrics $model.Apps[0].Lines).Total | Should -Be 2
         $model.Notices -join " " | Should -Match "global enrichment incomplete"
-        $model.Notices -join " " | Should -Match "Ignored 1 diagnostics"
+        $model.Notices -join " " | Should -Match "Ignored 4 diagnostics"
 
         $summary = New-ProjectCoverageSummary $model
-        $summary | Should -Match "62\.5%"
-        $summary | Should -Match "Procedure coverage:\*\* unavailable"
-        $summary | Should -Match "\| app1 \| 3/4 \| 75% \|"
+        $summary | Should -Match "50\.0%"
+        $summary | Should -Not -Match "Procedure"
+        $summary | Should -Match "\| app1 \| 1/2 \| 50% \|"
         $summary | Should -Not -Match "\| App1\.abc\.Test \| [0-9]+/"
         $summary | Should -Not -Match "\| app1\.Test \| [0-9]+/"
-        $summary | Should -Match "Coverage data is incomplete"
+        $summary | Should -Not -Match "Coverage data is incomplete"
         $summary | Should -Not -Match "Method identity resolution failed"
         $summary | Should -Not -Match "Ignored [0-9]+ diagnostics"
         $summary | Should -Not -Match "global enrichment incomplete"
@@ -730,8 +714,8 @@ Describe "AnalyzeCodeCoverage" {
     It "retains each live-shaped run line rate before union" {
         $fixtureRoot = Join-Path $fixtures "ScopedIncomplete"
         foreach ($case in @(
-                @{ RunIndex = 0; Covered = 6 },
-                @{ RunIndex = 1; Covered = 5 }
+                @{ RunIndex = 0; Covered = 1 },
+                @{ RunIndex = 1; Covered = 1 }
             )) {
             $root = Join-Path $TestDrive "Run$($case.RunIndex)"
             Copy-Item -LiteralPath (Join-Path $fixtureRoot "Artifact") -Destination $root -Recurse
@@ -744,7 +728,7 @@ Describe "AnalyzeCodeCoverage" {
                 -RepositoryRoot (Join-Path $fixtureRoot "Repository")
             $model.LineComplete | Should -BeTrue
             (Get-CoverageMetrics $model.Lines).Covered | Should -Be $case.Covered
-            (Get-CoverageMetrics $model.Lines).Total | Should -Be 16
+            (Get-CoverageMetrics $model.Lines).Total | Should -Be 2
         }
     }
 
@@ -774,8 +758,8 @@ Describe "AnalyzeCodeCoverage" {
         $beta = @($model.Apps | Where-Object { $_.AppName -eq "Beta app" })[0]
         (Get-CoverageMetrics $alpha.Lines).Covered | Should -Be 3
         (Get-CoverageMetrics $alpha.Lines).Total | Should -Be 4
-        (Get-CoverageMetrics $beta.Lines).Covered | Should -Be 3
-        (Get-CoverageMetrics $beta.Lines).Total | Should -Be 4
+        (Get-CoverageMetrics $beta.Lines).Covered | Should -Be 1
+        (Get-CoverageMetrics $beta.Lines).Total | Should -Be 2
         $alpha.LineComplete | Should -BeFalse
         $beta.LineComplete | Should -BeTrue
         @($model.Apps | Where-Object { $_.AppName -eq "app1.Test" }).Count | Should -Be 0
@@ -794,11 +778,11 @@ Describe "AnalyzeCodeCoverage" {
 
         $testFailure = Get-ProjectCoverageModel -CoveragePath $testFailureRoot `
             -RepositoryRoot $repositoryRoot
-        $testFailure.LineComplete | Should -BeFalse
+        $testFailure.LineComplete | Should -BeTrue
         $testFailure.Apps.Count | Should -Be 1
         $testFailure.Apps[0].LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $testFailure.Apps[0].Lines).Covered | Should -Be 3
-        (Get-CoverageMetrics $testFailure.Apps[0].Lines).Total | Should -Be 4
+        (Get-CoverageMetrics $testFailure.Apps[0].Lines).Covered | Should -Be 1
+        (Get-CoverageMetrics $testFailure.Apps[0].Lines).Total | Should -Be 2
 
         $appFailureRoot = Join-Path $TestDrive "AppRootFailure"
         Copy-Item -LiteralPath (Join-Path $fixtureRoot "Artifact") -Destination $appFailureRoot -Recurse
@@ -817,9 +801,16 @@ Describe "AnalyzeCodeCoverage" {
     }
 
     It "renders no application rows for an older status without root metadata" {
-        $model = Get-ProjectCoverageModel -CoveragePath (Join-Path $fixtures "Line")
+        $root = Join-Path $TestDrive "OlderStatus"
+        Copy-CoverageFixture -Name "Line" -Destination $root
+        $statusPath = Join-Path $root "CodeCoverage\coverage-status.json"
+        $status = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status.PSObject.Properties.Remove("sourceRootDetails")
+        $status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath -Encoding UTF8
+        $model = Get-ProjectCoverageModel -CoveragePath $root
         $summary = New-ProjectCoverageSummary $model
 
+        $model.Complete | Should -BeFalse
         $model.Apps.Count | Should -Be 0
         $summary | Should -Match "### Application coverage"
         $summary | Should -Match "No regular apps were available"
@@ -837,12 +828,12 @@ Describe "AnalyzeCodeCoverage" {
             -RepositoryRoot $repositoryRoot
         $projectModel.Reasons += $diagnostic
         $projectModel.LineReasons += $diagnostic
-        $projectModel.ProcedureReasons += $diagnostic
         $projectModel.Notices += $diagnostic
         $projectModel.Runs[0].Reasons += $diagnostic
         $projectModel.Runs[0].LineReasons += $diagnostic
-        $projectModel.Runs[0].ProcedureReasons += $diagnostic
         $projectModel.Runs[0].Notices += $diagnostic
+        $projectModel.Complete = $false
+        $projectModel.LineComplete = $false
         $projectSummary = New-ProjectCoverageSummary $projectModel
 
         $projectSummary | Should -Match "Coverage data is incomplete"
@@ -862,12 +853,12 @@ Describe "AnalyzeCodeCoverage" {
             -BuildOrderJson $buildOrder -RepositoryRoot $repositoryRoot
         $repositoryModel.Reasons += $diagnostic
         $repositoryModel.LineReasons += $diagnostic
-        $repositoryModel.ProcedureReasons += $diagnostic
         $repositoryModel.Notices += $diagnostic
         $repositoryModel.Projects[0].Reasons += $diagnostic
         $repositoryModel.Projects[0].LineReasons += $diagnostic
-        $repositoryModel.Projects[0].ProcedureReasons += $diagnostic
         $repositoryModel.Projects[0].Notices += $diagnostic
+        $repositoryModel.Complete = $false
+        $repositoryModel.LineComplete = $false
         $repositorySummary = New-RepositoryCoverageSummary $repositoryModel
 
         $repositorySummary | Should -Match "Coverage data is incomplete"
@@ -892,22 +883,21 @@ Describe "AnalyzeCodeCoverage" {
         }
         $unknown = Get-ProjectCoverageModel -CoveragePath $unknownRoot -RepositoryRoot $repositoryRoot
         $unknown.LineComplete | Should -BeFalse
-        $unknown.ProcedureComplete | Should -BeFalse
         $unknown.LineReasons -join " " | Should -Match "could not be safely scoped"
 
         $localRoot = Join-Path $TestDrive "LocalSourceDiagnostic"
         Copy-Item -LiteralPath (Join-Path $fixtureRoot "Artifact") -Destination $localRoot -Recurse
         foreach ($reportPath in @(Get-ChildItem -LiteralPath $localRoot -Filter "coverage.bc.json" -File -Recurse)) {
             $report = Get-Content -LiteralPath $reportPath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $report.diagnostics = @("No source file was found for AL object 5:50000.")
+            $report.diagnostics = @("No source file was found for AL object 8:55000.")
             $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath.FullName -Encoding UTF8
         }
         $local = Get-ProjectCoverageModel -CoveragePath $localRoot -RepositoryRoot $repositoryRoot
         $local.LineComplete | Should -BeFalse
-        $local.LineReasons -join " " | Should -Match "source could not be loaded"
+        $local.Apps[0].LineComplete | Should -BeFalse
     }
 
-    It "suppresses procedure coverage when an included method identity is unavailable" {
+    It "ignores procedure-only method identity failures for regular-app line coverage" {
         $fixtureRoot = Join-Path $fixtures "ScopedIncomplete"
         $root = Join-Path $TestDrive "MissingMethodIdentity"
         Copy-Item -LiteralPath (Join-Path $fixtureRoot "Artifact") -Destination $root -Recurse
@@ -923,8 +913,8 @@ Describe "AnalyzeCodeCoverage" {
             -RepositoryRoot (Join-Path $fixtureRoot "Repository")
 
         $model.LineComplete | Should -BeTrue
-        $model.ProcedureComplete | Should -BeFalse
-        $model.ProcedureReasons -join " " | Should -Match "method identity is unavailable"
+        $model.Complete | Should -BeTrue
+        (New-ProjectCoverageSummary $model) | Should -Not -Match "Procedure"
     }
 
     It "unions admitted incomplete reports for repository coverage" {
@@ -939,22 +929,22 @@ Describe "AnalyzeCodeCoverage" {
             -BuildOrderJson $buildOrder -RepositoryRoot (Join-Path $fixtureRoot "Repository")
 
         $model.LineComplete | Should -BeTrue
-        $model.ProcedureComplete | Should -BeFalse
-        $model.Lines.Count | Should -Be 16
-        (Get-CoverageMetrics $model.Lines).Covered | Should -Be 10
+        $model.Complete | Should -BeTrue
+        $model.Lines.Count | Should -Be 2
+        (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
         $model.Apps.Count | Should -Be 1
         $application = $model.Apps[0]
         $application.AppName | Should -Be "app1"
         $application.LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $application.Lines).Covered | Should -Be 3
-        (Get-CoverageMetrics $application.Lines).Total | Should -Be 4
+        (Get-CoverageMetrics $application.Lines).Covered | Should -Be 1
+        (Get-CoverageMetrics $application.Lines).Total | Should -Be 2
         $summary = New-RepositoryCoverageSummary $model
-        $summary | Should -Match "62\.5%"
-        $summary | Should -Match "Procedure coverage:\*\* unavailable"
-        $summary | Should -Match "\| Project 1 \| app1 \| 3/4 \| 75% \|"
+        $summary | Should -Match "50\.0%"
+        $summary | Should -Not -Match "Procedure"
+        $summary | Should -Match "\| Project 1 \| app1 \| 1/2 \| 50% \|"
         $summary | Should -Not -Match "\| Project 1 \| App1\.abc\.Test \|"
         $summary | Should -Not -Match "\| Project 1 \| app1\.Test \|"
-        $summary | Should -Match "Coverage data is incomplete"
+        $summary | Should -Not -Match "Coverage data is incomplete"
         $summary | Should -Not -Match "Method identity resolution failed"
         $summary | Should -Not -Match "Ignored [0-9]+ diagnostics"
         $summary | Should -Not -Match "global enrichment incomplete"
@@ -962,91 +952,17 @@ Describe "AnalyzeCodeCoverage" {
         $summary | Should -Not -Match "project1/app1"
     }
 
-    It "does not let diagnostics from an unrequested metric suppress another project mode" {
-        $downloads = Join-Path $TestDrive "MixedModes"
-        $lineSource = Join-Path $TestDrive "LineRoot\Line.Codeunit.al"
-        $procedureSource = Join-Path $TestDrive "ProcedureRoot\Procedure.Codeunit.al"
-        New-RepositoryArtifact -Root $downloads -ArtifactName "artifact-line" -Project "LineProject" `
-            -ProjectName "Line project" -BuildMode "Default" -SourcePath $lineSource `
-            -HitCount 1 -MethodCovered $true
-        New-RepositoryArtifact -Root $downloads -ArtifactName "artifact-procedure" -Project "ProcedureProject" `
-            -ProjectName "Procedure project" -BuildMode "Default" -SourcePath $procedureSource `
-            -HitCount 1 -MethodCovered $true
-
-        foreach ($statusPath in @(Get-ChildItem -LiteralPath $downloads -Filter "coverage-status.json" -File -Recurse)) {
-            $status = Get-Content -LiteralPath $statusPath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $reportPath = Join-Path (Split-Path $statusPath.FullName -Parent) "test-app\coverage.bc.json"
-            $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($status.project -eq "LineProject") {
-                $status.mode = "line"
-                $report.coverageMode = "line"
-            }
-            else {
-                $status.mode = "procedure"
-                $status.runs[0].state = "incomplete"
-                $report.coverageMode = "procedure"
-                $report.complete = $false
-                $report.diagnostics = @("Coverage source enumeration failed for an unknown reason.")
-            }
-            $status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath.FullName -Encoding UTF8
-            $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding UTF8
-        }
-        $buildOrder = @(@{
-                buildDimensions = @(
-                    (New-ExpectedDimension -Project "LineProject" -ProjectName "Line project" -Mode "line"),
-                    (New-ExpectedDimension -Project "ProcedureProject" -ProjectName "Procedure project" -Mode "procedure")
-                )
-            }) | ConvertTo-Json -Depth 10
-
-        $model = Get-RepositoryCoverageModel -CoveragePath $downloads `
-            -BuildOrderJson $buildOrder -RepositoryRoot $TestDrive
-
-        $model.LineComplete | Should -BeTrue
-        $model.ProcedureComplete | Should -BeFalse
-        (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
-    }
-
-    It "does not let a missing procedure-only dimension suppress repository line coverage" {
-        $downloads = Join-Path $TestDrive "MissingProcedureMode"
-        $lineSource = Join-Path $TestDrive "LineOnly\Line.Codeunit.al"
-        New-RepositoryArtifact -Root $downloads -ArtifactName "artifact-line" -Project "LineProject" `
-            -ProjectName "Line project" -BuildMode "Default" -SourcePath $lineSource `
-            -HitCount 1 -MethodCovered $true
-        $statusPath = @(Get-ChildItem -LiteralPath $downloads -Filter "coverage-status.json" -File -Recurse)[0]
-        $status = Get-Content -LiteralPath $statusPath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        $status.mode = "line"
-        $status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath.FullName -Encoding UTF8
-        $reportPath = Join-Path (Split-Path $statusPath.FullName -Parent) "test-app\coverage.bc.json"
-        $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $report.coverageMode = "line"
-        $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding UTF8
-        $buildOrder = @(@{
-                buildDimensions = @(
-                    (New-ExpectedDimension -Project "LineProject" -ProjectName "Line project" -Mode "line"),
-                    (New-ExpectedDimension -Project "MissingProcedure" -ProjectName "Missing procedure" -Mode "procedure")
-                )
-            }) | ConvertTo-Json -Depth 10
-
-        $model = Get-RepositoryCoverageModel -CoveragePath $downloads `
-            -BuildOrderJson $buildOrder -RepositoryRoot $TestDrive
-
-        $model.LineComplete | Should -BeTrue
-        $model.ProcedureComplete | Should -BeFalse
-        (New-RepositoryCoverageSummary $model) | Should -Match "\*\*Line coverage:\*\* 100\.0%"
-    }
-
-    It "keeps duplicate app IDs at different source paths as separate repository facts" {
+    It "keeps duplicate app IDs in different projects as separate repository facts" {
         $downloads = Join-Path $TestDrive "DuplicateIds"
-        $firstSource = Join-Path $TestDrive "src\W1\Shared.Codeunit.al"
-        $secondSource = Join-Path $TestDrive "src\DK\Shared.Codeunit.al"
+        $firstSource = Join-Path $TestDrive "W1\Shared.Codeunit.al"
+        $secondSource = Join-Path $TestDrive "DK\Shared.Codeunit.al"
         New-RepositoryArtifact -Root $downloads -ArtifactName "artifact-w1" -Project "W1" `
             -ProjectName "W1" -BuildMode "Default" -SourcePath $firstSource -HitCount 1 -MethodCovered $true
         New-RepositoryArtifact -Root $downloads -ArtifactName "artifact-dk" -Project "DK" `
             -ProjectName "DK" -BuildMode "Default" -SourcePath $secondSource -HitCount 1 -MethodCovered $true
         foreach ($statusPath in @(Get-ChildItem -LiteralPath $downloads -Filter "coverage-status.json" -File -Recurse)) {
             $status = Get-Content -LiteralPath $statusPath.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $status.runs[0].appId = "duplicate-app-id"
-            $status.sourceRoots = @("src/W1", "src/DK")
+            $status.sourceRootDetails[0].appId = "duplicate-app-id"
             $status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath.FullName -Encoding UTF8
         }
         $buildOrder = @(@{
@@ -1061,7 +977,7 @@ Describe "AnalyzeCodeCoverage" {
 
         $model.Complete | Should -BeTrue
         $model.Lines.Count | Should -Be 2
-        $model.Methods.Count | Should -Be 2
+        $model.Apps.Count | Should -Be 2
     }
 
     It "honors project summary settings" {

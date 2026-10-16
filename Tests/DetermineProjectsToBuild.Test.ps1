@@ -32,7 +32,6 @@ Describe "Get-ProjectsToBuild" {
             useSeparateTestAction = @{
                 enabled             = $true
                 codeCoverageEnabled = $true
-                codeCoverageMode    = 'all'
                 codeCoverageFormats = @('bc-json', 'cobertura')
                 codeCoverageSummary = $Summary
             }
@@ -50,7 +49,7 @@ Describe "Get-ProjectsToBuild" {
         $dimensions.Count | Should -Be 1
         $dimensions[0].codeCoverageExpected | Should -BeTrue
         $dimensions[0].codeCoverageRepositorySummary | Should -Be $ExpectedRepositorySummary
-        $dimensions[0].codeCoverageMode | Should -Be 'all'
+        $dimensions[0].codeCoverageMode | Should -Be 'line'
         $dimensions[0].codeCoverageFormats | Should -Be @('bc-json', 'cobertura')
     }
 
@@ -66,7 +65,6 @@ Describe "Get-ProjectsToBuild" {
             useSeparateTestAction = @{
                 enabled             = $true
                 codeCoverageEnabled = $true
-                codeCoverageMode    = 'line'
                 codeCoverageFormats = @('bc-json')
                 codeCoverageSummary = 'both'
             }

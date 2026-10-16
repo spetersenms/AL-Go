@@ -350,7 +350,6 @@
                 "enabled": false,
                 "testType": "",
                 "codeCoverageEnabled": false,
-                "codeCoverageMode": "all",
                 "codeCoverageFormats": [
                     "bc-json",
                     "cobertura"
@@ -372,17 +371,7 @@
                 "codeCoverageEnabled": {
                     "type": "boolean",
                     "default": false,
-                    "description": "When true, the built-in separate RunTests action collects code coverage on container platform 30.0.56026.0 or later. Unsupported or unconfirmed platform versions produce a warning and continue tests without coverage."
-                },
-                "codeCoverageMode": {
-                    "type": "string",
-                    "enum": [
-                        "procedure",
-                        "line",
-                        "all"
-                    ],
-                    "default": "all",
-                    "description": "Coverage detail collected by the built-in AlTool runner: procedure, line, or all."
+                    "description": "When true, the built-in separate RunTests action collects executable-line coverage on container platform 30.0.56026.0 or later. Unsupported or unconfirmed platform versions produce a warning and continue tests without coverage."
                 },
                 "codeCoverageFormats": {
                     "type": "array",
@@ -410,7 +399,7 @@
                         "both"
                     ],
                     "default": "both",
-                    "description": "Controls GitHub job-summary visualization when code coverage is enabled: none, project, repository, or both."
+                    "description": "Controls GitHub executable-line coverage visualization when code coverage is enabled: none, project, repository, or both."
                 }
             },
             "additionalProperties": false

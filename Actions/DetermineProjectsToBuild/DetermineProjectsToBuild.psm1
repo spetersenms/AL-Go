@@ -142,7 +142,7 @@ function CreateBuildDimensions {
                 githubRunnerShell             = $githubRunnerShell
                 codeCoverageExpected          = $codeCoverageExpected
                 codeCoverageRepositorySummary = $codeCoverageRepositorySummary
-                codeCoverageMode              = "$($separateTestSettings.codeCoverageMode)"
+                codeCoverageMode              = "line"
                 codeCoverageFormats           = @($separateTestSettings.codeCoverageFormats)
             }
         }

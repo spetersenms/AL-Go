@@ -621,12 +621,11 @@ function Merge-CoverageFact {
 function Add-CoverageReportFacts {
     <#
     .SYNOPSIS
-        Adds semantic line and method facts from one validated report to project unions.
+        Adds semantic executable-line facts from one validated report.
     #>
     Param(
         [hashtable] $Report,
         [hashtable] $Lines,
-        [hashtable] $Methods,
         [string] $RequestedMode
     )
 
@@ -650,35 +649,6 @@ function Add-CoverageReportFacts {
             }
         }
     }
-
-    if ($RequestedMode -in @("procedure", "all")) {
-        $coveredLocalMethods = @{}
-        foreach ($edge in @(Get-CoverageArray $Report.procedureEdges)) {
-            $edgeKey = "$(ConvertTo-CoverageInteger $edge.objectType)|$(ConvertTo-CoverageInteger $edge.objectId)|$(ConvertTo-CoverageInteger $edge.methodId)"
-            $coveredLocalMethods[$edgeKey] = $true
-        }
-        foreach ($method in @(Get-CoverageArray $Report.methods)) {
-            $objectType = ConvertTo-CoverageInteger $method.objectType
-            $objectId = ConvertTo-CoverageInteger $method.objectId
-            $methodId = ConvertTo-CoverageInteger $method.methodId
-            $startLine = ConvertTo-CoverageInteger $method.startLine
-            $endLine = ConvertTo-CoverageInteger $method.endLine
-            $source = ConvertTo-CoverageSourceIdentity "$($method.sourcePath)"
-            $name = "$($method.name)"
-            $semanticKey = "$source|$objectType|$objectId|$($name.ToLowerInvariant())|$startLine|$endLine"
-            $localKey = "$objectType|$objectId|$methodId"
-            Merge-CoverageFact -Facts $Methods -Key $semanticKey -Fact @{
-                SourcePath = "$($method.sourcePath)"
-                ObjectType = $objectType
-                ObjectId = $objectId
-                MethodId = $methodId
-                MethodName = $name
-                StartLine = $startLine
-                EndLine = $endLine
-                Covered = $coveredLocalMethods.ContainsKey($localKey)
-            }
-        }
-    }
 }
 
 function New-EmptyProjectCoverageModel {
@@ -693,8 +663,6 @@ function New-EmptyProjectCoverageModel {
         Reasons = @()
         LineComplete = $false
         LineReasons = @()
-        ProcedureComplete = $false
-        ProcedureReasons = @()
         Notices = @()
         Project = $Project
         ProjectName = $ProjectName
@@ -707,9 +675,7 @@ function New-EmptyProjectCoverageModel {
         Runs = @()
         Apps = @()
         Lines = @{}
-        Methods = @{}
         ExcludedLineFacts = 0
-        ExcludedMethodFacts = 0
         StatusPath = ""
     }
 }
@@ -723,17 +689,13 @@ function Add-ScopedCoverageReportFacts {
     )
 
     $rawLines = @{}
-    $rawMethods = @{}
-    Add-CoverageReportFacts -Report $Report -Lines $rawLines -Methods $rawMethods -RequestedMode "all"
+    Add-CoverageReportFacts -Report $Report -Lines $rawLines -RequestedMode "line"
     $result = @{
         IncludedLineObjects = @{}
         IncludedLineSources = @{}
         ExcludedLineObjects = @{}
-        IncludedMethodObjects = @{}
-        ExcludedMethodObjects = @{}
         Lines = @{}
         LineReasons = @()
-        ProcedureReasons = @()
     }
 
     foreach ($fact in $rawLines.Values) {
@@ -759,7 +721,6 @@ function Add-ScopedCoverageReportFacts {
                 $copy = @{} + $fact
                 $copy.SourcePath = $source.Identity
                 $key = "$($source.Identity)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-                Merge-CoverageFact -Facts $Model.Lines -Key $key -Fact $copy
                 Merge-CoverageFact -Facts $result.Lines -Key $key -Fact (@{} + $copy)
             }
         }
@@ -773,77 +734,16 @@ function Add-ScopedCoverageReportFacts {
             }
         }
     }
-
-    foreach ($fact in $rawMethods.Values) {
-        $objectKey = "$($fact.ObjectType)|$($fact.ObjectId)"
-        $source = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
-            @{
-                Included = -not [string]::IsNullOrWhiteSpace("$($fact.SourcePath)")
-                Identity = ConvertTo-CoverageSourceIdentity "$($fact.SourcePath)"
-                LocalMappingFailed = $false
-            }
-        }
-        else {
-            Resolve-RepositoryCoverageSource -SourcePath "$($fact.SourcePath)" `
-                -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
-        }
-        if ($source.Included) {
-            $result.IncludedMethodObjects[$objectKey] = $true
-            if ($RequestedMode -in @("procedure", "all")) {
-                $copy = @{} + $fact
-                $copy.SourcePath = $source.Identity
-                $key = "$($source.Identity)|$($fact.ObjectType)|$($fact.ObjectId)|$("$($fact.MethodName)".ToLowerInvariant())|$($fact.StartLine)|$($fact.EndLine)"
-                Merge-CoverageFact -Facts $Model.Methods -Key $key -Fact $copy
-                if ($fact.MethodId -eq -1) {
-                    $result.ProcedureReasons += "A repository method identity is unavailable."
-                }
-            }
-        }
-        else {
-            $result.ExcludedMethodObjects[$objectKey] = $true
-            if ($RequestedMode -in @("procedure", "all")) {
-                $Model.ExcludedMethodFacts++
-            }
-            if ($RequestedMode -in @("procedure", "all") -and $source.LocalMappingFailed) {
-                $result.ProcedureReasons += "A repository method source path could not be validated."
-            }
-        }
-    }
     return $result
-}
-
-function Test-CoverageDiagnosticReferencesIncludedRoot {
-    Param(
-        [string] $Diagnostic,
-        [string[]] $SourceRoots
-    )
-
-    if ($Diagnostic -notmatch "^Coverage method identity resolution failed for '([^']+)'") {
-        return $false
-    }
-    $diagnosticRoot = $matches[1].Replace('\', '/').TrimEnd('/').ToLowerInvariant()
-    foreach ($sourceRoot in $SourceRoots) {
-        $normalizedRoot = "$sourceRoot".Replace('\', '/').Trim('/').ToLowerInvariant()
-        if ($normalizedRoot -eq ".") {
-            return $true
-        }
-        if (-not [string]::IsNullOrWhiteSpace($normalizedRoot) -and
-            ($diagnosticRoot -eq $normalizedRoot -or $diagnosticRoot.EndsWith("/$normalizedRoot"))) {
-            return $true
-        }
-    }
-    return $false
 }
 
 function Get-CoverageDiagnosticAssessment {
     Param(
         [hashtable] $Report,
-        [hashtable] $Scope,
-        [string[]] $SourceRoots
+        [hashtable] $Scope
     )
 
     $lineReasons = @($Scope.LineReasons)
-    $procedureReasons = @($Scope.ProcedureReasons)
     $notices = @()
     $lineGlobalUnsafe = $Scope.LineReasons.Count -gt 0
     $lineAffectedSources = @{}
@@ -858,15 +758,12 @@ function Get-CoverageDiagnosticAssessment {
         if ($diagnostic -match '^No source file was found for AL object ([0-9]+):([0-9]+)\.$') {
             $objectKey = "$($matches[1])|$($matches[2])"
             $hasIncludedLine = $Scope.IncludedLineObjects.ContainsKey($objectKey)
-            $hasIncludedMethod = $Scope.IncludedMethodObjects.ContainsKey($objectKey)
-            $hasExcludedFact = $Scope.ExcludedLineObjects.ContainsKey($objectKey) -or
-                $Scope.ExcludedMethodObjects.ContainsKey($objectKey)
-            if (-not $hasIncludedLine -and -not $hasIncludedMethod -and $hasExcludedFact) {
+            $hasExcludedFact = $Scope.ExcludedLineObjects.ContainsKey($objectKey)
+            if (-not $hasIncludedLine -and $hasExcludedFact) {
                 $ignoredDiagnostics++
                 continue
             }
             if ($hasIncludedLine) {
-                $lineReasons += "A repository object source could not be loaded."
                 if ($Scope.IncludedLineSources.ContainsKey($objectKey)) {
                     foreach ($sourceIdentity in $Scope.IncludedLineSources[$objectKey].Keys) {
                         $lineAffectedSources[$sourceIdentity] = $true
@@ -876,12 +773,8 @@ function Get-CoverageDiagnosticAssessment {
                     $lineGlobalUnsafe = $true
                 }
             }
-            if ($hasIncludedMethod) {
-                $procedureReasons += "A repository object source could not be loaded."
-            }
-            if (-not $hasIncludedLine -and -not $hasIncludedMethod) {
+            if (-not $hasIncludedLine) {
                 $lineReasons += "A coverage source diagnostic could not be safely scoped."
-                $procedureReasons += "A coverage source diagnostic could not be safely scoped."
                 $lineGlobalUnsafe = $true
             }
             continue
@@ -889,26 +782,14 @@ function Get-CoverageDiagnosticAssessment {
 
         if ($diagnostic.StartsWith("Coverage method identity resolution failed for '",
                 [System.StringComparison]::Ordinal)) {
-            if ($SourceRoots.Count -eq 0 -or
-                (Test-CoverageDiagnosticReferencesIncludedRoot -Diagnostic $diagnostic -SourceRoots $SourceRoots)) {
-                $procedureReasons += "Method identity resolution failed for a repository source root."
-            }
-            else {
-                $ignoredDiagnostics++
-            }
+            $ignoredDiagnostics++
             continue
         }
 
         $lineReasons += "A coverage diagnostic could not be safely scoped."
-        $procedureReasons += "A coverage diagnostic could not be safely scoped."
         $lineGlobalUnsafe = $true
     }
 
-    if (-not [bool]$Report.complete -and $diagnostics.Count -eq 0) {
-        $lineReasons += "The globally incomplete report has no diagnostics that can be safely scoped."
-        $procedureReasons += "The globally incomplete report has no diagnostics that can be safely scoped."
-        $lineGlobalUnsafe = $true
-    }
     if ($ignoredDiagnostics -gt 0) {
         $notices += "Ignored $ignoredDiagnostics diagnostics that affect only excluded external or unmapped facts."
     }
@@ -917,7 +798,6 @@ function Get-CoverageDiagnosticAssessment {
         LineReasons = @($lineReasons | Select-Object -Unique)
         LineGlobalUnsafe = $lineGlobalUnsafe
         LineAffectedSources = @($lineAffectedSources.Keys)
-        ProcedureReasons = @($procedureReasons | Select-Object -Unique)
         Notices = @($notices | Select-Object -Unique)
     }
 }
@@ -980,6 +860,23 @@ function Get-ProjectCoverageModelFromStatus {
     }
     $model.Apps = @(New-CoverageApplicationModels -SourceRootDetails $model.SourceRootDetails `
         -Mode $model.Mode)
+    if (-not [string]::IsNullOrWhiteSpace($RepositoryRoot) -and
+        $model.ApplicationMetadataAvailable) {
+        $normalizedRoots = @(Get-NormalizedCoverageSourceRoots -RepositoryRoot $RepositoryRoot `
+            -SourceRoots $model.SourceRoots)
+        foreach ($app in $model.Apps) {
+            $rootIndex = -1
+            for ($index = 0; $index -lt $model.SourceRootDetails.Count; $index++) {
+                if ("$($model.SourceRootDetails[$index].Identity)" -eq "$($app.RootIdentity)") {
+                    $rootIndex = $index
+                    break
+                }
+            }
+            if ($rootIndex -lt 0 -or -not [bool]$normalizedRoots[$rootIndex].Valid) {
+                $app.LineComplete = $false
+            }
+        }
+    }
     $reasons = @()
 
     if (-not (Test-CoverageMode $model.Mode)) {
@@ -1046,7 +943,6 @@ function Get-ProjectCoverageModelFromStatus {
         $reportPath = ""
         $runLines = @{}
         $runLineReasons = @()
-        $runProcedureReasons = @()
         $lineGlobalUnsafe = $false
         $lineAffectedSources = @()
         if ($runReasons.Count -eq 0 -and "bc-json" -in $formats) {
@@ -1069,9 +965,8 @@ function Get-ProjectCoverageModelFromStatus {
                             -RequestedMode $model.Mode -RepositoryRoot $RepositoryRoot
                         $runLines = $scope.Lines
                         $assessment = Get-CoverageDiagnosticAssessment -Report $report `
-                            -Scope $scope -SourceRoots $model.SourceRoots
+                            -Scope $scope
                         $runLineReasons += $assessment.LineReasons
-                        $runProcedureReasons += $assessment.ProcedureReasons
                         $runNotices += $assessment.Notices
                         $lineGlobalUnsafe = [bool]$assessment.LineGlobalUnsafe
                         $lineAffectedSources = @($assessment.LineAffectedSources)
@@ -1085,7 +980,17 @@ function Get-ProjectCoverageModelFromStatus {
 
         $runLineComplete = $model.Mode -in @("line", "all") -and
             $projectReasons.Count -eq 0 -and $runReasons.Count -eq 0 -and
-            $runLineReasons.Count -eq 0
+            $runLineReasons.Count -eq 0 -and -not $lineGlobalUnsafe
+        if ($runLineComplete) {
+            foreach ($sourceIdentity in $lineAffectedSources) {
+                $detail = Resolve-CoverageSourceRootDetail -SourceIdentity $sourceIdentity `
+                    -SourceRootDetails $model.SourceRootDetails
+                if (-not $detail -or "$($detail.Kind)" -in @("app", "unknown")) {
+                    $runLineComplete = $false
+                    break
+                }
+            }
+        }
         Merge-CoverageRunIntoApplications -Applications $model.Apps -Lines $runLines `
             -SourceRootDetails $model.SourceRootDetails `
             -BlocksAllApplications ($model.Mode -notin @("line", "all") -or
@@ -1101,7 +1006,6 @@ function Get-ProjectCoverageModelFromStatus {
             Lines = $runLines
             Reasons = @($runReasons)
             LineReasons = @($runLineReasons | Select-Object -Unique)
-            ProcedureReasons = @($runProcedureReasons | Select-Object -Unique)
             Notices = @($runNotices | Select-Object -Unique)
         }
         foreach ($runReason in $runReasons) {
@@ -1109,9 +1013,6 @@ function Get-ProjectCoverageModelFromStatus {
         }
         foreach ($runReason in $runLineReasons) {
             $model.LineReasons += "$appName`: $runReason"
-        }
-        foreach ($runReason in $runProcedureReasons) {
-            $model.ProcedureReasons += "$appName`: $runReason"
         }
         foreach ($notice in $runNotices) {
             $model.Notices += "$appName`: $notice"
@@ -1131,15 +1032,25 @@ function Get-ProjectCoverageModelFromStatus {
                     @{ Expression = "RootIdentity"; Descending = $false })
     $model.Reasons = @($reasons | Select-Object -Unique)
     $model.LineReasons = @($model.LineReasons | Select-Object -Unique)
-    $model.ProcedureReasons = @($model.ProcedureReasons | Select-Object -Unique)
     $model.Notices = @($model.Notices | Select-Object -Unique)
+    if (-not $model.ApplicationMetadataAvailable) {
+        $model.LineReasons += "Coverage status does not identify regular application roots."
+    }
+    elseif ($model.Apps.Count -eq 0) {
+        $model.LineReasons += "Coverage status contains no regular application roots."
+    }
     $model.LineComplete = $model.Mode -in @("line", "all") -and
-        $model.Reasons.Count -eq 0 -and $model.LineReasons.Count -eq 0
-    $model.ProcedureComplete = $model.Mode -in @("procedure", "all") -and
-        $model.Reasons.Count -eq 0 -and $model.ProcedureReasons.Count -eq 0
-    $requestedMetricsComplete = ($model.Mode -notin @("line", "all") -or $model.LineComplete) -and
-        ($model.Mode -notin @("procedure", "all") -or $model.ProcedureComplete)
-    $model.Complete = $model.Reasons.Count -eq 0 -and $requestedMetricsComplete
+        $model.Reasons.Count -eq 0 -and $model.LineReasons.Count -eq 0 -and
+        @($model.Apps | Where-Object { -not [bool]$_.LineComplete }).Count -eq 0
+    if ($model.LineComplete) {
+        foreach ($app in $model.Apps) {
+            foreach ($fact in $app.Lines.Values) {
+                $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
+                Merge-CoverageFact -Facts $model.Lines -Key $key -Fact (@{} + $fact)
+            }
+        }
+    }
+    $model.Complete = $model.LineComplete
     return $model
 }
 
@@ -1313,19 +1224,11 @@ function Merge-RepositoryCoverageFacts {
     )
 
     $RepositoryModel.ExcludedLineFacts += $ProjectModel.ExcludedLineFacts
-    $RepositoryModel.ExcludedMethodFacts += $ProjectModel.ExcludedMethodFacts
     if ($ProjectModel.LineComplete) {
         foreach ($fact in @($ProjectModel.Lines.Values)) {
         $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
         $copy = @{} + $fact
         Merge-CoverageFact -Facts $RepositoryModel.Lines -Key $key -Fact $copy
-        }
-    }
-    if ($ProjectModel.ProcedureComplete) {
-        foreach ($fact in @($ProjectModel.Methods.Values)) {
-        $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$("$($fact.MethodName)".ToLowerInvariant())|$($fact.StartLine)|$($fact.EndLine)"
-        $copy = @{} + $fact
-        Merge-CoverageFact -Facts $RepositoryModel.Methods -Key $key -Fact $copy
         }
     }
 }
@@ -1403,16 +1306,12 @@ function Get-RepositoryCoverageModel {
         Reasons = @()
         LineComplete = $false
         LineReasons = @()
-        ProcedureComplete = $false
-        ProcedureReasons = @()
         Notices = @()
         Projects = @()
         Apps = @()
         Lines = @{}
-        Methods = @{}
         Mode = ""
         ExcludedLineFacts = 0
-        ExcludedMethodFacts = 0
     }
     $expectedResult = Get-ExpectedCoverageDimensions -BuildOrderJson $BuildOrderJson
     if (-not $expectedResult.Valid) {
@@ -1455,7 +1354,6 @@ function Get-RepositoryCoverageModel {
             $projectModels += $invalidModel
             $reasons += "An expected build dimension is invalid."
             $repositoryModel.LineReasons += "An expected build dimension is invalid."
-            $repositoryModel.ProcedureReasons += "An expected build dimension is invalid."
             continue
         }
 
@@ -1480,9 +1378,6 @@ function Get-RepositoryCoverageModel {
             if ($missingModel.Mode -in @("line", "all")) {
                 $repositoryModel.LineReasons += "$($dimension.project) [$($dimension.buildMode)]: $missingReason"
             }
-            if ($missingModel.Mode -in @("procedure", "all")) {
-                $repositoryModel.ProcedureReasons += "$($dimension.project) [$($dimension.buildMode)]: $missingReason"
-            }
             continue
         }
 
@@ -1494,18 +1389,14 @@ function Get-RepositoryCoverageModel {
             if ($projectModel.Mode -in @("line", "all")) {
                 $repositoryModel.LineReasons += "$($projectModel.Project) [$($projectModel.BuildMode)]: $reason"
             }
-            if ($projectModel.Mode -in @("procedure", "all")) {
-                $repositoryModel.ProcedureReasons += "$($projectModel.Project) [$($projectModel.BuildMode)]: $reason"
-            }
         }
         if ($projectModel.Mode -in @("line", "all")) {
             foreach ($reason in $projectModel.LineReasons) {
                 $repositoryModel.LineReasons += "$($projectModel.Project) [$($projectModel.BuildMode)]: $reason"
             }
-        }
-        if ($projectModel.Mode -in @("procedure", "all")) {
-            foreach ($reason in $projectModel.ProcedureReasons) {
-                $repositoryModel.ProcedureReasons += "$($projectModel.Project) [$($projectModel.BuildMode)]: $reason"
+            if (-not $projectModel.LineComplete -and
+                $projectModel.Reasons.Count -eq 0 -and $projectModel.LineReasons.Count -eq 0) {
+                $repositoryModel.LineReasons += "$($projectModel.Project) [$($projectModel.BuildMode)]: Regular application line coverage is incomplete."
             }
         }
         $repositoryModel.Notices += $projectModel.Notices
@@ -1515,19 +1406,14 @@ function Get-RepositoryCoverageModel {
     $repositoryModel.Apps = @(Get-RepositoryApplications -ProjectModels $projectModels)
     $repositoryModel.Reasons = @($reasons | Select-Object -Unique)
     $repositoryModel.LineReasons = @($repositoryModel.LineReasons | Select-Object -Unique)
-    $repositoryModel.ProcedureReasons = @($repositoryModel.ProcedureReasons | Select-Object -Unique)
     $repositoryModel.Notices = @($repositoryModel.Notices | Select-Object -Unique)
     foreach ($projectModel in $projectModels) {
         Merge-RepositoryCoverageFacts -RepositoryModel $repositoryModel `
             -ProjectModel $projectModel
     }
     $lineRequested = @($projectModels | Where-Object { $_.Mode -in @("line", "all") }).Count -gt 0
-    $procedureRequested = @($projectModels | Where-Object { $_.Mode -in @("procedure", "all") }).Count -gt 0
     $repositoryModel.LineComplete = $lineRequested -and $repositoryModel.LineReasons.Count -eq 0
-    $repositoryModel.ProcedureComplete = $procedureRequested -and
-        $repositoryModel.ProcedureReasons.Count -eq 0
-    $repositoryModel.Complete = (-not $lineRequested -or $repositoryModel.LineComplete) -and
-        (-not $procedureRequested -or $repositoryModel.ProcedureComplete)
+    $repositoryModel.Complete = $repositoryModel.LineComplete
     $modes = @($projectModels | ForEach-Object { $_.Mode } | Select-Object -Unique)
     $repositoryModel.Mode = if ($modes.Count -eq 1) { $modes[0] } else { "all" }
     return $repositoryModel
@@ -1601,10 +1487,7 @@ function Resolve-CoverageObjectAttribution {
 }
 
 function Get-UncoveredObjectRows {
-    Param(
-        [hashtable] $Lines,
-        [hashtable] $Methods
-    )
+    Param([hashtable] $Lines)
 
     $objects = @{}
     foreach ($fact in @($Lines.Values | Where-Object { -not $_.Covered })) {
@@ -1615,27 +1498,12 @@ function Get-UncoveredObjectRows {
                 ObjectId = $fact.ObjectId
                 SourcePath = $fact.SourcePath
                 UncoveredLines = 0
-                UnreachedMethods = 0
             }
         }
         $objects[$key].UncoveredLines++
     }
-    foreach ($fact in @($Methods.Values | Where-Object { -not $_.Covered })) {
-        $key = "$(ConvertTo-CoverageSourceIdentity "$($fact.SourcePath)")|$($fact.ObjectType)|$($fact.ObjectId)"
-        if (-not $objects.ContainsKey($key)) {
-            $objects[$key] = @{
-                ObjectType = $fact.ObjectType
-                ObjectId = $fact.ObjectId
-                SourcePath = $fact.SourcePath
-                UncoveredLines = 0
-                UnreachedMethods = 0
-            }
-        }
-        $objects[$key].UnreachedMethods++
-    }
     return @($objects.Values |
         Sort-Object @{ Expression = "UncoveredLines"; Descending = $true },
-                    @{ Expression = "UnreachedMethods"; Descending = $true },
                     @{ Expression = "ObjectType"; Descending = $false },
                     @{ Expression = "ObjectId"; Descending = $false } |
         Select-Object -First 10)
@@ -1657,36 +1525,6 @@ function Add-CoverageMetricMarkdown {
         [void]$Builder.AppendLine("**$Label coverage:** $($Metrics.Percentage.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture))% ($($Metrics.Covered)/$($Metrics.Total) $DenominatorName, $($Metrics.Uncovered) $UncoveredName)")
     }
     [void]$Builder.AppendLine()
-}
-
-function Add-CoverageRunTable {
-    Param(
-        [System.Text.StringBuilder] $Builder,
-        [object[]] $Runs,
-        [switch] $IncludeProject
-    )
-
-    if ($IncludeProject) {
-        [void]$Builder.AppendLine("| Project | Build mode | Test app | App ID | State |")
-        [void]$Builder.AppendLine("| :-- | :-- | :-- | :-- | :-- |")
-    }
-    else {
-        [void]$Builder.AppendLine("| Test app | App ID | State |")
-        [void]$Builder.AppendLine("| :-- | :-- | :-- |")
-    }
-    foreach ($runEntry in $Runs) {
-        $run = if ($IncludeProject) { $runEntry.Run } else { $runEntry }
-        if ($IncludeProject) {
-            [void]$Builder.AppendLine("| $(ConvertTo-SafeCoverageText $runEntry.Project) | $(ConvertTo-SafeCoverageText $runEntry.BuildMode) | $(ConvertTo-SafeCoverageText $run.AppName) | $(ConvertTo-SafeCoverageText $run.AppId) | $(ConvertTo-SafeCoverageText $run.State) |")
-        }
-        else {
-            [void]$Builder.AppendLine("| $(ConvertTo-SafeCoverageText $run.AppName) | $(ConvertTo-SafeCoverageText $run.AppId) | $(ConvertTo-SafeCoverageText $run.State) |")
-        }
-    }
-    if ($Runs.Count -eq 0) {
-        $columns = if ($IncludeProject) { 5 } else { 3 }
-        [void]$Builder.AppendLine("| $(ConvertTo-SafeCoverageText "No test-app runs were available.") $("| " * ($columns - 1))")
-    }
 }
 
 function Add-ApplicationCoverageTable {
@@ -1741,24 +1579,23 @@ function Add-ApplicationCoverageTable {
 function Add-UncoveredObjectsMarkdown {
     Param(
         [System.Text.StringBuilder] $Builder,
-        [hashtable] $Lines,
-        [hashtable] $Methods
+        [hashtable] $Lines
     )
 
     [void]$Builder.AppendLine("<details>")
     [void]$Builder.AppendLine("<summary>Top 10 uncovered objects</summary>")
     [void]$Builder.AppendLine()
-    $rows = @(Get-UncoveredObjectRows -Lines $Lines -Methods $Methods)
+    $rows = @(Get-UncoveredObjectRows -Lines $Lines)
     if ($rows.Count -eq 0) {
         [void]$Builder.AppendLine("No uncovered objects.")
     }
     else {
-        [void]$Builder.AppendLine("| Object | Name | Uncovered executable lines | Unreached methods |")
-        [void]$Builder.AppendLine("| :-- | :-- | --: | --: |")
+        [void]$Builder.AppendLine("| Object | Name | Uncovered executable lines |")
+        [void]$Builder.AppendLine("| :-- | :-- | --: |")
         foreach ($row in $rows) {
             $attribution = Resolve-CoverageObjectAttribution -ObjectType $row.ObjectType `
                 -ObjectId $row.ObjectId -SourcePath "$($row.SourcePath)"
-            [void]$Builder.AppendLine("| $(ConvertTo-SafeCoverageText $attribution.Object) | $(ConvertTo-SafeCoverageText $attribution.Name) | $($row.UncoveredLines) | $($row.UnreachedMethods) |")
+            [void]$Builder.AppendLine("| $(ConvertTo-SafeCoverageText $attribution.Object) | $(ConvertTo-SafeCoverageText $attribution.Name) | $($row.UncoveredLines) |")
         }
     }
     [void]$Builder.AppendLine()
@@ -1800,28 +1637,16 @@ function New-ProjectCoverageSummary {
     [void]$builder.AppendLine("## Code coverage: $(ConvertTo-SafeCoverageText $displayName)")
     [void]$builder.AppendLine()
 
-    if (-not $Model.Complete -or $Model.Notices.Count -gt 0) {
+    if (-not $Model.Complete) {
         Add-IncompleteCoverageWarningMarkdown -Builder $builder
     }
-    if ($Model.Mode -in @("line", "all")) {
-        if ($Model.LineComplete) {
-            Add-CoverageMetricMarkdown -Builder $builder -Label "Line" `
-                -Metrics (Get-CoverageMetrics $Model.Lines) `
-                -DenominatorName "executable lines" -UncoveredName "uncovered"
-        }
-        else {
-            Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Line"
-        }
+    if ($Model.LineComplete) {
+        Add-CoverageMetricMarkdown -Builder $builder -Label "Line" `
+            -Metrics (Get-CoverageMetrics $Model.Lines) `
+            -DenominatorName "executable lines" -UncoveredName "uncovered"
     }
-    if ($Model.Mode -in @("procedure", "all")) {
-        if ($Model.ProcedureComplete) {
-            Add-CoverageMetricMarkdown -Builder $builder -Label "Procedure" `
-                -Metrics (Get-CoverageMetrics $Model.Methods) `
-                -DenominatorName "methods" -UncoveredName "unreached"
-        }
-        else {
-            Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Procedure"
-        }
+    else {
+        Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Line"
     }
 
     [void]$builder.AppendLine("### Application coverage")
@@ -1829,14 +1654,8 @@ function New-ProjectCoverageSummary {
     Add-ApplicationCoverageTable -Builder $builder -Applications @($Model.Apps)
     [void]$builder.AppendLine()
 
-    [void]$builder.AppendLine("### Test-app runs")
-    [void]$builder.AppendLine()
-    Add-CoverageRunTable -Builder $builder -Runs @($Model.Runs)
-    [void]$builder.AppendLine()
-    if ($Model.LineComplete -or $Model.ProcedureComplete) {
-        $rankedLines = if ($Model.LineComplete) { $Model.Lines } else { @{} }
-        $rankedMethods = if ($Model.ProcedureComplete) { $Model.Methods } else { @{} }
-        Add-UncoveredObjectsMarkdown -Builder $builder -Lines $rankedLines -Methods $rankedMethods
+    if ($Model.LineComplete) {
+        Add-UncoveredObjectsMarkdown -Builder $builder -Lines $Model.Lines
     }
     return Limit-CoverageSummary -Summary $builder.ToString()
 }
@@ -1851,57 +1670,33 @@ function New-RepositoryCoverageSummary {
     $builder = New-Object System.Text.StringBuilder
     [void]$builder.AppendLine("## Repository code coverage")
     [void]$builder.AppendLine()
-    if (-not $Model.Complete -or $Model.Notices.Count -gt 0) {
+    if (-not $Model.Complete) {
         Add-IncompleteCoverageWarningMarkdown -Builder $builder
     }
-    $hasLine = @($Model.Projects | Where-Object { $_.Mode -in @("line", "all") }).Count -gt 0
-    $hasProcedure = @($Model.Projects | Where-Object { $_.Mode -in @("procedure", "all") }).Count -gt 0
-    if ($hasLine) {
-        if ($Model.LineComplete) {
-            Add-CoverageMetricMarkdown -Builder $builder -Label "Line" `
-                -Metrics (Get-CoverageMetrics $Model.Lines) `
-                -DenominatorName "executable lines" -UncoveredName "uncovered"
-        }
-        else {
-            Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Line"
-        }
+    if ($Model.LineComplete) {
+        Add-CoverageMetricMarkdown -Builder $builder -Label "Line" `
+            -Metrics (Get-CoverageMetrics $Model.Lines) `
+            -DenominatorName "executable lines" -UncoveredName "uncovered"
     }
-    if ($hasProcedure) {
-        if ($Model.ProcedureComplete) {
-            Add-CoverageMetricMarkdown -Builder $builder -Label "Procedure" `
-                -Metrics (Get-CoverageMetrics $Model.Methods) `
-                -DenominatorName "methods" -UncoveredName "unreached"
-        }
-        else {
-            Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Procedure"
-        }
+    else {
+        Add-UnavailableCoverageMetricMarkdown -Builder $builder -Label "Line"
     }
     [void]$builder.AppendLine("### Projects")
     [void]$builder.AppendLine()
-    [void]$builder.AppendLine("| Project | Build mode | Status | Line rate | Procedure rate |")
-    [void]$builder.AppendLine("| :-- | :-- | :-- | --: | --: |")
+    [void]$builder.AppendLine("| Project | Build mode | Status | Line rate |")
+    [void]$builder.AppendLine("| :-- | :-- | :-- | --: |")
     foreach ($projectModel in @($Model.Projects)) {
         $status = if ($projectModel.Complete) {
             "complete"
-        }
-        elseif ($projectModel.LineComplete -or $projectModel.ProcedureComplete) {
-            "partial"
         }
         else {
             "incomplete"
         }
         $lineRate = "-"
-        $procedureRate = "-"
         if ($projectModel.LineComplete -and $projectModel.Mode -in @("line", "all")) {
             $lineMetrics = Get-CoverageMetrics $projectModel.Lines
             if ($lineMetrics.Total -gt 0) {
                 $lineRate = "$($lineMetrics.Percentage.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture))%"
-            }
-        }
-        if ($projectModel.ProcedureComplete -and $projectModel.Mode -in @("procedure", "all")) {
-            $procedureMetrics = Get-CoverageMetrics $projectModel.Methods
-            if ($procedureMetrics.Total -gt 0) {
-                $procedureRate = "$($procedureMetrics.Percentage.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture))%"
             }
         }
         $projectDisplay = if (-not [string]::IsNullOrWhiteSpace("$($projectModel.ProjectName)")) {
@@ -1910,7 +1705,7 @@ function New-RepositoryCoverageSummary {
         else {
             "$($projectModel.Project)"
         }
-        [void]$builder.AppendLine("| $(ConvertTo-SafeCoverageText $projectDisplay) | $(ConvertTo-SafeCoverageText $projectModel.BuildMode) | $status | $lineRate | $procedureRate |")
+        [void]$builder.AppendLine("| $(ConvertTo-SafeCoverageText $projectDisplay) | $(ConvertTo-SafeCoverageText $projectModel.BuildMode) | $status | $lineRate |")
     }
     [void]$builder.AppendLine()
 
@@ -1919,33 +1714,8 @@ function New-RepositoryCoverageSummary {
     Add-ApplicationCoverageTable -Builder $builder -Applications @($Model.Apps) -IncludeProject
     [void]$builder.AppendLine()
 
-    [void]$builder.AppendLine("<details>")
-    [void]$builder.AppendLine("<summary>Per-test-app runs</summary>")
-    [void]$builder.AppendLine()
-    $allRuns = @()
-    foreach ($projectModel in @($Model.Projects)) {
-        foreach ($run in @($projectModel.Runs)) {
-            $allRuns += @{
-                Project = if ([string]::IsNullOrWhiteSpace("$($projectModel.ProjectName)")) {
-                    "$($projectModel.Project)"
-                }
-                else {
-                    "$($projectModel.ProjectName)"
-                }
-                BuildMode = "$($projectModel.BuildMode)"
-                Run = $run
-            }
-        }
-    }
-    Add-CoverageRunTable -Builder $builder -Runs $allRuns -IncludeProject
-    [void]$builder.AppendLine()
-    [void]$builder.AppendLine("</details>")
-    [void]$builder.AppendLine()
-
-    if ($Model.LineComplete -or $Model.ProcedureComplete) {
-        $rankedLines = if ($Model.LineComplete) { $Model.Lines } else { @{} }
-        $rankedMethods = if ($Model.ProcedureComplete) { $Model.Methods } else { @{} }
-        Add-UncoveredObjectsMarkdown -Builder $builder -Lines $rankedLines -Methods $rankedMethods
+    if ($Model.LineComplete) {
+        Add-UncoveredObjectsMarkdown -Builder $builder -Lines $Model.Lines
     }
     return Limit-CoverageSummary -Summary $builder.ToString()
 }

@@ -1148,7 +1148,6 @@ Describe 'RunTests.psm1 Tests' {
                     enabled                 = $true
                     testType                = ''
                     codeCoverageEnabled     = $true
-                    codeCoverageMode        = 'all'
                     codeCoverageFormats     = @('bc-json', 'cobertura')
                 }
             }
@@ -1162,7 +1161,7 @@ Describe 'RunTests.psm1 Tests' {
             $script:capturedCoverageRuns.Count | Should -Be 2
             $script:coverageStatusBeforeRuns[0] | Should -Be @('running', 'pending')
             $script:coverageStatusBeforeRuns[1] | Should -Be @('complete', 'running')
-            $script:capturedCoverageRuns[0].CoverageMode | Should -Be 'all'
+            $script:capturedCoverageRuns[0].CoverageMode | Should -Be 'line'
             $script:capturedCoverageRuns[0].CoverageFormats | Should -Be @('bc-json', 'cobertura')
             $script:capturedCoverageRuns[0].CoverageSourceRoots | Should -Contain (
                 [System.IO.Path]::GetFullPath((Join-Path $projectPath 'App'))
@@ -1188,7 +1187,7 @@ Describe 'RunTests.psm1 Tests' {
             $coverageStatus.project | Should -Be 'Projects/Coverage'
             $coverageStatus.projectName | Should -Be 'Coverage Project'
             $coverageStatus.buildMode | Should -Be 'Clean'
-            $coverageStatus.mode | Should -Be 'all'
+            $coverageStatus.mode | Should -Be 'line'
             $coverageStatus.formats | Should -Be @('bc-json', 'cobertura')
             $coverageStatus.sourceRoots | Should -Be @('App', 'TestApp1', 'TestApp2')
             $coverageStatus.sourceRootDetails.Count | Should -Be 3
@@ -1259,7 +1258,6 @@ Describe 'RunTests.psm1 Tests' {
                     enabled                 = $true
                     testType                = ''
                     codeCoverageEnabled     = $true
-                    codeCoverageMode        = 'all'
                     codeCoverageFormats     = @('bc-json', 'cobertura')
                 }
             }
@@ -1308,7 +1306,6 @@ Describe 'RunTests.psm1 Tests' {
                     enabled                 = $true
                     testType                = ''
                     codeCoverageEnabled     = $true
-                    codeCoverageMode        = 'all'
                     codeCoverageFormats     = @('bc-json')
                 }
             }
@@ -1320,7 +1317,7 @@ Describe 'RunTests.psm1 Tests' {
             } | Should -Throw '*coverage export failed*'
 
             Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 1 -Exactly -ParameterFilter {
-                $CoverageMode -eq 'all' -and
+                $CoverageMode -eq 'line' -and
                 $CoverageFormats -eq @('bc-json') -and
                 -not [string]::IsNullOrWhiteSpace($CoverageOutputPath)
             }

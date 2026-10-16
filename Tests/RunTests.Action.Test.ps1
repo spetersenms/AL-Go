@@ -196,7 +196,6 @@ Describe "RunTests Action Tests" {
                 enabled                 = $true
                 testType                = 'IntegrationTest'
                 codeCoverageEnabled     = $true
-                codeCoverageMode        = 'line'
                 codeCoverageFormats     = @('bc-json')
                 codeCoverageSummary     = 'both'
             }
@@ -217,7 +216,6 @@ Describe "RunTests Action Tests" {
             $settings.useSeparateTestAction.enabled | Should -BeTrue
             $settings.useSeparateTestAction.testType | Should -Be 'IntegrationTest'
             $settings.useSeparateTestAction.codeCoverageEnabled | Should -BeTrue
-            $settings.useSeparateTestAction.codeCoverageMode | Should -Be 'line'
             $settings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json')
             $settings.useSeparateTestAction.codeCoverageSummary | Should -Be 'both'
             return @{ testFolders = @() }

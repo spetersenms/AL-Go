@@ -183,7 +183,6 @@ function GetDefaultSettings
             "enabled"                                   = $false
             "testType"                                  = ""
             "codeCoverageEnabled"                       = $false
-            "codeCoverageMode"                          = "all"
             "codeCoverageFormats"                       = @("bc-json", "cobertura")
             "codeCoverageSummary"                       = "both"
         }

@@ -5,6 +5,14 @@
   "mode": "all",
   "formats": [ "bc-json", "cobertura" ],
   "sourceRoots": [ "src" ],
+  "sourceRootDetails": [
+    {
+      "path": "src",
+      "kind": "app",
+      "appId": "all-regular-app",
+      "appName": "All app"
+    }
+  ],
   "runs": [
     {
       "appId": "all-app-a",

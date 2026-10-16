@@ -643,7 +643,7 @@ function Invoke-AlGoTestRun {
         }
 
         $coverageEnabled = $false
-        $coverageMode = "all"
+        $coverageMode = "line"
         $coverageFormats = @("bc-json", "cobertura")
         $coverageSourceRoots = @()
         $coverageSourceRootData = @()
@@ -654,9 +654,6 @@ function Invoke-AlGoTestRun {
             $separateTestSettings = $settings.useSeparateTestAction
             if ($separateTestSettings.ContainsKey("codeCoverageEnabled")) {
                 $coverageEnabled = [bool] $separateTestSettings.codeCoverageEnabled
-            }
-            if ($separateTestSettings.ContainsKey("codeCoverageMode")) {
-                $coverageMode = "$($separateTestSettings.codeCoverageMode)"
             }
             if ($separateTestSettings.ContainsKey("codeCoverageFormats")) {
                 $coverageFormats = @($separateTestSettings.codeCoverageFormats | ForEach-Object { "$_" })

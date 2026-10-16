@@ -5,6 +5,14 @@
   "mode": "line",
   "formats": [ "bc-json" ],
   "sourceRoots": [ "src" ],
+  "sourceRootDetails": [
+    {
+      "path": "src",
+      "kind": "app",
+      "appId": "line-regular-app",
+      "appName": "Line app"
+    }
+  ],
   "runs": [
     {
       "appId": "line-app",

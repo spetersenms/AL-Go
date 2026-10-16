@@ -4,9 +4,9 @@ Creates a focused Markdown job summary from Business Central JSON coverage repor
 
 Project summaries are emitted only when `useSeparateTestAction.codeCoverageSummary` is `project` or `both`. Repository execution is expected to be workflow-gated and uses the expected build dimensions in `buildOrderJson`.
 
-Completeness is evaluated independently for repository-scoped line and procedure facts. A globally incomplete BC JSON report can still produce line coverage when its mapped local line facts are reliable; unavailable metrics are hidden with a concise reason.
+Summaries report executable-line coverage for authoritative regular `appFolders` only. Raw facts from `testFolders`, external Microsoft objects, and procedure enrichment remain in the artifacts and logs but do not contribute to visualization metrics or completeness.
 
-Project and repository summaries include application coverage for regular `appFolders`. Each app row unions canonical line facts across all relevant test-app runs and excludes `testFolders`; repeated build dimensions do not double-count the same repository line. Older artifacts without ordered source-root classification remain analyzable but do not render application rows.
+Each app row and headline unions canonical line facts across all relevant test-app runs without double-counting. Coverage is complete only when every expected regular app is safely attributable and every required run and build dimension is available. A globally incomplete BC JSON report can still be complete for AL-Go when incompleteness affects only excluded external objects, test roots, or procedure enrichment. Unknown or regular-app line inventory and mapping failures make the affected app and aggregate unavailable. Older artifacts without ordered source-root classification remain parseable but do not render application metrics.
 
 ## Inputs
 
@@ -18,7 +18,7 @@ Project and repository summaries include application coverage for regular `appFo
 | `coveragePath` | Yes | Path containing project coverage artifacts or separately downloaded repository artifacts | |
 | `buildOrderJson` | No | Build order JSON containing expected repository `buildDimensions` across dependency depths | `[]` |
 
-Repository source attribution uses the exact source-root order recorded by RunTests. The primary root receives unprefixed exporter paths, while `external-N` paths resolve only against root index `N`. Absolute legacy paths use most-specific root matching. Every mapped path must resolve to an existing file within both its declared root and the repository; unmapped or external facts are counted and excluded.
+Repository source attribution uses the exact source-root order recorded by RunTests. The primary root receives unprefixed exporter paths, while `external-N` paths resolve only against root index `N`. Absolute legacy paths use most-specific root matching. Every included path must resolve to an existing file within both its declared regular-app root and the repository.
 
 ## Outputs
 
