@@ -464,12 +464,19 @@ Describe 'RunTests.psm1 Tests' {
                 Mock ReadSettings { return $TargetSettings }
                 Mock Invoke-CodeCoverageAnalyzeRepo { return $TargetSettings }
 
-                $roots = @(Resolve-CodeCoverageSourceRoots -settings $Settings `
+                $rootData = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
                         -projectPath $ProjectPath -baseFolder $BaseFolder)
+                $roots = @($rootData | ForEach-Object { $_.Path })
 
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')))
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Test')))
                 $roots | Should -Not -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Undeclared')))
+                @($rootData | Where-Object { $_.Path -eq
+                        [System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')) })[0].Kind |
+                    Should -Be 'app'
+                @($rootData | Where-Object { $_.Path -eq
+                        [System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Test')) })[0].Kind |
+                    Should -Be 'test'
                 Should -Invoke ReadSettings -Times 1 -Exactly -ParameterFilter {
                     $project -eq 'build/projects/Apps W1' -and $baseFolder -eq $BaseFolder
                 }
@@ -1125,6 +1132,10 @@ Describe 'RunTests.psm1 Tests' {
                 'App2.Test.app' = $appTwoId
             }
             New-Item -Path (Join-Path $projectPath 'App') -ItemType Directory -Force | Out-Null
+            @{
+                id = '11111111-1111-1111-1111-111111111111'
+                name = 'Coverage App'
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $projectPath 'App\app.json') -Encoding UTF8
             $testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
             $settings = @{
                 doNotRunTests                  = $false
@@ -1172,13 +1183,22 @@ Describe 'RunTests.psm1 Tests' {
             $coverageStatus = Get-Content -LiteralPath (Join-Path $coverageRoot 'coverage-status.json') `
                 -Raw -Encoding UTF8 | ConvertFrom-Json
             $coverageStatus.PSObject.Properties.Name |
-                Should -Be @('project', 'projectName', 'buildMode', 'mode', 'formats', 'sourceRoots', 'runs')
+                Should -Be @('project', 'projectName', 'buildMode', 'mode', 'formats', 'sourceRoots',
+                    'sourceRootDetails', 'runs')
             $coverageStatus.project | Should -Be 'Projects/Coverage'
             $coverageStatus.projectName | Should -Be 'Coverage Project'
             $coverageStatus.buildMode | Should -Be 'Clean'
             $coverageStatus.mode | Should -Be 'all'
             $coverageStatus.formats | Should -Be @('bc-json', 'cobertura')
             $coverageStatus.sourceRoots | Should -Be @('App', 'TestApp1', 'TestApp2')
+            $coverageStatus.sourceRootDetails.Count | Should -Be 3
+            @($coverageStatus.sourceRootDetails | ForEach-Object { $_.path }) |
+                Should -Be $coverageStatus.sourceRoots
+            @($coverageStatus.sourceRootDetails | ForEach-Object { $_.kind }) |
+                Should -Be @('app', 'test', 'test')
+            $coverageStatus.sourceRootDetails[0].appId |
+                Should -Be '11111111-1111-1111-1111-111111111111'
+            $coverageStatus.sourceRootDetails[0].appName | Should -Be 'Coverage App'
             $coverageStatus.runs.Count | Should -Be 2
             $coverageStatus.runs[0].PSObject.Properties.Name |
                 Should -Be @('appId', 'appName', 'outputDirectory', 'state')

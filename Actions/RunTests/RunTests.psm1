@@ -285,7 +285,37 @@ function Test-CodeCoveragePathWithoutReparsePoint {
     }
 }
 
-function Resolve-CodeCoverageSourceRoots {
+function Get-CodeCoverageSourceRootAppMetadata {
+    Param([string] $path)
+
+    $appId = ""
+    $appName = [System.IO.Path]::GetFileName($path.TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar))
+    $appJsonPath = Join-Path $path "app.json"
+    if (Test-Path -LiteralPath $appJsonPath -PathType Leaf) {
+        try {
+            $appJson = Get-Content -LiteralPath $appJsonPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            if ($appJson.ContainsKey("id")) {
+                $appId = "$($appJson.id)"
+            }
+            if ($appJson.ContainsKey("name") -and
+                -not [string]::IsNullOrWhiteSpace("$($appJson.name)")) {
+                $appName = "$($appJson.name)"
+            }
+        }
+        catch {
+            throw "Failed to read code coverage source root metadata from '$appJsonPath'. Error: $($_.Exception.Message)"
+        }
+    }
+    return @{
+        AppId = $appId
+        AppName = $appName
+    }
+}
+
+function Resolve-CodeCoverageSourceRootData {
     Param(
         [hashtable] $settings,
         [string] $projectPath,
@@ -293,7 +323,9 @@ function Resolve-CodeCoverageSourceRoots {
         [scriptblock] $analyzeRepo = $null
     )
 
-    $sourceRoots = @{}
+    $sourceRoots = [System.Collections.Generic.Dictionary[string,object]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
     $addProjectRoots = {
         param(
             [hashtable] $projectSettings,
@@ -301,6 +333,7 @@ function Resolve-CodeCoverageSourceRoots {
         )
 
         foreach ($folderSetting in @("appFolders", "testFolders")) {
+            $kind = if ($folderSetting -eq "appFolders") { "app" } else { "test" }
             if ($projectSettings.ContainsKey($folderSetting)) {
                 foreach ($folder in @($projectSettings[$folderSetting])) {
                     if ([string]::IsNullOrWhiteSpace("$folder")) {
@@ -313,7 +346,13 @@ function Resolve-CodeCoverageSourceRoots {
                         if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $resolvedFullPath -root $baseFolder)) {
                             throw "Code coverage source root '$resolvedFullPath' contains a reparse point or is outside the repository."
                         }
-                        $sourceRoots[$resolvedFullPath] = $true
+                        if (-not $sourceRoots.ContainsKey($resolvedFullPath)) {
+                            $sourceRoots.Add($resolvedFullPath, @{
+                                    Path = $resolvedFullPath
+                                    Kinds = @{}
+                                })
+                        }
+                        $sourceRoots[$resolvedFullPath].Kinds[$kind] = $true
                     }
                 }
             }
@@ -347,7 +386,35 @@ function Resolve-CodeCoverageSourceRoots {
 
     $sourceRootPaths = [string[]]@($sourceRoots.Keys)
     [System.Array]::Sort($sourceRootPaths, [System.StringComparer]::Ordinal)
-    return @($sourceRootPaths)
+    $result = @()
+    foreach ($sourceRootPath in $sourceRootPaths) {
+        $sourceRoot = $sourceRoots[$sourceRootPath]
+        $kinds = @($sourceRoot.Kinds.Keys)
+        $kind = if ($kinds.Count -eq 1) { "$($kinds[0])" } else { "unknown" }
+        $appMetadata = Get-CodeCoverageSourceRootAppMetadata -path $sourceRootPath
+        $result += @{
+            Path = $sourceRootPath
+            Kind = $kind
+            AppId = $appMetadata.AppId
+            AppName = $appMetadata.AppName
+        }
+    }
+    return @($result)
+}
+
+function Resolve-CodeCoverageSourceRoots {
+    Param(
+        [hashtable] $settings,
+        [string] $projectPath,
+        [string] $baseFolder = "",
+        [scriptblock] $analyzeRepo = $null
+    )
+
+    return @(
+        Resolve-CodeCoverageSourceRootData -settings $settings -projectPath $projectPath `
+            -baseFolder $baseFolder -analyzeRepo $analyzeRepo |
+            ForEach-Object { "$($_.Path)" }
+    )
 }
 
 function ConvertTo-RepositoryRelativeCoverageRoots {
@@ -579,6 +646,7 @@ function Invoke-AlGoTestRun {
         $coverageMode = "all"
         $coverageFormats = @("bc-json", "cobertura")
         $coverageSourceRoots = @()
+        $coverageSourceRootData = @()
         $coverageStatus = $null
         $coverageStatusPath = ""
         $coverageRunsByAppId = @{}
@@ -637,6 +705,7 @@ function Invoke-AlGoTestRun {
                 mode        = $coverageMode
                 formats     = @($coverageFormats)
                 sourceRoots = @()
+                sourceRootDetails = @()
                 runs        = @($coverageRuns)
             }
             $coverageStatusPath = Join-Path $coverageRoot "coverage-status.json"
@@ -646,10 +715,23 @@ function Invoke-AlGoTestRun {
                 if ([string]::IsNullOrWhiteSpace($baseFolder)) {
                     $baseFolder = $projectPath
                 }
-                $coverageSourceRoots = @(Resolve-CodeCoverageSourceRoots -settings $settings `
+                $coverageSourceRootData = @(Resolve-CodeCoverageSourceRootData -settings $settings `
                     -projectPath $projectPath -baseFolder $baseFolder -analyzeRepo $analyzeRepo)
+                $coverageSourceRoots = @($coverageSourceRootData | ForEach-Object { "$($_.Path)" })
                 $coverageStatus.sourceRoots = @(ConvertTo-RepositoryRelativeCoverageRoots `
                     -sourceRoots $coverageSourceRoots -baseFolder $baseFolder)
+                $coverageStatus.sourceRootDetails = @(
+                    if ($coverageSourceRoots.Count -gt 0) {
+                        foreach ($index in 0..($coverageSourceRoots.Count - 1)) {
+                            [ordered]@{
+                                path = $coverageStatus.sourceRoots[$index]
+                                kind = "$($coverageSourceRootData[$index].Kind)"
+                                appId = "$($coverageSourceRootData[$index].AppId)"
+                                appName = "$($coverageSourceRootData[$index].AppName)"
+                            }
+                        }
+                    }
+                )
                 Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
                 Write-Host "Code coverage enabled: mode=$coverageMode, formats=$($coverageFormats -join ','), container platform $containerPlatformVersion."
                 Write-Host "Code coverage artifacts will be retained per app under '$coverageRoot'."

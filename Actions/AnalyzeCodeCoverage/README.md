@@ -6,6 +6,8 @@ Project summaries are emitted only when `useSeparateTestAction.codeCoverageSumma
 
 Completeness is evaluated independently for repository-scoped line and procedure facts. A globally incomplete BC JSON report can still produce line coverage when its mapped local line facts are reliable; unavailable metrics are hidden with a concise reason.
 
+Project and repository summaries include application coverage for regular `appFolders`. Each app row unions canonical line facts across all relevant test-app runs and excludes `testFolders`; repeated build dimensions do not double-count the same repository line. Older artifacts without ordered source-root classification remain analyzable but do not render application rows.
+
 ## Inputs
 
 | Name | Required | Description | Default |
