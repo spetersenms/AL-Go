@@ -1,0 +1,26 @@
+{
+  "project": "Project1",
+  "projectName": "Project 1",
+  "buildMode": "Default",
+  "mode": "all",
+  "formats": [ "bc-json", "cobertura" ],
+  "sourceRoots": [
+    "Project1/App1.abc.Test",
+    "Project1/app1",
+    "Project1/app1.Test"
+  ],
+  "runs": [
+    {
+      "appId": "run-a",
+      "appName": "Tests A",
+      "outputDirectory": "CodeCoverage/run-a",
+      "state": "incomplete"
+    },
+    {
+      "appId": "run-b",
+      "appName": "Tests B",
+      "outputDirectory": "CodeCoverage/run-b",
+      "state": "incomplete"
+    }
+  ]
+}

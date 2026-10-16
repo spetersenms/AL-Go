@@ -13,6 +13,78 @@ Describe "Get-ProjectsToBuild" {
         $baseFolder = (New-Item -ItemType Directory -Path (Join-Path $([System.IO.Path]::GetTempPath()) $([System.IO.Path]::GetRandomFileName()))).FullName
     }
 
+    It 'Adds consumed code coverage metadata to build dimensions for summary scope <Summary>' -TestCases @(
+        @{ Summary = 'none'; ExpectedRepositorySummary = $false }
+        @{ Summary = 'project'; ExpectedRepositorySummary = $false }
+        @{ Summary = 'repository'; ExpectedRepositorySummary = $true }
+        @{ Summary = 'both'; ExpectedRepositorySummary = $true }
+    ) {
+        param($Summary, $ExpectedRepositorySummary)
+
+        $coverageDimensionSettings = @{
+            githubRunner          = 'windows-latest'
+            githubRunnerShell     = 'powershell'
+            buildModes            = @('Default')
+            projectName           = 'Coverage Project'
+            doNotRunTests         = $false
+            doNotPublishApps      = $false
+            additionalCountries   = @()
+            useSeparateTestAction = @{
+                enabled             = $true
+                codeCoverageEnabled = $true
+                codeCoverageMode    = 'all'
+                codeCoverageFormats = @('bc-json', 'cobertura')
+                codeCoverageSummary = $Summary
+            }
+        }
+        $dimensions = @(InModuleScope DetermineProjectsToBuild -Parameters @{
+                BaseFolder = $baseFolder
+                Settings   = $coverageDimensionSettings
+            } {
+                param($BaseFolder, $Settings)
+                $null = $Settings
+                Mock ReadSettings { return $Settings }
+                CreateBuildDimensions -projects @('CoverageProject') -baseFolder $BaseFolder
+            })
+
+        $dimensions.Count | Should -Be 1
+        $dimensions[0].codeCoverageExpected | Should -BeTrue
+        $dimensions[0].codeCoverageRepositorySummary | Should -Be $ExpectedRepositorySummary
+        $dimensions[0].codeCoverageMode | Should -Be 'all'
+        $dimensions[0].codeCoverageFormats | Should -Be @('bc-json', 'cobertura')
+    }
+
+    It 'Does not expect coverage when separate execution cannot collect it' {
+        $coverageDimensionSettings = @{
+            githubRunner          = 'windows-latest'
+            githubRunnerShell     = 'powershell'
+            buildModes            = @('Default')
+            projectName           = 'Coverage Project'
+            doNotRunTests         = $false
+            doNotPublishApps      = $false
+            additionalCountries   = @('dk')
+            useSeparateTestAction = @{
+                enabled             = $true
+                codeCoverageEnabled = $true
+                codeCoverageMode    = 'line'
+                codeCoverageFormats = @('bc-json')
+                codeCoverageSummary = 'both'
+            }
+        }
+        $dimension = @(InModuleScope DetermineProjectsToBuild -Parameters @{
+                BaseFolder = $baseFolder
+                Settings   = $coverageDimensionSettings
+            } {
+                param($BaseFolder, $Settings)
+                $null = $Settings
+                Mock ReadSettings { return $Settings }
+                CreateBuildDimensions -projects @('CoverageProject') -baseFolder $BaseFolder
+            })[0]
+
+        $dimension.codeCoverageExpected | Should -BeFalse
+        $dimension.codeCoverageRepositorySummary | Should -BeFalse
+    }
+
     It 'loads a single project in the root folder' {
         New-Item -Path "$baseFolder/.AL-Go/settings.json" -type File -Force
 

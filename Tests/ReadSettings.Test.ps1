@@ -289,6 +289,7 @@ InModuleScope ReadSettings { # Allows testing of private functions
             $defaultSettings.useSeparateTestAction.codeCoverageEnabled | Should -BeFalse
             $defaultSettings.useSeparateTestAction.codeCoverageMode | Should -Be 'all'
             $defaultSettings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json', 'cobertura')
+            $defaultSettings.useSeparateTestAction.codeCoverageSummary | Should -Be 'both'
             $defaultSettings.Contains('testType') | Should -BeFalse
 
             $customSettings = [PSCustomObject]@{
@@ -303,6 +304,7 @@ InModuleScope ReadSettings { # Allows testing of private functions
             $defaultSettings.useSeparateTestAction.codeCoverageEnabled | Should -BeFalse
             $defaultSettings.useSeparateTestAction.codeCoverageMode | Should -Be 'all'
             $defaultSettings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json')
+            $defaultSettings.useSeparateTestAction.codeCoverageSummary | Should -Be 'both'
         }
 
         It 'Validates only the complex separate test setting shape' -Skip:($PSVersionTable.PSVersion.Major -lt 7) {
@@ -315,6 +317,7 @@ InModuleScope ReadSettings { # Allows testing of private functions
             $settings.useSeparateTestAction.codeCoverageEnabled = $true
             $settings.useSeparateTestAction.codeCoverageMode = 'line'
             $settings.useSeparateTestAction.codeCoverageFormats = @('bc-json')
+            $settings.useSeparateTestAction.codeCoverageSummary = 'repository'
             Test-Json -json (ConvertTo-Json $settings -Depth 99) -schema $schema | Should -BeTrue
 
             $legacySettings = GetDefaultSettings
@@ -334,6 +337,13 @@ InModuleScope ReadSettings { # Allows testing of private functions
             foreach ($invalidFormats in @(@(), @('lcov'), @('bc-json', 'bc-json'))) {
                 $invalidSettings = GetDefaultSettings
                 $invalidSettings.useSeparateTestAction.codeCoverageFormats = $invalidFormats
+                Test-Json -json (ConvertTo-Json $invalidSettings -Depth 99) -schema $schema -ErrorAction SilentlyContinue |
+                    Should -BeFalse
+            }
+
+            foreach ($invalidSummary in @('', 'job', 'Both')) {
+                $invalidSettings = GetDefaultSettings
+                $invalidSettings.useSeparateTestAction.codeCoverageSummary = $invalidSummary
                 Test-Json -json (ConvertTo-Json $invalidSettings -Depth 99) -schema $schema -ErrorAction SilentlyContinue |
                     Should -BeFalse
             }

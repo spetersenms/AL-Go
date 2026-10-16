@@ -354,7 +354,8 @@
                 "codeCoverageFormats": [
                     "bc-json",
                     "cobertura"
-                ]
+                ],
+                "codeCoverageSummary": "both"
             },
             "description": "PREVIEW: Configuration for running normal tests in a separate RunTests action. See https://aka.ms/ALGoSettings#useSeparateTestAction",
             "properties": {
@@ -399,6 +400,17 @@
                         "cobertura"
                     ],
                     "description": "Coverage artifact formats produced for every selected test app. Supported values are bc-json and cobertura."
+                },
+                "codeCoverageSummary": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "project",
+                        "repository",
+                        "both"
+                    ],
+                    "default": "both",
+                    "description": "Controls GitHub job-summary visualization when code coverage is enabled: none, project, repository, or both."
                 }
             },
             "additionalProperties": false

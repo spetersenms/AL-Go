@@ -8,6 +8,20 @@
 
 Import-Module (Join-Path $PSScriptRoot 'AlToolTestRunner.psm1' -Resolve) -DisableNameChecking -Force
 
+function Invoke-CodeCoverageAnalyzeRepo {
+    Param(
+        [scriptblock] $analyzeRepo,
+        [hashtable] $settings,
+        [string] $baseFolder,
+        [string] $project
+    )
+
+    if (-not $analyzeRepo) {
+        throw "Analyzing projectsToTest source roots requires the AnalyzeRepo callback."
+    }
+    return & $analyzeRepo -settings $settings -baseFolder $baseFolder -project $project
+}
+
 function Get-TestAppsToRun {
     <#
     .SYNOPSIS
@@ -21,6 +35,14 @@ function Get-TestAppsToRun {
         The (analyzed) AL-Go settings hashtable.
     .PARAMETER projectPath
         The full path to the project folder.
+    .PARAMETER baseFolder
+        The full path to the repository root.
+    .PARAMETER project
+        Repository-relative AL-Go project path.
+    .PARAMETER projectName
+        Project display name.
+    .PARAMETER buildMode
+        Build mode used for this project run.
     .PARAMETER installTestAppsJson
         Path to a JSON file with the list of installed test apps.
     #>
@@ -202,39 +224,167 @@ function Copy-TestResultsToBuildArtifacts {
 .SYNOPSIS
     Resolves existing project source roots for code coverage mapping.
 .DESCRIPTION
-    Returns canonical existing app and test folder paths with deterministic deduplication.
+    Returns canonical existing app and test folder paths from the current project and direct
+    projectsToTest targets, with deterministic deduplication.
 .PARAMETER settings
     The analyzed AL-Go settings.
 .PARAMETER projectPath
     Full path to the AL-Go project.
+.PARAMETER baseFolder
+    Full path to the repository root. projectsToTest paths are relative to this folder.
 .OUTPUTS
     [string[]] Canonical source-root paths.
 #>
+function Test-CodeCoveragePathWithoutReparsePoint {
+    Param(
+        [string] $path,
+        [string] $root
+    )
+
+    $current = [System.IO.Path]::GetFullPath($path).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar)
+    $rootPath = [System.IO.Path]::GetFullPath($root).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar)
+    $comparison = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    }
+    else {
+        [System.StringComparison]::Ordinal
+    }
+
+    while ($true) {
+        if (-not (Test-Path -LiteralPath $current)) {
+            return $false
+        }
+        $attributes = [System.IO.File]::GetAttributes($current)
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+        if ($current.Equals($rootPath, $comparison)) {
+            return $true
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($current)
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, $comparison)) {
+            return $false
+        }
+        $current = $parent.TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar)
+    }
+}
+
 function Resolve-CodeCoverageSourceRoots {
     Param(
         [hashtable] $settings,
-        [string] $projectPath
+        [string] $projectPath,
+        [string] $baseFolder = "",
+        [scriptblock] $analyzeRepo = $null
     )
 
     $sourceRoots = @{}
-    foreach ($folderSetting in @("appFolders", "testFolders")) {
-        if ($settings.ContainsKey($folderSetting)) {
-            foreach ($folder in @($settings[$folderSetting])) {
-                if ([string]::IsNullOrWhiteSpace("$folder")) {
-                    continue
-                }
-                $folderPath = [System.IO.Path]::GetFullPath((Join-Path $projectPath "$folder"))
-                if (Test-Path -LiteralPath $folderPath -PathType Container) {
-                    $resolvedPath = Resolve-Path -LiteralPath $folderPath
-                    $sourceRoots[[System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)] = $true
+    $addProjectRoots = {
+        param(
+            [hashtable] $projectSettings,
+            [string] $sourceProjectPath
+        )
+
+        foreach ($folderSetting in @("appFolders", "testFolders")) {
+            if ($projectSettings.ContainsKey($folderSetting)) {
+                foreach ($folder in @($projectSettings[$folderSetting])) {
+                    if ([string]::IsNullOrWhiteSpace("$folder")) {
+                        continue
+                    }
+                    $folderPath = [System.IO.Path]::GetFullPath((Join-Path $sourceProjectPath "$folder"))
+                    if (Test-Path -LiteralPath $folderPath -PathType Container) {
+                        $resolvedPath = Resolve-Path -LiteralPath $folderPath
+                        $resolvedFullPath = [System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)
+                        if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $resolvedFullPath -root $baseFolder)) {
+                            throw "Code coverage source root '$resolvedFullPath' contains a reparse point or is outside the repository."
+                        }
+                        $sourceRoots[$resolvedFullPath] = $true
+                    }
                 }
             }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($baseFolder)) {
+        $baseFolder = $projectPath
+    }
+    & $addProjectRoots -projectSettings $settings -sourceProjectPath $projectPath
+
+    $visitedTargets = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    if ($settings.ContainsKey("projectsToTest")) {
+        foreach ($targetProject in @($settings.projectsToTest)) {
+            if ([string]::IsNullOrWhiteSpace("$targetProject")) {
+                continue
+            }
+            $targetProjectPath = [System.IO.Path]::GetFullPath((Join-Path $baseFolder "$targetProject"))
+            if (-not $visitedTargets.Add($targetProjectPath)) {
+                continue
+            }
+            $targetSettings = ReadSettings -project "$targetProject" -baseFolder $baseFolder |
+                ConvertTo-HashTable -recurse
+            $targetSettings = Invoke-CodeCoverageAnalyzeRepo -analyzeRepo $analyzeRepo -settings $targetSettings `
+                -baseFolder $baseFolder -project "$targetProject"
+            & $addProjectRoots -projectSettings $targetSettings -sourceProjectPath $targetProjectPath
         }
     }
 
     $sourceRootPaths = [string[]]@($sourceRoots.Keys)
     [System.Array]::Sort($sourceRootPaths, [System.StringComparer]::Ordinal)
     return @($sourceRootPaths)
+}
+
+function ConvertTo-RepositoryRelativeCoverageRoots {
+    <#
+    .SYNOPSIS
+        Converts existing source roots to stable repository-relative identities.
+    #>
+    Param(
+        [string[]] $sourceRoots,
+        [string] $baseFolder
+    )
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($baseFolder).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar)
+    $comparison = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    }
+    else {
+        [System.StringComparison]::Ordinal
+    }
+    $repositoryPrefix = $repositoryRoot + [System.IO.Path]::DirectorySeparatorChar
+    $relativeRoots = [System.Collections.Generic.List[string]]::new()
+    $seenRoots = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($sourceRoot in $sourceRoots) {
+        $fullRoot = [System.IO.Path]::GetFullPath($sourceRoot)
+        if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $fullRoot -root $repositoryRoot)) {
+            throw "Code coverage source root '$fullRoot' contains a reparse point or is outside the repository."
+        }
+        if ($fullRoot.Equals($repositoryRoot, $comparison)) {
+            if ($seenRoots.Add(".")) {
+                $relativeRoots.Add(".")
+            }
+        }
+        elseif ($fullRoot.StartsWith($repositoryPrefix, $comparison)) {
+            $relativeRoot = $fullRoot.Substring($repositoryPrefix.Length).Replace('\', '/')
+            if ($seenRoots.Add($relativeRoot)) {
+                $relativeRoots.Add($relativeRoot)
+            }
+        }
+        else {
+            throw "Code coverage source root '$fullRoot' is outside repository '$repositoryRoot'."
+        }
+    }
+    return @($relativeRoots)
 }
 
 <#
@@ -372,6 +522,8 @@ function Invoke-AlGoTestRun {
         Full path to the AlTool executable used by the built-in runner.
     .PARAMETER getAlToolPath
         Shared resolver used to discover or install AlTool when alToolPath is omitted.
+    .PARAMETER analyzeRepo
+        Caller-scoped AnalyzeRepo callback used to resolve direct projectsToTest source roots.
     .PARAMETER containerPlatformVersion
         Actual build container platform version exported by RunPipeline.
     .PARAMETER containerPlatformVersionReason
@@ -380,12 +532,17 @@ function Invoke-AlGoTestRun {
     Param(
         [hashtable] $settings,
         [string] $projectPath,
+        [string] $baseFolder = "",
+        [string] $project = ".",
+        [string] $projectName = "",
+        [string] $buildMode = "Default",
         [string] $containerName,
         [System.Management.Automation.PSCredential] $credential,
         [string] $installTestAppsJson = '',
         [scriptblock] $runTestsOverride = $null,
         [string] $alToolPath = '',
         [scriptblock] $getAlToolPath = $null,
+        [scriptblock] $analyzeRepo = $null,
         [AllowEmptyString()][string] $containerPlatformVersion = $env:containerPlatformVersion,
         [AllowEmptyString()][string] $containerPlatformVersionReason = $env:containerPlatformVersionReason
     )
@@ -464,14 +621,26 @@ function Invoke-AlGoTestRun {
                 $coverageRunsByAppId["$($testApp.Id)"] = $coverageRun
             }
             $coverageStatus = [ordered]@{
-                runs = @($coverageRuns)
+                project     = if ([string]::IsNullOrWhiteSpace($project)) { "." } else { $project.Replace('\', '/') }
+                projectName = $projectName
+                buildMode   = $buildMode
+                mode        = $coverageMode
+                formats     = @($coverageFormats)
+                sourceRoots = @()
+                runs        = @($coverageRuns)
             }
             $coverageStatusPath = Join-Path $coverageRoot "coverage-status.json"
             Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
 
             if ($coverageSupported) {
+                if ([string]::IsNullOrWhiteSpace($baseFolder)) {
+                    $baseFolder = $projectPath
+                }
                 $coverageSourceRoots = @(Resolve-CodeCoverageSourceRoots -settings $settings `
-                    -projectPath $projectPath)
+                    -projectPath $projectPath -baseFolder $baseFolder -analyzeRepo $analyzeRepo)
+                $coverageStatus.sourceRoots = @(ConvertTo-RepositoryRelativeCoverageRoots `
+                    -sourceRoots $coverageSourceRoots -baseFolder $baseFolder)
+                Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
                 Write-Host "Code coverage enabled: mode=$coverageMode, formats=$($coverageFormats -join ','), container platform $containerPlatformVersion."
                 Write-Host "Code coverage artifacts will be retained per app under '$coverageRoot'."
             }

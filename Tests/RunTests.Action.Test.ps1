@@ -198,6 +198,7 @@ Describe "RunTests Action Tests" {
                 codeCoverageEnabled     = $true
                 codeCoverageMode        = 'line'
                 codeCoverageFormats     = @('bc-json')
+                codeCoverageSummary     = 'both'
             }
         } | ConvertTo-Json -Depth 4
         $ENV:containerName = 'test-container'
@@ -218,6 +219,7 @@ Describe "RunTests Action Tests" {
             $settings.useSeparateTestAction.codeCoverageEnabled | Should -BeTrue
             $settings.useSeparateTestAction.codeCoverageMode | Should -Be 'line'
             $settings.useSeparateTestAction.codeCoverageFormats | Should -Be @('bc-json')
+            $settings.useSeparateTestAction.codeCoverageSummary | Should -Be 'both'
             return @{ testFolders = @() }
         }
         Mock Get-ScriptOverrides { return @{} }
@@ -229,6 +231,7 @@ Describe "RunTests Action Tests" {
         Should -Invoke GetAlToolPath -Times 0 -Exactly
         Should -Invoke Invoke-AlGoTestRun -Times 1 -Exactly -ParameterFilter {
             $getAlToolPath -is [scriptblock] -and
+            $analyzeRepo -is [scriptblock] -and
             $containerPlatformVersion -eq '30.0.56026.0' -and
             $containerPlatformVersionReason -eq ''
         }

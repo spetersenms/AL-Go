@@ -185,6 +185,7 @@ function GetDefaultSettings
             "codeCoverageEnabled"                       = $false
             "codeCoverageMode"                          = "all"
             "codeCoverageFormats"                       = @("bc-json", "cobertura")
+            "codeCoverageSummary"                       = "both"
         }
         "doNotRunBcptTests"                             = $false
         "doNotRunPageScriptingTests"                    = $false

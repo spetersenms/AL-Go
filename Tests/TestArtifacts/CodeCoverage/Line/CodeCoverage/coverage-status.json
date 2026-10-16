@@ -1,0 +1,16 @@
+{
+  "project": "LineProject",
+  "projectName": "Line project",
+  "buildMode": "Default",
+  "mode": "line",
+  "formats": [ "bc-json" ],
+  "sourceRoots": [ "src" ],
+  "runs": [
+    {
+      "appId": "line-app",
+      "appName": "Line Tests",
+      "outputDirectory": "CodeCoverage/line-app",
+      "state": "complete"
+    }
+  ]
+}

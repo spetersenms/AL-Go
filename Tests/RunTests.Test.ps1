@@ -9,6 +9,7 @@ $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-S
 # Stub for the BcContainerHelper function so it can be mocked within the module scope
 function Get-AppJsonFromAppFile { param($appFile) }
 function Get-BcContainerEventLog { param($containerName, [switch] $doNotOpen) }
+function AnalyzeRepo { param($settings, $baseFolder, $project, [switch] $doNotCheckArtifactSetting) }
 
 Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/RunTests.psm1' -Resolve) -DisableNameChecking -Force
 
@@ -357,6 +358,180 @@ Describe 'RunTests.psm1 Tests' {
                 finally {
                     [System.Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
                 }
+            }
+        }
+
+        It 'Preserves the exact invocation order in repository-relative status roots' {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $firstRoot = Join-Path $baseFolder 'First'
+            $secondRoot = Join-Path $baseFolder 'Second'
+            foreach ($folder in @($firstRoot, $secondRoot)) {
+                New-Item -Path $folder -ItemType Directory -Force | Out-Null
+            }
+
+            InModuleScope RunTests -Parameters @{
+                BaseFolder = $baseFolder
+                FirstRoot  = $firstRoot
+                SecondRoot = $secondRoot
+            } {
+                param($BaseFolder, $FirstRoot, $SecondRoot)
+
+                $relativeRoots = @(ConvertTo-RepositoryRelativeCoverageRoots `
+                        -sourceRoots @($SecondRoot, $BaseFolder, $FirstRoot, $SecondRoot) -baseFolder $BaseFolder)
+
+                $relativeRoots | Should -Be @('Second', '.', 'First')
+            }
+        }
+
+        It 'Rejects roots outside the repository instead of shifting exporter indexes' {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $outsideRoot = Join-Path $TestDrive 'Outside'
+            New-Item -Path $baseFolder -ItemType Directory -Force | Out-Null
+            New-Item -Path $outsideRoot -ItemType Directory -Force | Out-Null
+
+            InModuleScope RunTests -Parameters @{
+                BaseFolder  = $baseFolder
+                OutsideRoot = $outsideRoot
+            } {
+                param($BaseFolder, $OutsideRoot)
+
+                {
+                    ConvertTo-RepositoryRelativeCoverageRoots `
+                        -sourceRoots @($OutsideRoot) -baseFolder $BaseFolder
+                } | Should -Throw '*outside the repository*'
+            }
+        }
+
+        It 'Rejects source roots containing reparse points on Windows' -Skip:([System.IO.Path]::DirectorySeparatorChar -ne '\') {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $outsideRoot = Join-Path $TestDrive 'Outside'
+            $linkedRoot = Join-Path $baseFolder 'Linked'
+            New-Item -Path $baseFolder -ItemType Directory -Force | Out-Null
+            New-Item -Path $outsideRoot -ItemType Directory -Force | Out-Null
+            New-Item -Path $linkedRoot -ItemType Junction -Target $outsideRoot | Out-Null
+
+            InModuleScope RunTests -Parameters @{
+                BaseFolder = $baseFolder
+                LinkedRoot = $linkedRoot
+            } {
+                param($BaseFolder, $LinkedRoot)
+
+                {
+                    ConvertTo-RepositoryRelativeCoverageRoots `
+                        -sourceRoots @($LinkedRoot) -baseFolder $BaseFolder
+                } | Should -Throw '*reparse point*'
+            }
+        }
+
+        It 'Includes analyzed app and test roots from repository-relative projectsToTest targets' {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $projectPath = Join-Path $baseFolder 'build\projects\Test Apps W1'
+            $targetProject = 'build/projects/Apps W1'
+            $targetProjectPath = Join-Path $baseFolder 'build\projects\Apps W1'
+            $appRoot = Join-Path $baseFolder 'src\App'
+            $testRoot = Join-Path $baseFolder 'src\Test'
+            $undeclaredRoot = Join-Path $baseFolder 'src\Undeclared'
+            foreach ($folder in @($projectPath, $targetProjectPath, $appRoot, $testRoot, $undeclaredRoot)) {
+                New-Item -Path $folder -ItemType Directory -Force | Out-Null
+            }
+            $settings = @{
+                appFolders    = @()
+                testFolders   = @()
+                projectsToTest = @($targetProject)
+            }
+            $targetSettings = @{
+                appFolders  = @('../../../src/App')
+                testFolders = @('../../../src/Test')
+            }
+
+            InModuleScope RunTests -Parameters @{
+                Settings       = $settings
+                TargetSettings = $targetSettings
+                ProjectPath    = $projectPath
+                BaseFolder     = $baseFolder
+            } {
+                param($Settings, $TargetSettings, $ProjectPath, $BaseFolder)
+                Mock ReadSettings { return $TargetSettings }
+                Mock Invoke-CodeCoverageAnalyzeRepo { return $TargetSettings }
+
+                $roots = @(Resolve-CodeCoverageSourceRoots -settings $Settings `
+                        -projectPath $ProjectPath -baseFolder $BaseFolder)
+
+                $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')))
+                $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Test')))
+                $roots | Should -Not -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Undeclared')))
+                Should -Invoke ReadSettings -Times 1 -Exactly -ParameterFilter {
+                    $project -eq 'build/projects/Apps W1' -and $baseFolder -eq $BaseFolder
+                }
+                Should -Invoke Invoke-CodeCoverageAnalyzeRepo -Times 1 -Exactly -ParameterFilter {
+                    $project -eq 'build/projects/Apps W1'
+                }
+            }
+        }
+
+        It 'Deduplicates exact target roots but retains parent, nested, and localized paths' {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $projectPath = Join-Path $baseFolder 'build\projects\Test Apps W1'
+            $targetOnePath = Join-Path $baseFolder 'build\projects\Apps W1'
+            $targetTwoPath = Join-Path $baseFolder 'build\projects\Apps DK'
+            foreach ($folder in @(
+                    $projectPath,
+                    $targetOnePath,
+                    $targetTwoPath,
+                    (Join-Path $baseFolder 'src\App'),
+                    (Join-Path $baseFolder 'src\App\Nested'),
+                    (Join-Path $baseFolder 'src\Localized')
+                )) {
+                New-Item -Path $folder -ItemType Directory -Force | Out-Null
+            }
+            Set-Content -Path (Join-Path $baseFolder 'src\App\app.json') `
+                -Value '{"id":"11111111-1111-1111-1111-111111111111"}' -Encoding UTF8
+            Set-Content -Path (Join-Path $baseFolder 'src\Localized\app.json') `
+                -Value '{"id":"11111111-1111-1111-1111-111111111111"}' -Encoding UTF8
+            $settings = @{
+                appFolders     = @()
+                testFolders    = @()
+                projectsToTest = @('build/projects/Apps W1', 'build/projects/Apps W1', 'build/projects/Apps DK')
+            }
+            $targetOneSettings = @{
+                appFolders  = @('../../../src/App', '../../../src/App/Nested')
+                testFolders = @('../../../src/App')
+            }
+            $targetTwoSettings = @{
+                appFolders  = @('../../../src/Localized')
+                testFolders = @()
+            }
+
+            InModuleScope RunTests -Parameters @{
+                Settings          = $settings
+                TargetOneSettings = $targetOneSettings
+                TargetTwoSettings = $targetTwoSettings
+                ProjectPath       = $projectPath
+                BaseFolder        = $baseFolder
+            } {
+                param($Settings, $TargetOneSettings, $TargetTwoSettings, $ProjectPath, $BaseFolder)
+                Mock ReadSettings {
+                    if ($project -eq 'build/projects/Apps W1') {
+                        return $TargetOneSettings
+                    }
+                    return $TargetTwoSettings
+                }
+                Mock Invoke-CodeCoverageAnalyzeRepo {
+                    if ($project -eq 'build/projects/Apps W1') {
+                        return $TargetOneSettings
+                    }
+                    return $TargetTwoSettings
+                }
+
+                $roots = @(Resolve-CodeCoverageSourceRoots -settings $Settings `
+                        -projectPath $ProjectPath -baseFolder $BaseFolder)
+
+                $roots.Count | Should -Be 3
+                $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')))
+                $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App\Nested')))
+                $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Localized')))
+                Should -Invoke ReadSettings -Times 2 -Exactly
+                Should -Invoke Invoke-CodeCoverageAnalyzeRepo -Times 2 -Exactly
             }
         }
 
@@ -958,6 +1133,7 @@ Describe 'RunTests.psm1 Tests' {
             }
 
             Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -project 'Projects/Coverage' -projectName 'Coverage Project' -buildMode 'Clean' `
                 -containerName 'test' -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe' `
                 -containerPlatformVersion '30.0.56026.0'
 
@@ -985,7 +1161,14 @@ Describe 'RunTests.psm1 Tests' {
             $coverageRoot = Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
             $coverageStatus = Get-Content -LiteralPath (Join-Path $coverageRoot 'coverage-status.json') `
                 -Raw -Encoding UTF8 | ConvertFrom-Json
-            $coverageStatus.PSObject.Properties.Name | Should -Be @('runs')
+            $coverageStatus.PSObject.Properties.Name |
+                Should -Be @('project', 'projectName', 'buildMode', 'mode', 'formats', 'sourceRoots', 'runs')
+            $coverageStatus.project | Should -Be 'Projects/Coverage'
+            $coverageStatus.projectName | Should -Be 'Coverage Project'
+            $coverageStatus.buildMode | Should -Be 'Clean'
+            $coverageStatus.mode | Should -Be 'all'
+            $coverageStatus.formats | Should -Be @('bc-json', 'cobertura')
+            $coverageStatus.sourceRoots | Should -Be @('App', 'TestApp1', 'TestApp2')
             $coverageStatus.runs.Count | Should -Be 2
             $coverageStatus.runs[0].PSObject.Properties.Name |
                 Should -Be @('appId', 'appName', 'outputDirectory', 'state')
@@ -997,7 +1180,7 @@ Describe 'RunTests.psm1 Tests' {
             }
             $coverageStatusByAppId[$appOneId] | Should -Be 'complete'
             $coverageStatusByAppId[$appTwoId] | Should -Be 'incomplete'
-            ($coverageStatus | ConvertTo-Json -Depth 5) | Should -Not -Match 'admin|password|sourceRoot|diagnostic|format|mode'
+            ($coverageStatus | ConvertTo-Json -Depth 5) | Should -Not -Match 'admin|password|diagnostic'
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
