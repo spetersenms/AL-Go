@@ -462,6 +462,73 @@ function New-AlTestGroupsFile {
     return $testGroupsFile
 }
 
+function Initialize-AlToolCoverageOutput {
+    param(
+        [ValidateSet("procedure", "line", "all")][string] $CoverageMode,
+        [Parameter(Mandatory = $true)][string] $CoverageOutputPath,
+        [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CoverageMode) -or $CoverageFormats.Count -eq 0) {
+        throw "Coverage mode and at least one coverage format are required when a coverage output path is supplied."
+    }
+    New-Item -Path $CoverageOutputPath -ItemType Directory -Force | Out-Null
+    foreach ($coverageFileName in @("coverage.bc.json", "coverage.cobertura.xml")) {
+        Remove-Item -LiteralPath (Join-Path $CoverageOutputPath $coverageFileName) `
+            -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-EmptyAlToolCoverageArtifacts {
+    param(
+        [ValidateSet("procedure", "line", "all")][string] $CoverageMode,
+        [Parameter(Mandatory = $true)][string] $CoverageOutputPath,
+        [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats
+    )
+
+    Initialize-AlToolCoverageOutput -CoverageMode $CoverageMode `
+        -CoverageOutputPath $CoverageOutputPath -CoverageFormats $CoverageFormats
+
+    if ("bc-json" -in $CoverageFormats) {
+        [ordered]@{
+            schemaVersion = "1.0"
+            coverageMode = $CoverageMode
+            complete = $true
+            diagnostics = @()
+            sources = @()
+            tests = @()
+            procedureEdges = @()
+            methods = @()
+            lines = @()
+        } | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath (Join-Path $CoverageOutputPath "coverage.bc.json") -Encoding UTF8
+    }
+
+    if ("cobertura" -in $CoverageFormats) {
+        $xml = New-Object System.Xml.XmlDocument
+        [void]$xml.AppendChild($xml.CreateXmlDeclaration("1.0", "UTF-8", $null))
+        $coverage = $xml.CreateElement("coverage")
+        $coverageAttributes = [ordered]@{
+            "line-rate" = "1"
+            "branch-rate" = "1"
+            "lines-covered" = "0"
+            "lines-valid" = "0"
+            "branches-covered" = "0"
+            "branches-valid" = "0"
+            "complexity" = "0"
+            "version" = "altool-empty"
+            "timestamp" = "0"
+        }
+        foreach ($attribute in $coverageAttributes.GetEnumerator()) {
+            $coverage.SetAttribute($attribute.Key, $attribute.Value)
+        }
+        [void]$coverage.AppendChild($xml.CreateElement("sources"))
+        [void]$coverage.AppendChild($xml.CreateElement("packages"))
+        [void]$xml.AppendChild($coverage)
+        $xml.Save((Join-Path $CoverageOutputPath "coverage.cobertura.xml"))
+    }
+}
+
 <#
 .SYNOPSIS
     Runs all enabled test groups for one app through one AlTool connection.
@@ -497,14 +564,8 @@ function Invoke-AlRunTestsBatch {
         )
 
         if (-not [string]::IsNullOrWhiteSpace($CoverageOutputPath)) {
-            if ([string]::IsNullOrWhiteSpace($CoverageMode) -or $CoverageFormats.Count -eq 0) {
-                throw "Coverage mode and at least one coverage format are required when a coverage output path is supplied."
-            }
-            New-Item -Path $CoverageOutputPath -ItemType Directory -Force | Out-Null
-            foreach ($coverageFileName in @("coverage.bc.json", "coverage.cobertura.xml")) {
-                Remove-Item -LiteralPath (Join-Path $CoverageOutputPath $coverageFileName) `
-                    -Force -ErrorAction SilentlyContinue
-            }
+            Initialize-AlToolCoverageOutput -CoverageMode $CoverageMode `
+                -CoverageOutputPath $CoverageOutputPath -CoverageFormats $CoverageFormats
             $alArgs += @('--coverage', $CoverageMode, '--coverage-output', $CoverageOutputPath)
             foreach ($coverageFormat in $CoverageFormats) {
                 $alArgs += @('--coverage-format', $coverageFormat)
@@ -818,6 +879,13 @@ function Invoke-AlToolTestRun {
         Write-Host "Enumerated $($codeunits.Count) test codeunit(s) for app '$AppName'."
         if ($codeunits.Count -eq 0) {
             Write-Host "No test codeunits to run for app '$AppName'; nothing to do."
+            if (-not [string]::IsNullOrWhiteSpace($CoverageOutputPath)) {
+                Write-EmptyAlToolCoverageArtifacts -CoverageMode $CoverageMode `
+                    -CoverageOutputPath $CoverageOutputPath -CoverageFormats $CoverageFormats
+                if ($coverageCompletenessRequested) {
+                    $CoverageIsComplete.Value = $true
+                }
+            }
             return $true
         }
 

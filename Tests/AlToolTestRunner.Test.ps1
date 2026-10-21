@@ -1054,6 +1054,79 @@ Invoke-AlToolTestRun $($parameterExpressions.Values -join ' ')
             }
         }
 
+        It 'Writes complete empty BC JSON when no runnable codeunits are discovered' {
+            $coverageOutputPath = Join-Path (Join-Path $TestDrive 'CodeCoverage') 'empty-bc-json'
+            New-Item -Path $coverageOutputPath -ItemType Directory -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $coverageOutputPath 'coverage.bc.json') `
+                -Value '{"stale":true}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $coverageOutputPath 'coverage.cobertura.xml') `
+                -Value '<stale />' -Encoding UTF8
+            $script:testRunParameters.CoverageMode = 'line'
+            $script:testRunParameters.CoverageOutputPath = $coverageOutputPath
+            $script:testRunParameters.CoverageFormats = @('bc-json')
+            $coverageIsComplete = $null
+            $script:testRunParameters.CoverageIsComplete = [ref] $coverageIsComplete
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { return @() }
+
+            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+
+            $coverageIsComplete | Should -BeTrue
+            $reportPath = Join-Path $coverageOutputPath 'coverage.bc.json'
+            Test-Path -LiteralPath $reportPath -PathType Leaf | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $coverageOutputPath 'coverage.cobertura.xml') |
+                Should -BeFalse
+            $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json
+            $report.schemaVersion | Should -Be '1.0'
+            $report.coverageMode | Should -Be 'line'
+            $report.complete | Should -BeTrue
+            foreach ($property in @('diagnostics', 'sources', 'tests', 'procedureEdges', 'methods', 'lines')) {
+                @($report.$property).Count | Should -Be 0
+            }
+            Test-Path -LiteralPath $script:testRunParameters.JUnitResultFileName | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
+        }
+
+        It 'Writes valid empty BC JSON and Cobertura when both formats are requested' {
+            $coverageOutputPath = Join-Path (Join-Path $TestDrive 'CodeCoverage') 'empty-both'
+            $script:testRunParameters.CoverageMode = 'line'
+            $script:testRunParameters.CoverageOutputPath = $coverageOutputPath
+            $script:testRunParameters.CoverageFormats = @('bc-json', 'cobertura')
+            $coverageIsComplete = $null
+            $script:testRunParameters.CoverageIsComplete = [ref] $coverageIsComplete
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { return @() }
+
+            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+
+            $coverageIsComplete | Should -BeTrue
+            [xml] $cobertura = Get-Content -LiteralPath (
+                Join-Path $coverageOutputPath 'coverage.cobertura.xml'
+            ) -Raw -Encoding UTF8
+            $cobertura.DocumentElement.LocalName | Should -Be 'coverage'
+            $cobertura.coverage.'line-rate' | Should -Be '1'
+            $cobertura.coverage.'lines-covered' | Should -Be '0'
+            $cobertura.coverage.'lines-valid' | Should -Be '0'
+            $cobertura.SelectSingleNode('/coverage/sources') | Should -Not -BeNullOrEmpty
+            $cobertura.SelectSingleNode('/coverage/packages') | Should -Not -BeNullOrEmpty
+            Test-Path -LiteralPath (Join-Path $coverageOutputPath 'coverage.bc.json') |
+                Should -BeTrue
+            Test-Path -LiteralPath $script:testRunParameters.JUnitResultFileName | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
+        }
+
+        It 'Preserves the no-codeunit behavior when coverage is not requested' {
+            $coverageOutputPath = Join-Path (Join-Path $TestDrive 'CodeCoverage') 'not-requested'
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { return @() }
+
+            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+
+            Test-Path -LiteralPath $coverageOutputPath | Should -BeFalse
+            Test-Path -LiteralPath $script:testRunParameters.JUnitResultFileName | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
+            Should -Invoke -ModuleName AlToolTestRunner Get-AlToolConnection -Times 0 -Exactly
+            Should -Invoke -ModuleName AlToolTestRunner Get-AlToolCompany -Times 0 -Exactly
+        }
+
         It 'Returns incomplete coverage state and logs structured diagnostics' {
             $coverageOutputPath = Join-Path (Join-Path $TestDrive 'CodeCoverage') 'test-run'
             $script:testRunParameters.CoverageMode = 'all'

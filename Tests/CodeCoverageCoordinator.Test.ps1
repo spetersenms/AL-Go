@@ -6,6 +6,10 @@ $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-S
 . (Join-Path -Path $PSScriptRoot -ChildPath "../Actions/AL-Go-Helper.ps1" -Resolve)
 Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/CodeCoverageCoordinator.psm1' -Resolve) `
     -DisableNameChecking -Force
+Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/AlToolTestRunner.psm1' -Resolve) `
+    -DisableNameChecking -Force
+Import-Module (Join-Path $PSScriptRoot '../Actions/AnalyzeCodeCoverage/AnalyzeCodeCoverage.psm1' -Resolve) `
+    -DisableNameChecking -Force
 
 Describe 'CodeCoverageCoordinator.psm1 Tests' {
     BeforeAll {
@@ -162,6 +166,80 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
 
         $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $status.runs[0].state | Should -Be "complete"
+    }
+
+    It 'Admits a complete empty run while later app coverage determines project metrics' {
+        $projectPath = New-CoordinatorProject
+        $testApps = @(
+            [PSCustomObject]@{
+                Id = "22222222-2222-2222-2222-222222222222"
+                Name = "Empty Test App"
+                Path = Join-Path $projectPath "Empty.Test.app"
+            },
+            [PSCustomObject]@{
+                Id = "33333333-3333-3333-3333-333333333333"
+                Name = "Covered Test App"
+                Path = Join-Path $projectPath "Covered.Test.app"
+            }
+        )
+        $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
+
+        $emptyContext = Start-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id
+        InModuleScope AlToolTestRunner -Parameters @{
+            CoverageMode = $emptyContext.mode
+            CoverageOutputPath = $emptyContext.coverageOutputPath
+            CoverageFormats = $emptyContext.formats
+        } {
+            Write-EmptyAlToolCoverageArtifacts -CoverageMode $CoverageMode `
+                -CoverageOutputPath $CoverageOutputPath -CoverageFormats $CoverageFormats
+        }
+        $emptyContext.result.coverageIsComplete = $true
+        Complete-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id `
+            -rawComplete $emptyContext.result.coverageIsComplete
+
+        $sourcePath = Join-Path $projectPath "App\Coverage.al"
+        Set-Content -LiteralPath $sourcePath -Value "codeunit 70000 Coverage { }" -Encoding UTF8
+        $coveredContext = Start-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id
+        New-Item -Path $coveredContext.coverageOutputPath -ItemType Directory -Force | Out-Null
+        @{
+            schemaVersion = "1.0"
+            coverageMode = "line"
+            complete = $true
+            diagnostics = @()
+            sources = @($sourcePath)
+            tests = @()
+            procedureEdges = @()
+            methods = @()
+            lines = @(@{
+                    objectType = 5
+                    objectId = 70000
+                    lineNumber = 1
+                    lineType = 3
+                    methodId = 0
+                    hitCount = 1
+                    status = 1
+                    sourcePath = $sourcePath
+                })
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (
+            Join-Path $coveredContext.coverageOutputPath "coverage.bc.json"
+        ) -Encoding UTF8
+        $coveredContext.result.coverageIsComplete = $true
+        Complete-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id `
+            -rawComplete $coveredContext.result.coverageIsComplete
+        Complete-AlGoCodeCoverageSession -session $session
+
+        $model = Get-ProjectCoverageModel -CoveragePath $session.RootPath `
+            -RepositoryRoot $projectPath
+
+        $model.Complete | Should -BeTrue
+        $model.LineComplete | Should -BeTrue
+        $model.Runs.Count | Should -Be 2
+        $model.Runs[0].Lines.Count | Should -Be 0
+        $model.Runs[1].Lines.Count | Should -Be 1
+        $model.Lines.Count | Should -Be 1
+        $metrics = Get-CoverageMetrics $model.Lines
+        $metrics.Covered | Should -Be 1
+        $metrics.Total | Should -Be 1
     }
 
     It 'Accepts incomplete coverage and Cobertura-only coverage' {
