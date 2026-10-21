@@ -97,8 +97,8 @@ $settings = $env:Settings | ConvertFrom-Json | ConvertTo-HashTable -recurse
 
 $settings = AnalyzeRepo -settings $settings -baseFolder $baseFolder -project $project -doNotCheckArtifactSetting
 
-# A RunTestsInBcContainer override script, if present, replaces the built-in AlTool test runner.
-$overrideParams = Get-ScriptOverrides -ALGoFolderName (Join-Path $projectPath ".AL-Go") -OverrideScriptNames @("RunTestsInBcContainer")
+$overrideParams = Get-ScriptOverrides -ALGoFolderName (Join-Path $projectPath ".AL-Go") `
+    -OverrideScriptNames @("RunTestsInBcContainer")
 $runTestsOverride = $overrideParams['RunTestsInBcContainer']
 $analyzeRepoForCoverage = {
     param($settings, $baseFolder, $project)

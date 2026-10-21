@@ -110,7 +110,7 @@ Describe "RunTests Action Tests" {
         YamlTest -scriptRoot $scriptRoot -actionName $actionName -actionScript $actionScript -outputs $outputs
     }
 
-    It 'Loads only the runner override and delegates event log capture to the module' {
+    It 'Loads the original runner override and delegates event log capture to the module' {
         $overrideCommands = @($actionAst.FindAll({
                     param($node)
                     $node -is [System.Management.Automation.Language.CommandAst] -and

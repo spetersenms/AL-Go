@@ -74,13 +74,15 @@ Describe 'RunTests.psm1 Tests' {
         Mock -ModuleName RunTests Get-BcContainerEventLog { return $script:eventLogSource }
     }
 
-    It 'Associates coverage status by app ID without positional counters' {
+    It 'Delegates coverage lifecycle ownership to the coordinator module' {
         $moduleText = Get-Content -LiteralPath (
             Join-Path $PSScriptRoot '../Actions/RunTests/RunTests.psm1'
         ) -Raw -Encoding UTF8
 
-        $moduleText | Should -Not -Match '\$coverageRunIndex|\$currentCoverageRunIndex'
-        $moduleText | Should -Match '\$coverageRunsByAppId\["\$\(\$testApp\.Id\)"\]'
+        $moduleText | Should -Match "CodeCoverageCoordinator\.psm1"
+        $moduleText | Should -Match 'New-AlGoCodeCoverageSession'
+        $moduleText | Should -Match 'Complete-AlGoCodeCoverageSession'
+        $moduleText | Should -Not -Match 'Write-CodeCoverageStatus'
     }
 
     Context 'Get-TestAppsToRun' {
@@ -327,7 +329,7 @@ Describe 'RunTests.psm1 Tests' {
                 testFolders = @('Test')
             }
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 Settings    = $settings
                 ProjectPath = $projectPath
             } {
@@ -350,7 +352,7 @@ Describe 'RunTests.psm1 Tests' {
                 testFolders = @()
             }
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 Settings    = $settings
                 ProjectPath = $projectPath
             } {
@@ -379,7 +381,7 @@ Describe 'RunTests.psm1 Tests' {
                 New-Item -Path $folder -ItemType Directory -Force | Out-Null
             }
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder = $baseFolder
                 FirstRoot  = $firstRoot
                 SecondRoot = $secondRoot
@@ -399,7 +401,7 @@ Describe 'RunTests.psm1 Tests' {
             New-Item -Path $baseFolder -ItemType Directory -Force | Out-Null
             New-Item -Path $outsideRoot -ItemType Directory -Force | Out-Null
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder  = $baseFolder
                 OutsideRoot = $outsideRoot
             } {
@@ -420,7 +422,7 @@ Describe 'RunTests.psm1 Tests' {
             New-Item -Path $outsideRoot -ItemType Directory -Force | Out-Null
             New-Item -Path $linkedRoot -ItemType Junction -Target $outsideRoot | Out-Null
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder = $baseFolder
                 LinkedRoot = $linkedRoot
             } {
@@ -454,7 +456,7 @@ Describe 'RunTests.psm1 Tests' {
                 testFolders = @('../../../src/Test')
             }
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 Settings       = $settings
                 TargetSettings = $targetSettings
                 ProjectPath    = $projectPath
@@ -519,7 +521,7 @@ Describe 'RunTests.psm1 Tests' {
                 testFolders = @()
             }
 
-            InModuleScope RunTests -Parameters @{
+            InModuleScope CodeCoverageCoordinator -Parameters @{
                 Settings          = $settings
                 TargetOneSettings = $targetOneSettings
                 TargetTwoSettings = $targetTwoSettings
@@ -554,15 +556,15 @@ Describe 'RunTests.psm1 Tests' {
 
     }
 
-    Context 'Get-CodeCoveragePlatformCapability' {
+    Context 'Get-AlGoCodeCoverageCapability' {
         It 'Supports container platform <PlatformVersion>' -TestCases @(
             @{ PlatformVersion = '30.0.56026.0' },
             @{ PlatformVersion = '31.0.0.0' }
         ) {
             param($PlatformVersion)
 
-            InModuleScope RunTests -Parameters @{ HandoffVersion = $PlatformVersion } {
-                $capability = Get-CodeCoveragePlatformCapability `
+            InModuleScope CodeCoverageCoordinator -Parameters @{ HandoffVersion = $PlatformVersion } {
+                $capability = Get-AlGoCodeCoverageCapability `
                     -platformVersion $HandoffVersion `
                     -platformVersionReason ''
 
@@ -1122,7 +1124,19 @@ Describe 'RunTests.psm1 Tests' {
                     CoverageSourceRoots = @($CoverageSourceRoots)
                 }
                 $script:coverageInvocation++
-                $CoverageIsComplete.Value = ($script:coverageInvocation -eq 1)
+                $isComplete = ($script:coverageInvocation -eq 1)
+                New-Item -Path $CoverageOutputPath -ItemType Directory -Force | Out-Null
+                @{
+                    schemaVersion = '1.0'
+                    coverageMode = $CoverageMode
+                    complete = $isComplete
+                } | ConvertTo-Json | Set-Content -LiteralPath (
+                    Join-Path $CoverageOutputPath 'coverage.bc.json'
+                ) -Encoding UTF8
+                Set-Content -LiteralPath (
+                    Join-Path $CoverageOutputPath 'coverage.cobertura.xml'
+                ) -Value '<coverage />' -Encoding UTF8
+                $CoverageIsComplete.Value = $isComplete
                 return $true
             }
             $appOneId = [Guid]::NewGuid().ToString()
@@ -1471,6 +1485,388 @@ Describe 'RunTests.psm1 Tests' {
                     -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe'
             } | Should -Not -Throw
 
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+    }
+
+    Context 'Invoke-AlGoTestRun coverage-aware original override' {
+        It 'Always passes coverage context and lets binding reject an outdated override' {
+            Mock -ModuleName RunTests OutputWarning {}
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $script:outdatedOverrideCalls = 0
+            $override = {
+                [CmdletBinding()]
+                param([hashtable] $parameters)
+                $null = $parameters
+                $script:outdatedOverrideCalls++
+                return $true
+            }
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = ''
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json')
+                }
+            }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                    -containerName 'test' -credential $testCredential -runTestsOverride $override `
+                    -alToolPath 'C:\dotnet-tools\al.exe' `
+                    -containerPlatformVersion '30.0.56026.0'
+            } | Should -Throw '*codeCoverageContext*'
+
+            $script:outdatedOverrideCalls | Should -Be 0
+            $status = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
+                    'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            $status.runs[0].state | Should -Be 'failed'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Does not pass or create coverage context when coverage is disabled' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
+            $existingCoveragePath = Join-Path (
+                Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
+            ) 'sentinel.txt'
+            New-Item -Path (Split-Path $existingCoveragePath -Parent) -ItemType Directory -Force |
+                Out-Null
+            Set-Content -LiteralPath $existingCoveragePath -Value 'existing' -Encoding UTF8
+            $script:disabledCoverageCalls = 0
+            $override = {
+                param([hashtable] $parameters)
+                $null = $parameters
+                $args | Should -BeNullOrEmpty
+                $script:disabledCoverageCalls++
+                return $true
+            }
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = 'Legacy'
+                    codeCoverageEnabled = $false
+                }
+            }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -containerName 'test' -credential $testCredential -runTestsOverride $override
+
+            $script:disabledCoverageCalls | Should -Be 2
+            Test-Path -LiteralPath $existingCoveragePath -PathType Leaf | Should -BeTrue
+            Test-Path -LiteralPath (
+                Join-Path (Split-Path $existingCoveragePath -Parent) 'coverage-status.json'
+            ) | Should -BeFalse
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Invokes the thin override once per app with authoritative app-specific context' {
+            $firstAppId = [Guid]::NewGuid().ToString()
+            $secondAppId = [Guid]::NewGuid().ToString()
+            $projectPath = New-TestProject -CompiledTestApps @(
+                'App1.Test.app',
+                'App2.Test.app'
+            ) -CompiledAppIds @{
+                'App1.Test.app' = $firstAppId
+                'App2.Test.app' = $secondAppId
+            }
+            $appFolder = Join-Path $projectPath 'App'
+            New-Item -Path $appFolder -ItemType Directory -Force | Out-Null
+            @{
+                id = '11111111-1111-1111-1111-111111111111'
+                name = 'Regular App'
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $appFolder 'app.json') -Encoding UTF8
+            $targetProject = 'TargetProject'
+            $targetProjectPath = Join-Path $projectPath $targetProject
+            $targetAppPath = Join-Path $targetProjectPath 'TargetApp'
+            New-Item -Path $targetAppPath -ItemType Directory -Force | Out-Null
+            @{
+                id = '33333333-3333-3333-3333-333333333333'
+                name = 'Target App'
+            } | ConvertTo-Json | Set-Content -LiteralPath (
+                Join-Path $targetAppPath 'app.json'
+            ) -Encoding UTF8
+            $targetSettingsPath = Join-Path $targetProjectPath '.AL-Go'
+            New-Item -Path $targetSettingsPath -ItemType Directory -Force | Out-Null
+            @{
+                appFolders = @('TargetApp')
+                testFolders = @()
+            } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (
+                Join-Path $targetSettingsPath 'settings.json'
+            ) -Encoding UTF8
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = 'CRONUS'
+                treatTestFailuresAsWarnings = $false
+                appFolders = @('App')
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                projectsToTest = @($targetProject)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = 'IntegrationTest'
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json', 'cobertura')
+                }
+            }
+            $script:coverageOverrideCalls = 0
+            $script:coverageOverrideContexts = @()
+            $script:coverageAnalyzeRepoCalls = 0
+            $analyzeRepo = {
+                param($settings, $baseFolder, $project)
+                $null = $baseFolder
+                $null = $project
+                $script:coverageAnalyzeRepoCalls++
+                return $settings
+            }
+            $override = {
+                param(
+                    [hashtable] $parameters,
+                    [hashtable] $codeCoverageContext
+                )
+                $script:coverageOverrideCalls++
+                $script:coverageOverrideContexts += $codeCoverageContext
+                $parameters.extensionId | Should -Be $codeCoverageContext.app.id
+                $parameters.appName | Should -Be $codeCoverageContext.app.name
+                $parameters.credential | Should -Be $testCredential
+                $codeCoverageContext.ContainsKey('credential') | Should -BeFalse
+                New-Item -Path $codeCoverageContext.coverageOutputPath `
+                    -ItemType Directory -Force | Out-Null
+                @{
+                    schemaVersion = '1.0'
+                    coverageMode = 'line'
+                    complete = $true
+                    diagnostics = @()
+                    sources = @()
+                    tests = @()
+                    procedureEdges = @()
+                    methods = @()
+                    lines = @()
+                } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
+                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.bc.json'
+                ) -Encoding UTF8
+                Set-Content -LiteralPath (
+                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.cobertura.xml'
+                ) -Value '<coverage />' -Encoding UTF8
+                $codeCoverageContext.result.coverageIsComplete = $true
+                return $true
+            }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -baseFolder $projectPath -project '.' -projectName 'Coverage Project' `
+                -buildMode 'Default' -containerName 'test' -credential $testCredential `
+                -runTestsOverride $override -analyzeRepo $analyzeRepo `
+                -alToolPath 'C:\dotnet-tools\al.exe' `
+                -containerPlatformVersion '30.0.56026.0'
+
+            $script:coverageOverrideCalls | Should -Be 2
+            $script:coverageAnalyzeRepoCalls | Should -Be 1
+            @($script:coverageOverrideContexts.app.id) | Should -Be @($firstAppId, $secondAppId)
+            @($script:coverageOverrideContexts.coverageOutputPath | Select-Object -Unique).Count |
+                Should -Be 2
+            foreach ($context in $script:coverageOverrideContexts) {
+                $context.contractVersion | Should -Be 1
+                $context.testType | Should -Be 'IntegrationTest'
+                $context.alToolPath | Should -Be 'C:\dotnet-tools\al.exe'
+                $context.alToolModulePath | Should -Match 'AlToolTestRunner\.psm1$'
+                @($context.sourceRootDetails.appName) | Should -Contain 'Regular App'
+                @($context.sourceRootDetails.appName) | Should -Contain 'Target App'
+            }
+            $status = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
+                    'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            @($status.runs.appId) | Should -Be @($firstAppId, $secondAppId)
+            @($status.runs.state) | Should -Be @('complete', 'complete')
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Fails closed when the override does not produce its allocated artifacts' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                appFolders = @()
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = 'IntegrationTest'
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json')
+                }
+            }
+            $override = {
+                param(
+                    [hashtable] $parameters,
+                    [hashtable] $codeCoverageContext
+                )
+                $null = $parameters
+                $codeCoverageContext.result.coverageIsComplete = $true
+                return $true
+            }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                    -containerName 'test' -credential $testCredential `
+                    -runTestsOverride $override -alToolPath 'C:\dotnet-tools\al.exe' `
+                    -containerPlatformVersion '30.0.56026.0'
+            } | Should -Throw "*expected 'bc-json' coverage artifact*"
+
+            $status = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
+                    'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            $status.runs[0].state | Should -Be 'failed'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Passes unsupported context per app without resolving AlTool' {
+            Mock -ModuleName RunTests OutputWarning {}
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = 'IntegrationTest'
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json')
+                }
+            }
+            $script:unsupportedCoverageCalls = 0
+            $override = {
+                param(
+                    [hashtable] $parameters,
+                    [hashtable] $codeCoverageContext
+                )
+                $null = $parameters
+                $codeCoverageContext.supported | Should -BeFalse
+                $codeCoverageContext.alToolPath | Should -BeNullOrEmpty
+                $script:unsupportedCoverageCalls++
+                return $true
+            }
+            $getAlToolPath = {
+                throw 'AlTool must not be resolved for unsupported override coverage.'
+            }
+
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                -containerName 'test' -credential $testCredential -runTestsOverride $override `
+                -getAlToolPath $getAlToolPath `
+                -containerPlatformVersion '30.0.56025.999'
+
+            $script:unsupportedCoverageCalls | Should -Be 2
+            Should -Invoke -ModuleName RunTests OutputWarning -Times 1 -Exactly -ParameterFilter {
+                $message -like '*container platform 30.0.56026.0*'
+            }
+            $status = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
+                    'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            @($status.runs.state) | Should -Be @('unsupported', 'unsupported')
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Fails closed when a non-advanced outdated override ignores the passed context' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = ''
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json')
+                }
+            }
+            $override = {
+                param([hashtable] $parameters)
+                $null = $parameters
+                $args.Count | Should -Be 2
+                $args[0] | Should -Be '-codeCoverageContext'
+                $args[1] | Should -BeOfType System.Collections.Hashtable
+                return $true
+            }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                    -containerName 'test' -credential $testCredential `
+                    -runTestsOverride $override -alToolPath 'C:\dotnet-tools\al.exe' `
+                    -containerPlatformVersion '30.0.56026.0'
+            } | Should -Throw '*did not report whether coverage is complete*'
+            Remove-Item -Path $projectPath -Recurse -Force
+        }
+
+        It 'Retains valid coverage when the override reports failed tests' {
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
+            $settings = @{
+                doNotRunTests = $false
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+                useSeparateTestAction = @{
+                    enabled = $true
+                    testType = 'Uncategorized'
+                    codeCoverageEnabled = $true
+                    codeCoverageFormats = @('bc-json')
+                }
+            }
+            $override = {
+                param(
+                    [hashtable] $parameters,
+                    [hashtable] $codeCoverageContext
+                )
+                $null = $parameters
+                New-Item -Path $codeCoverageContext.coverageOutputPath `
+                    -ItemType Directory -Force | Out-Null
+                @{
+                    schemaVersion = '1.0'
+                    coverageMode = 'line'
+                    complete = $true
+                    diagnostics = @()
+                    sources = @()
+                    tests = @()
+                    procedureEdges = @()
+                    methods = @()
+                    lines = @()
+                } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
+                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.bc.json'
+                ) -Encoding UTF8
+                $codeCoverageContext.result.coverageIsComplete = $true
+                return $false
+            }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
+                    -containerName 'test' -credential $testCredential `
+                    -runTestsOverride $override -alToolPath 'C:\dotnet-tools\al.exe' `
+                    -containerPlatformVersion '30.0.56026.0'
+            } | Should -Throw '*There are test failures*'
+
+            $status = Get-Content -LiteralPath (
+                Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
+                    'coverage-status.json'
+            ) -Raw -Encoding UTF8 | ConvertFrom-Json
+            $status.runs[0].state | Should -Be 'complete'
             Remove-Item -Path $projectPath -Recurse -Force
         }
     }

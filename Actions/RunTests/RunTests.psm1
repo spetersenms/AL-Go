@@ -3,24 +3,14 @@
     Helper module for the RunTests action.
 .DESCRIPTION
     Selects and runs normal test apps against the kept-alive build container. AlTool is the default
-    executor; a RunTestsInBcContainer override can replace it.
+    executor. RunTestsInBcContainer overrides retain their historical per-app execution and receive
+    an app-specific code coverage context when coverage is enabled.
 #>
 
 Import-Module (Join-Path $PSScriptRoot 'AlToolTestRunner.psm1' -Resolve) -DisableNameChecking -Force
-
-function Invoke-CodeCoverageAnalyzeRepo {
-    Param(
-        [scriptblock] $analyzeRepo,
-        [hashtable] $settings,
-        [string] $baseFolder,
-        [string] $project
-    )
-
-    if (-not $analyzeRepo) {
-        throw "Analyzing projectsToTest source roots requires the AnalyzeRepo callback."
-    }
-    return & $analyzeRepo -settings $settings -baseFolder $baseFolder -project $project
-}
+$script:codeCoverageCoordinatorModule = Import-Module `
+    (Join-Path $PSScriptRoot 'CodeCoverageCoordinator.psm1' -Resolve) `
+    -DisableNameChecking -Force -PassThru
 
 function Get-TestAppsToRun {
     <#
@@ -230,319 +220,6 @@ function Copy-TestResultsToBuildArtifacts {
     }
 }
 
-<#
-.SYNOPSIS
-    Resolves existing project source roots for code coverage mapping.
-.DESCRIPTION
-    Returns canonical existing app and test folder paths from the current project and direct
-    projectsToTest targets, with deterministic deduplication.
-.PARAMETER settings
-    The analyzed AL-Go settings.
-.PARAMETER projectPath
-    Full path to the AL-Go project.
-.PARAMETER baseFolder
-    Full path to the repository root. projectsToTest paths are relative to this folder.
-.OUTPUTS
-    [string[]] Canonical source-root paths.
-#>
-function Test-CodeCoveragePathWithoutReparsePoint {
-    Param(
-        [string] $path,
-        [string] $root
-    )
-
-    $current = [System.IO.Path]::GetFullPath($path).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar)
-    $rootPath = [System.IO.Path]::GetFullPath($root).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar)
-    $comparison = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-        [System.StringComparison]::OrdinalIgnoreCase
-    }
-    else {
-        [System.StringComparison]::Ordinal
-    }
-
-    while ($true) {
-        if (-not (Test-Path -LiteralPath $current)) {
-            return $false
-        }
-        $attributes = [System.IO.File]::GetAttributes($current)
-        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return $false
-        }
-        if ($current.Equals($rootPath, $comparison)) {
-            return $true
-        }
-        $parent = [System.IO.Path]::GetDirectoryName($current)
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, $comparison)) {
-            return $false
-        }
-        $current = $parent.TrimEnd(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar)
-    }
-}
-
-function Get-CodeCoverageSourceRootAppMetadata {
-    Param([string] $path)
-
-    $appId = ""
-    $appName = [System.IO.Path]::GetFileName($path.TrimEnd(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar))
-    $appJsonPath = Join-Path $path "app.json"
-    if (Test-Path -LiteralPath $appJsonPath -PathType Leaf) {
-        try {
-            $appJson = Get-Content -LiteralPath $appJsonPath -Raw -Encoding UTF8 |
-                ConvertFrom-Json | ConvertTo-HashTable -recurse
-            if ($appJson.ContainsKey("id")) {
-                $appId = "$($appJson.id)"
-            }
-            if ($appJson.ContainsKey("name") -and
-                -not [string]::IsNullOrWhiteSpace("$($appJson.name)")) {
-                $appName = "$($appJson.name)"
-            }
-        }
-        catch {
-            throw "Failed to read code coverage source root metadata from '$appJsonPath'. Error: $($_.Exception.Message)"
-        }
-    }
-    return @{
-        AppId = $appId
-        AppName = $appName
-    }
-}
-
-function Resolve-CodeCoverageSourceRootData {
-    Param(
-        [hashtable] $settings,
-        [string] $projectPath,
-        [string] $baseFolder = "",
-        [scriptblock] $analyzeRepo = $null
-    )
-
-    $sourceRoots = [System.Collections.Generic.Dictionary[string,object]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    $addProjectRoots = {
-        param(
-            [hashtable] $projectSettings,
-            [string] $sourceProjectPath
-        )
-
-        foreach ($folderSetting in @("appFolders", "testFolders")) {
-            $kind = if ($folderSetting -eq "appFolders") { "app" } else { "test" }
-            if ($projectSettings.ContainsKey($folderSetting)) {
-                foreach ($folder in @($projectSettings[$folderSetting])) {
-                    if ([string]::IsNullOrWhiteSpace("$folder")) {
-                        continue
-                    }
-                    $folderPath = [System.IO.Path]::GetFullPath((Join-Path $sourceProjectPath "$folder"))
-                    if (Test-Path -LiteralPath $folderPath -PathType Container) {
-                        $resolvedPath = Resolve-Path -LiteralPath $folderPath
-                        $resolvedFullPath = [System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)
-                        if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $resolvedFullPath -root $baseFolder)) {
-                            throw "Code coverage source root '$resolvedFullPath' contains a reparse point or is outside the repository."
-                        }
-                        if (-not $sourceRoots.ContainsKey($resolvedFullPath)) {
-                            $sourceRoots.Add($resolvedFullPath, @{
-                                    Path = $resolvedFullPath
-                                    Kinds = @{}
-                                })
-                        }
-                        $sourceRoots[$resolvedFullPath].Kinds[$kind] = $true
-                    }
-                }
-            }
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($baseFolder)) {
-        $baseFolder = $projectPath
-    }
-    & $addProjectRoots -projectSettings $settings -sourceProjectPath $projectPath
-
-    $visitedTargets = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    if ($settings.ContainsKey("projectsToTest")) {
-        foreach ($targetProject in @($settings.projectsToTest)) {
-            if ([string]::IsNullOrWhiteSpace("$targetProject")) {
-                continue
-            }
-            $targetProjectPath = [System.IO.Path]::GetFullPath((Join-Path $baseFolder "$targetProject"))
-            if (-not $visitedTargets.Add($targetProjectPath)) {
-                continue
-            }
-            $targetSettings = ReadSettings -project "$targetProject" -baseFolder $baseFolder |
-                ConvertTo-HashTable -recurse
-            $targetSettings = Invoke-CodeCoverageAnalyzeRepo -analyzeRepo $analyzeRepo -settings $targetSettings `
-                -baseFolder $baseFolder -project "$targetProject"
-            & $addProjectRoots -projectSettings $targetSettings -sourceProjectPath $targetProjectPath
-        }
-    }
-
-    $sourceRootPaths = [string[]]@($sourceRoots.Keys)
-    [System.Array]::Sort($sourceRootPaths, [System.StringComparer]::Ordinal)
-    $result = @()
-    foreach ($sourceRootPath in $sourceRootPaths) {
-        $sourceRoot = $sourceRoots[$sourceRootPath]
-        $kinds = @($sourceRoot.Kinds.Keys)
-        $kind = if ($kinds.Count -eq 1) { "$($kinds[0])" } else { "unknown" }
-        $appMetadata = Get-CodeCoverageSourceRootAppMetadata -path $sourceRootPath
-        $result += @{
-            Path = $sourceRootPath
-            Kind = $kind
-            AppId = $appMetadata.AppId
-            AppName = $appMetadata.AppName
-        }
-    }
-    return @($result)
-}
-
-function Resolve-CodeCoverageSourceRoots {
-    Param(
-        [hashtable] $settings,
-        [string] $projectPath,
-        [string] $baseFolder = "",
-        [scriptblock] $analyzeRepo = $null
-    )
-
-    return @(
-        Resolve-CodeCoverageSourceRootData -settings $settings -projectPath $projectPath `
-            -baseFolder $baseFolder -analyzeRepo $analyzeRepo |
-            ForEach-Object { "$($_.Path)" }
-    )
-}
-
-function ConvertTo-RepositoryRelativeCoverageRoots {
-    <#
-    .SYNOPSIS
-        Converts existing source roots to stable repository-relative identities.
-    #>
-    Param(
-        [string[]] $sourceRoots,
-        [string] $baseFolder
-    )
-
-    $repositoryRoot = [System.IO.Path]::GetFullPath($baseFolder).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar)
-    $comparison = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-        [System.StringComparison]::OrdinalIgnoreCase
-    }
-    else {
-        [System.StringComparison]::Ordinal
-    }
-    $repositoryPrefix = $repositoryRoot + [System.IO.Path]::DirectorySeparatorChar
-    $relativeRoots = [System.Collections.Generic.List[string]]::new()
-    $seenRoots = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    foreach ($sourceRoot in $sourceRoots) {
-        $fullRoot = [System.IO.Path]::GetFullPath($sourceRoot)
-        if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $fullRoot -root $repositoryRoot)) {
-            throw "Code coverage source root '$fullRoot' contains a reparse point or is outside the repository."
-        }
-        if ($fullRoot.Equals($repositoryRoot, $comparison)) {
-            if ($seenRoots.Add(".")) {
-                $relativeRoots.Add(".")
-            }
-        }
-        elseif ($fullRoot.StartsWith($repositoryPrefix, $comparison)) {
-            $relativeRoot = $fullRoot.Substring($repositoryPrefix.Length).Replace('\', '/')
-            if ($seenRoots.Add($relativeRoot)) {
-                $relativeRoots.Add($relativeRoot)
-            }
-        }
-        else {
-            throw "Code coverage source root '$fullRoot' is outside repository '$repositoryRoot'."
-        }
-    }
-    return @($relativeRoots)
-}
-
-<#
-.SYNOPSIS
-    Returns the stable per-app coverage output directory.
-#>
-function Get-CodeCoverageOutputPath {
-    Param(
-        [string] $projectPath,
-        [string] $appId
-    )
-
-    $pathSegment = ($appId -replace "[^a-zA-Z0-9._-]", "-").Trim([char[]]".-_")
-    if ([string]::IsNullOrWhiteSpace($pathSegment)) {
-        $pathSegment = "unknown-app"
-    }
-    return Join-Path (Join-Path (Join-Path $projectPath ".buildartifacts") "CodeCoverage") $pathSegment
-}
-
-<#
-.SYNOPSIS
-    Determines whether the handed-off container platform supports code coverage.
-.DESCRIPTION
-    Parses the actual container platform version exported by RunPipeline. Code coverage requires
-    platform 30.0.56026.0 or later. Missing or malformed handoff data is treated as unavailable.
-#>
-function Get-CodeCoveragePlatformCapability {
-    Param(
-        [AllowEmptyString()][string] $platformVersion,
-        [AllowEmptyString()][string] $platformVersionReason
-    )
-
-    $minimumVersion = [version]"30.0.56026.0"
-    if ([string]::IsNullOrWhiteSpace($platformVersion)) {
-        return @{
-            Supported = $false
-            Reason    = if ([string]::IsNullOrWhiteSpace($platformVersionReason)) {
-                "RunPipeline did not provide the build container platform version."
-            }
-            else {
-                $platformVersionReason
-            }
-        }
-    }
-
-    $parsedVersion = $null
-    if (-not [version]::TryParse($platformVersion.Trim(), [ref] $parsedVersion)) {
-        return @{
-            Supported = $false
-            Reason    = "RunPipeline provided an invalid build container platform version."
-        }
-    }
-
-    $supported = $parsedVersion -ge $minimumVersion
-    return @{
-        Supported = $supported
-        Reason    = if ($supported) {
-            "Container platform $parsedVersion supports code coverage."
-        }
-        else {
-            "Container platform $parsedVersion is older than the required $minimumVersion."
-        }
-    }
-}
-
-<#
-.SYNOPSIS
-    Writes the project code coverage status file.
-#>
-function Write-CodeCoverageStatus {
-    Param(
-        [string] $path,
-        $status
-    )
-
-    $parentPath = Split-Path -Path $path -Parent
-    New-Item -Path $parentPath -ItemType Directory -Force | Out-Null
-    ConvertTo-Json -InputObject $status -Depth 5 |
-        Set-Content -LiteralPath $path -Encoding UTF8
-}
-
 function Export-AlGoContainerEventLog {
     <#
     .SYNOPSIS
@@ -579,8 +256,10 @@ function Invoke-AlGoTestRun {
     .SYNOPSIS
         Runs the normal tests for an AL-Go project against a kept-alive build container.
     .DESCRIPTION
-        Runs each selected test app with AlTool or a RunTestsInBcContainer override. Preserves
-        TestResults.xml for AnalyzeTests, copies produced results to .buildartifacts, and refreshes
+        Runs each selected test app with AlTool or the original RunTestsInBcContainer override.
+        When coverage is requested, an override receives an app-specific codeCoverageContext in the
+        existing per-app invocation. AL-Go owns coverage validation and status finalization.
+        Preserves TestResults.xml for AnalyzeTests, copies results to .buildartifacts, and refreshes
         ContainerEventLog.evtx after every outcome. Event-log capture failures are warnings and do
         not change the test outcome.
     .PARAMETER settings
@@ -642,96 +321,41 @@ function Invoke-AlGoTestRun {
             }
         }
 
-        $coverageEnabled = $false
-        $coverageMode = "line"
-        $coverageFormats = @("bc-json", "cobertura")
-        $coverageSourceRoots = @()
-        $coverageSourceRootData = @()
-        $coverageStatus = $null
-        $coverageStatusPath = ""
-        $coverageRunsByAppId = @{}
-        if ($settings.ContainsKey("useSeparateTestAction")) {
-            $separateTestSettings = $settings.useSeparateTestAction
-            if ($separateTestSettings.ContainsKey("codeCoverageEnabled")) {
-                $coverageEnabled = [bool] $separateTestSettings.codeCoverageEnabled
-            }
-            if ($separateTestSettings.ContainsKey("codeCoverageFormats")) {
-                $coverageFormats = @($separateTestSettings.codeCoverageFormats | ForEach-Object { "$_" })
-            }
+        # Test failures surface as warnings when treatTestFailuresAsWarnings is set, otherwise as errors.
+        $gitHubActionsSeverity = if ($settings.treatTestFailuresAsWarnings) { 'warning' } else { 'error' }
+        $testType = if ($settings.ContainsKey("useSeparateTestAction")) {
+            "$($settings.useSeparateTestAction.testType)"
         }
-
-        $coverageSupported = $false
-        if ($coverageEnabled) {
-            $coverageRoot = Join-Path (Join-Path $projectPath ".buildartifacts") "CodeCoverage"
-            if (Test-Path -LiteralPath $coverageRoot) {
-                Remove-Item -LiteralPath $coverageRoot -Recurse -Force
-            }
-            $capability = Get-CodeCoveragePlatformCapability `
+        else {
+            ""
+        }
+        $coverageRequested = $settings.ContainsKey("useSeparateTestAction") -and
+            [bool]$settings.useSeparateTestAction.codeCoverageEnabled
+        $coverageSession = $null
+        if ($coverageRequested) {
+            $coverageCapability = Get-AlGoCodeCoverageCapability `
                 -platformVersion $containerPlatformVersion `
                 -platformVersionReason $containerPlatformVersionReason
-            if ($runTestsOverride) {
-                $capability.Supported = $false
-                OutputWarning -message "Code coverage is available only with the built-in AlTool runner. Tests will continue through the configured RunTestsInBcContainer override without coverage."
+            if ($runTestsOverride -and $coverageCapability.Supported -and
+                [string]::IsNullOrWhiteSpace($alToolPath)) {
+                if (-not $getAlToolPath) {
+                    throw "A coverage-aware RunTestsInBcContainer override requires an AlTool path or path resolver."
+                }
+                $alToolPath = & $getAlToolPath
+            }
+            $coverageSession = New-AlGoCodeCoverageSession -settings $settings `
+                -projectPath $projectPath -baseFolder $baseFolder -project $project `
+                -projectName $projectName -buildMode $buildMode -testType $testType `
+                -testApps $testApps -analyzeRepo $analyzeRepo `
+                -platformVersion $containerPlatformVersion `
+                -platformVersionReason $containerPlatformVersionReason `
+                -alToolPath $alToolPath
+            if ($coverageSession.Supported) {
+                Write-Host "Code coverage enabled: mode=$($coverageSession.Mode), formats=$($coverageSession.Formats -join ','), container platform $containerPlatformVersion."
+                Write-Host "Code coverage artifacts will be retained under '$($coverageSession.RootPath)'."
             }
             else {
-                if ($capability.Supported) {
-                    $coverageSupported = $true
-                }
-                else {
-                    OutputWarning -message "Code coverage requires container platform 30.0.56026.0 or later. $($capability.Reason) Tests will continue without coverage."
-                }
-            }
-
-            $initialState = if ($coverageSupported) { "pending" } else { "unsupported" }
-            $coverageRuns = @()
-            foreach ($testApp in $testApps) {
-                $outputPath = Get-CodeCoverageOutputPath -projectPath $projectPath -appId "$($testApp.Id)"
-                $coverageRun = [ordered]@{
-                    appId           = "$($testApp.Id)"
-                    appName         = "$($testApp.Name)"
-                    outputDirectory = "CodeCoverage/$([System.IO.Path]::GetFileName($outputPath))"
-                    state           = $initialState
-                }
-                $coverageRuns += $coverageRun
-                $coverageRunsByAppId["$($testApp.Id)"] = $coverageRun
-            }
-            $coverageStatus = [ordered]@{
-                project     = if ([string]::IsNullOrWhiteSpace($project)) { "." } else { $project.Replace('\', '/') }
-                projectName = $projectName
-                buildMode   = $buildMode
-                mode        = $coverageMode
-                formats     = @($coverageFormats)
-                sourceRoots = @()
-                sourceRootDetails = @()
-                runs        = @($coverageRuns)
-            }
-            $coverageStatusPath = Join-Path $coverageRoot "coverage-status.json"
-            Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
-
-            if ($coverageSupported) {
-                if ([string]::IsNullOrWhiteSpace($baseFolder)) {
-                    $baseFolder = $projectPath
-                }
-                $coverageSourceRootData = @(Resolve-CodeCoverageSourceRootData -settings $settings `
-                    -projectPath $projectPath -baseFolder $baseFolder -analyzeRepo $analyzeRepo)
-                $coverageSourceRoots = @($coverageSourceRootData | ForEach-Object { "$($_.Path)" })
-                $coverageStatus.sourceRoots = @(ConvertTo-RepositoryRelativeCoverageRoots `
-                    -sourceRoots $coverageSourceRoots -baseFolder $baseFolder)
-                $coverageStatus.sourceRootDetails = @(
-                    if ($coverageSourceRoots.Count -gt 0) {
-                        foreach ($index in 0..($coverageSourceRoots.Count - 1)) {
-                            [ordered]@{
-                                path = $coverageStatus.sourceRoots[$index]
-                                kind = "$($coverageSourceRootData[$index].Kind)"
-                                appId = "$($coverageSourceRootData[$index].AppId)"
-                                appName = "$($coverageSourceRootData[$index].AppName)"
-                            }
-                        }
-                    }
-                )
-                Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
-                Write-Host "Code coverage enabled: mode=$coverageMode, formats=$($coverageFormats -join ','), container platform $containerPlatformVersion."
-                Write-Host "Code coverage artifacts will be retained per app under '$coverageRoot'."
+                OutputWarning -message "Code coverage requires container platform 30.0.56026.0 or later. $($coverageSession.SupportReason) Tests will continue without coverage."
             }
         }
 
@@ -742,93 +366,116 @@ function Invoke-AlGoTestRun {
             $alToolPath = & $getAlToolPath
         }
 
-        # Test failures surface as warnings when treatTestFailuresAsWarnings is set, otherwise as errors.
-        $gitHubActionsSeverity = if ($settings.treatTestFailuresAsWarnings) { 'warning' } else { 'error' }
-        $testType = if ($settings.ContainsKey("useSeparateTestAction")) { "$($settings.useSeparateTestAction.testType)" } else { "" }
-
         $allTestsPassed = $true
         $testRunError = $null
-        $currentCoverageRun = $null
+        $currentCoverageAppId = ""
+        $coverageInvocationActive = $false
         Push-Location $projectPath
         try {
             foreach ($testApp in $testApps) {
-                $currentCoverageRun = if ($coverageEnabled) {
-                    $coverageRunsByAppId["$($testApp.Id)"]
+                Write-Host "Running tests in $($testApp.Name) ($($testApp.Id))"
+                $disabledTests = @(Get-DisabledTestsForApp -settings $settings `
+                    -projectPath $projectPath -appId "$($testApp.Id)")
+                $currentCoverageAppId = "$($testApp.Id)"
+                $coverageRunContext = if ($coverageSession) {
+                    Start-AlGoCodeCoverageRun -session $coverageSession `
+                        -appId $currentCoverageAppId -disabledTests $disabledTests
                 }
                 else {
                     $null
                 }
-                if ($coverageSupported) {
-                    $currentCoverageRun.state = "running"
-                    Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
-                }
-                Write-Host "Running tests in $($testApp.Name) ($($testApp.Id))"
-                $disabledTests = @(Get-DisabledTestsForApp -settings $settings -projectPath $projectPath -appId "$($testApp.Id)")
+                $coverageInvocationActive = $coverageSession -and $coverageSession.Supported
 
                 if ($runTestsOverride) {
                     $runTestsParams = @{
-                        "containerName"           = $containerName
-                        "credential"              = $credential
-                        "companyName"             = $settings.companyName
-                        "extensionId"             = $testApp.Id
-                        "appName"                 = $testApp.Name
-                        "disabledTests"           = $disabledTests
-                        "JUnitResultFileName"     = $testResultsFile
+                        "containerName" = $containerName
+                        "credential" = $credential
+                        "companyName" = $settings.companyName
+                        "extensionId" = $testApp.Id
+                        "appName" = $testApp.Name
+                        "disabledTests" = $disabledTests
+                        "JUnitResultFileName" = $testResultsFile
                         "AppendToJUnitResultFile" = $true
-                        "detailed"                = $true
-                        "GitHubActions"           = $gitHubActionsSeverity
-                        "returnTrueIfAllPassed"   = $true
+                        "detailed" = $true
+                        "GitHubActions" = $gitHubActionsSeverity
+                        "returnTrueIfAllPassed" = $true
                     }
                     if (-not [string]::IsNullOrWhiteSpace($testType)) {
                         $runTestsParams["testType"] = $testType
                     }
-                    $passed = & $runTestsOverride -parameters $runTestsParams
+                    $passed = if ($coverageSession) {
+                        & $runTestsOverride -parameters $runTestsParams `
+                            -codeCoverageContext $coverageRunContext
+                    }
+                    else {
+                        & $runTestsOverride -parameters $runTestsParams
+                    }
+                    if ($coverageSession -and $passed -isnot [bool]) {
+                        throw "The coverage-aware RunTestsInBcContainer override must return a Boolean test result."
+                    }
                 }
                 else {
                     $alToolParameters = @{
-                        ContainerName       = $containerName
-                        Credential          = $credential
-                        ExtensionId         = "$($testApp.Id)"
-                        AppName             = "$($testApp.Name)"
-                        CompanyName         = "$($settings.companyName)"
-                        Tenant              = "default"
-                        TestType            = $testType
-                        DisabledTests       = @($disabledTests)
-                        AlToolPath          = $alToolPath
+                        ContainerName = $containerName
+                        Credential = $credential
+                        ExtensionId = "$($testApp.Id)"
+                        AppName = "$($testApp.Name)"
+                        CompanyName = "$($settings.companyName)"
+                        Tenant = "default"
+                        TestType = $testType
+                        DisabledTests = @($disabledTests)
+                        AlToolPath = $alToolPath
                         JUnitResultFileName = $testResultsFile
                     }
-                    if ($coverageSupported) {
+                    if ($coverageSession -and $coverageSession.Supported) {
                         $coverageIsComplete = $null
-                        $alToolParameters.CoverageMode = $coverageMode
-                        $alToolParameters.CoverageOutputPath = Get-CodeCoverageOutputPath `
-                            -projectPath $projectPath -appId "$($testApp.Id)"
-                        $alToolParameters.CoverageFormats = @($coverageFormats)
-                        $alToolParameters.CoverageSourceRoots = @($coverageSourceRoots)
+                        $alToolParameters.CoverageMode = $coverageRunContext.mode
+                        $alToolParameters.CoverageOutputPath = $coverageRunContext.coverageOutputPath
+                        $alToolParameters.CoverageFormats = @($coverageRunContext.formats)
+                        $alToolParameters.CoverageSourceRoots = @($coverageRunContext.sourceRoots)
                         $alToolParameters.CoverageIsComplete = [ref] $coverageIsComplete
                     }
                     $passed = Invoke-AlToolTestRun @alToolParameters
-                    if ($coverageSupported) {
-                        $currentCoverageRun.state = if ($coverageIsComplete) {
-                            "complete"
-                        }
-                        else {
-                            "incomplete"
-                        }
-                        Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
+                    if ($coverageSession -and $coverageSession.Supported) {
+                        $coverageRunContext.result.coverageIsComplete = $coverageIsComplete
                     }
                 }
 
+                if ($coverageSession -and $coverageSession.Supported) {
+                    $coverageInvocationActive = $false
+                    Complete-AlGoCodeCoverageRun -session $coverageSession `
+                        -appId $currentCoverageAppId `
+                        -rawComplete $coverageRunContext.result.coverageIsComplete
+                }
+                $currentCoverageAppId = ""
                 if (-not $passed) {
                     $allTestsPassed = $false
                 }
             }
+            if ($coverageSession) {
+                Complete-AlGoCodeCoverageSession -session $coverageSession
+            }
         }
         catch {
-            if ($coverageSupported -and $currentCoverageRun -and $currentCoverageRun.state -eq "running") {
-                $currentCoverageRun.state = "failed"
-                Write-CodeCoverageStatus -path $coverageStatusPath -status $coverageStatus
+            $caughtTestRunError = $_
+            if ($coverageInvocationActive -and -not [string]::IsNullOrWhiteSpace($currentCoverageAppId)) {
+                try {
+                    Complete-AlGoCodeCoverageRun -session $coverageSession `
+                        -appId $currentCoverageAppId -executionFailed
+                }
+                catch {
+                    OutputWarning -message "Failed to record the current code coverage run after test execution failed. $($_.Exception.Message)"
+                }
             }
-            $testRunError = $_
+            if ($coverageSession -and $coverageSession.Enabled -and -not $coverageSession.Finalized) {
+                try {
+                    Complete-AlGoCodeCoverageSession -session $coverageSession -suppressFailure
+                }
+                catch {
+                    OutputWarning -message "Failed to finalize code coverage status after test execution failed. $($_.Exception.Message)"
+                }
+            }
+            $testRunError = $caughtTestRunError
         }
         finally {
             Pop-Location

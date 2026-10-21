@@ -1,0 +1,317 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Callback parameters match production signatures')]
+param()
+
+$errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
+
+. (Join-Path -Path $PSScriptRoot -ChildPath "../Actions/AL-Go-Helper.ps1" -Resolve)
+Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/CodeCoverageCoordinator.psm1' -Resolve) `
+    -DisableNameChecking -Force
+
+Describe 'CodeCoverageCoordinator.psm1 Tests' {
+    BeforeAll {
+        Import-Module (
+            Join-Path $PSScriptRoot '../Actions/RunTests/CodeCoverageCoordinator.psm1' -Resolve
+        ) -DisableNameChecking -Force
+
+        function New-CoordinatorProject {
+            Param([string] $name = "Project")
+
+            $projectPath = Join-Path $TestDrive $name
+            $appPath = Join-Path $projectPath "App"
+            $testPath = Join-Path $projectPath "Test"
+            New-Item -Path $appPath -ItemType Directory -Force | Out-Null
+            New-Item -Path $testPath -ItemType Directory -Force | Out-Null
+            @{
+                id = "11111111-1111-1111-1111-111111111111"
+                name = "Regular App"
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $appPath "app.json") -Encoding UTF8
+            @{
+                id = "22222222-2222-2222-2222-222222222222"
+                name = "Test App"
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $testPath "app.json") -Encoding UTF8
+            return $projectPath
+        }
+
+        function New-CoordinatorSession {
+            Param(
+                [string] $projectPath,
+                [string[]] $formats = @("bc-json"),
+                [string] $platformVersion = "30.0.56026.0",
+                [object[]] $testApps = @(),
+                [hashtable] $settings = $null,
+                [scriptblock] $analyzeRepo = $null
+            )
+
+            if (-not $settings) {
+                $settings = @{
+                    appFolders = @("App")
+                    testFolders = @("Test")
+                    useSeparateTestAction = @{
+                        codeCoverageEnabled = $true
+                        codeCoverageFormats = @($formats)
+                    }
+                }
+            }
+            if ($testApps.Count -eq 0) {
+                $testApps = @(
+                    [PSCustomObject]@{
+                        Id = "22222222-2222-2222-2222-222222222222"
+                        Name = "Test App"
+                        Path = Join-Path $projectPath "Test.app"
+                    }
+                )
+            }
+            return New-AlGoCodeCoverageSession -settings $settings -projectPath $projectPath `
+                -baseFolder $projectPath -project "." -projectName "Project" -buildMode "Default" `
+                -testType "IntegrationTest" -testApps $testApps -analyzeRepo $analyzeRepo `
+                -platformVersion $platformVersion -platformVersionReason "" `
+                -alToolPath "C:\tools\al.exe"
+        }
+
+        function Write-CoordinatorCoverageArtifacts {
+            Param(
+                [hashtable] $context,
+                [bool] $complete = $true
+            )
+
+            New-Item -Path $context.coverageOutputPath -ItemType Directory -Force | Out-Null
+            if ("bc-json" -in @($context.formats)) {
+                @{
+                    schemaVersion = "1.0"
+                    coverageMode = "line"
+                    complete = $complete
+                    diagnostics = @()
+                    sources = @()
+                    tests = @()
+                    procedureEdges = @()
+                    methods = @()
+                    lines = @()
+                } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (
+                    Join-Path $context.coverageOutputPath "coverage.bc.json"
+                ) -Encoding UTF8
+            }
+            if ("cobertura" -in @($context.formats)) {
+                Set-Content -LiteralPath (
+                    Join-Path $context.coverageOutputPath "coverage.cobertura.xml"
+                ) -Value "<coverage />" -Encoding UTF8
+            }
+            $context.result.coverageIsComplete = $complete
+        }
+    }
+
+    It 'Creates one deterministic isolated run per selected test app' {
+        $projectPath = New-CoordinatorProject
+        $testApps = @(
+            [PSCustomObject]@{
+                Id = "22222222-2222-2222-2222-222222222222"
+                Name = "Test App"
+                Path = Join-Path $projectPath "Test.app"
+            },
+            [PSCustomObject]@{
+                Id = "33333333-3333-3333-3333-333333333333"
+                Name = "Other Test App"
+                Path = Join-Path $projectPath "Other.Test.app"
+            }
+        )
+        $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
+
+        $first = Start-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id
+        $second = Start-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id
+
+        $first.coverageOutputPath | Should -Not -Be $second.coverageOutputPath
+        $first.outputDirectory | Should -Be "CodeCoverage/$($testApps[0].Id)"
+        $second.outputDirectory | Should -Be "CodeCoverage/$($testApps[1].Id)"
+        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        @($status.runs.state) | Should -Be @("running", "running")
+    }
+
+    It 'Returns a non-secret app-specific override context with authoritative roots' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath
+        $disabledTests = @(@{ codeunitName = "Tests"; method = "TestOne" })
+
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222" `
+            -disabledTests $disabledTests
+
+        $context.contractVersion | Should -Be 1
+        $context.app.id | Should -Be "22222222-2222-2222-2222-222222222222"
+        $context.app.name | Should -Be "Test App"
+        $context.app.disabledTests[0].method | Should -Be "TestOne"
+        $context.testType | Should -Be "IntegrationTest"
+        $context.mode | Should -Be "line"
+        $context.formats | Should -Be @("bc-json")
+        $context.alToolModulePath | Should -Match "AlToolTestRunner\.psm1$"
+        $context.alToolPath | Should -Be "C:\tools\al.exe"
+        $context.Contains("credential") | Should -BeFalse
+        @($context.sourceRootDetails.appName) | Should -Contain "Regular App"
+        @($context.sourceRootDetails.appName) | Should -Contain "Test App"
+    }
+
+    It 'Validates both formats and finalizes complete coverage' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath `
+            -formats @("bc-json", "cobertura")
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+        Write-CoordinatorCoverageArtifacts -context $context
+
+        Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
+            -rawComplete $context.result.coverageIsComplete
+        Complete-AlGoCodeCoverageSession -session $session
+
+        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status.runs[0].state | Should -Be "complete"
+    }
+
+    It 'Accepts incomplete coverage and Cobertura-only coverage' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath -formats @("cobertura")
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+        Write-CoordinatorCoverageArtifacts -context $context -complete $false
+
+        Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
+            -rawComplete $context.result.coverageIsComplete
+        Complete-AlGoCodeCoverageSession -session $session
+
+        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status.runs[0].state | Should -Be "incomplete"
+    }
+
+    It 'Fails closed when required artifacts are missing' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+
+        {
+            Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
+                -rawComplete $true
+        } | Should -Throw "*expected 'bc-json' coverage artifact*"
+        { Complete-AlGoCodeCoverageSession -session $session } |
+            Should -Throw "*did not produce valid code coverage*"
+    }
+
+    It 'Fails closed when reported completeness disagrees with BC JSON' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+        Write-CoordinatorCoverageArtifacts -context $context -complete $false
+
+        {
+            Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
+                -rawComplete $true
+        } | Should -Throw "*does not match the BC JSON report*"
+    }
+
+    It 'Preserves unsupported runs without requiring artifacts' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath `
+            -platformVersion "30.0.56025.999"
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+
+        $context.supported | Should -BeFalse
+        $context.sourceRoots.Count | Should -Be 0
+        { Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id } |
+            Should -Not -Throw
+        { Complete-AlGoCodeCoverageSession -session $session } | Should -Not -Throw
+        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status.runs[0].state | Should -Be "unsupported"
+    }
+
+    It 'Rejects pending runs and double finalization' {
+        $projectPath = New-CoordinatorProject
+        $session = New-CoordinatorSession -projectPath $projectPath
+
+        { Complete-AlGoCodeCoverageSession -session $session } |
+            Should -Throw "*did not produce final code coverage*"
+        { Complete-AlGoCodeCoverageSession -session $session } |
+            Should -Throw "*already been finalized*"
+    }
+
+    It 'Rejects duplicate app identities' {
+        $projectPath = New-CoordinatorProject
+        $testApps = @(
+            [PSCustomObject]@{
+                Id = "22222222-2222-2222-2222-222222222222"
+                Name = "Test App"
+                Path = Join-Path $projectPath "Test.app"
+            },
+            [PSCustomObject]@{
+                Id = "22222222-2222-2222-2222-222222222222"
+                Name = "Duplicate"
+                Path = Join-Path $projectPath "Duplicate.app"
+            }
+        )
+
+        { New-CoordinatorSession -projectPath $projectPath -testApps $testApps } |
+            Should -Throw "*duplicated*"
+    }
+
+    It 'Resolves direct projectsToTest roots before returning app contexts' {
+        $projectPath = New-CoordinatorProject
+        $targetPath = Join-Path $projectPath "Target"
+        $targetAppPath = Join-Path $targetPath "TargetApp"
+        $targetTestPath = Join-Path $targetPath "TargetTest"
+        New-Item -Path $targetAppPath -ItemType Directory -Force | Out-Null
+        New-Item -Path $targetTestPath -ItemType Directory -Force | Out-Null
+        @{
+            id = "33333333-3333-3333-3333-333333333333"
+            name = "Target App"
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $targetAppPath "app.json") -Encoding UTF8
+        @{
+            id = "44444444-4444-4444-4444-444444444444"
+            name = "Target Tests"
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $targetTestPath "app.json") -Encoding UTF8
+        New-Item -Path (Join-Path $targetPath ".AL-Go") -ItemType Directory -Force | Out-Null
+        @{
+            appFolders = @("TargetApp")
+            testFolders = @("TargetTest")
+        } | ConvertTo-Json | Set-Content -LiteralPath (
+            Join-Path $targetPath ".AL-Go\settings.json"
+        ) -Encoding UTF8
+        $settings = @{
+            appFolders = @("App")
+            testFolders = @("Test")
+            projectsToTest = @("Target")
+            useSeparateTestAction = @{
+                codeCoverageEnabled = $true
+                codeCoverageFormats = @("bc-json")
+            }
+        }
+        $analyzeRepo = {
+            param($settings, $baseFolder, $project)
+            $null = $baseFolder
+            $null = $project
+            return $settings
+        }
+
+        $session = New-CoordinatorSession -projectPath $projectPath -settings $settings `
+            -analyzeRepo $analyzeRepo
+        $context = Start-AlGoCodeCoverageRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+
+        @($context.sourceRootDetails.appName) | Should -Contain "Target App"
+        @($context.sourceRootDetails.appName) | Should -Contain "Target Tests"
+    }
+
+    It 'Rejects source roots outside the repository' {
+        $projectPath = New-CoordinatorProject
+        $outsidePath = Join-Path (Split-Path $projectPath -Parent) "Outside"
+        New-Item -Path $outsidePath -ItemType Directory -Force | Out-Null
+        $settings = @{
+            appFolders = @("..\Outside")
+            testFolders = @("Test")
+            useSeparateTestAction = @{
+                codeCoverageEnabled = $true
+                codeCoverageFormats = @("bc-json")
+            }
+        }
+
+        { New-CoordinatorSession -projectPath $projectPath -settings $settings } |
+            Should -Throw "*outside the repository*"
+    }
+}
