@@ -318,7 +318,7 @@ Describe 'RunTests.psm1 Tests' {
         }
     }
 
-    Context 'Resolve-CodeCoverageSourceRoots' {
+    Context 'Code coverage source root resolution' {
         It 'Returns canonical existing project roots with deterministic deduplication' {
             $projectPath = Join-Path $TestDrive 'Project'
             foreach ($folder in @('App', 'Test')) {
@@ -333,8 +333,9 @@ Describe 'RunTests.psm1 Tests' {
                 Settings    = $settings
                 ProjectPath = $projectPath
             } {
-                $rootData = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
-                $rootData | Should -Be @(
+                $roots = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
+                        -projectPath $ProjectPath | ForEach-Object { "$($_.Path)" })
+                $roots | Should -Be @(
                     [System.IO.Path]::GetFullPath((Join-Path $ProjectPath 'App')),
                     [System.IO.Path]::GetFullPath((Join-Path $ProjectPath 'Test'))
                 )
@@ -360,10 +361,12 @@ Describe 'RunTests.psm1 Tests' {
                 try {
                     [System.Threading.Thread]::CurrentThread.CurrentCulture =
                         [System.Globalization.CultureInfo]::GetCultureInfo('de-DE')
-                    $germanRoots = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
+                    $germanRoots = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
+                            -projectPath $ProjectPath | ForEach-Object { "$($_.Path)" })
                     [System.Threading.Thread]::CurrentThread.CurrentCulture =
                         [System.Globalization.CultureInfo]::GetCultureInfo('sv-SE')
-                    $swedishRoots = Resolve-CodeCoverageSourceRoots -settings $Settings -projectPath $ProjectPath
+                    $swedishRoots = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
+                            -projectPath $ProjectPath | ForEach-Object { "$($_.Path)" })
 
                     $germanRoots | Should -Be $swedishRoots
                 }
@@ -373,7 +376,7 @@ Describe 'RunTests.psm1 Tests' {
             }
         }
 
-        It 'Preserves the exact invocation order in repository-relative status roots' {
+        It 'Returns aligned absolute and repository-relative root records' {
             $baseFolder = Join-Path $TestDrive 'Repository'
             $firstRoot = Join-Path $baseFolder 'First'
             $secondRoot = Join-Path $baseFolder 'Second'
@@ -383,15 +386,21 @@ Describe 'RunTests.psm1 Tests' {
 
             InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder = $baseFolder
-                FirstRoot  = $firstRoot
-                SecondRoot = $secondRoot
             } {
-                param($BaseFolder, $FirstRoot, $SecondRoot)
+                param($BaseFolder)
+                $settings = @{
+                    appFolders = @('Second', '.', 'First', 'Second')
+                    testFolders = @()
+                }
+                $rootData = @(Resolve-CodeCoverageSourceRootData -settings $settings `
+                        -projectPath $BaseFolder -baseFolder $BaseFolder)
 
-                $relativeRoots = @(ConvertTo-RepositoryRelativeCoverageRoots `
-                        -sourceRoots @($SecondRoot, $BaseFolder, $FirstRoot, $SecondRoot) -baseFolder $BaseFolder)
-
-                $relativeRoots | Should -Be @('Second', '.', 'First')
+                @($rootData.Path) | Should -Be @(
+                    [System.IO.Path]::GetFullPath($BaseFolder),
+                    [System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'First')),
+                    [System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'Second'))
+                )
+                @($rootData.RelativePath) | Should -Be @('.', 'First', 'Second')
             }
         }
 
@@ -403,13 +412,16 @@ Describe 'RunTests.psm1 Tests' {
 
             InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder  = $baseFolder
-                OutsideRoot = $outsideRoot
             } {
-                param($BaseFolder, $OutsideRoot)
+                param($BaseFolder)
+                $settings = @{
+                    appFolders = @('..\Outside')
+                    testFolders = @()
+                }
 
                 {
-                    ConvertTo-RepositoryRelativeCoverageRoots `
-                        -sourceRoots @($OutsideRoot) -baseFolder $BaseFolder
+                    Resolve-CodeCoverageSourceRootData -settings $settings `
+                        -projectPath $BaseFolder -baseFolder $BaseFolder
                 } | Should -Throw '*outside the repository*'
             }
         }
@@ -424,13 +436,16 @@ Describe 'RunTests.psm1 Tests' {
 
             InModuleScope CodeCoverageCoordinator -Parameters @{
                 BaseFolder = $baseFolder
-                LinkedRoot = $linkedRoot
             } {
-                param($BaseFolder, $LinkedRoot)
+                param($BaseFolder)
+                $settings = @{
+                    appFolders = @('Linked')
+                    testFolders = @()
+                }
 
                 {
-                    ConvertTo-RepositoryRelativeCoverageRoots `
-                        -sourceRoots @($LinkedRoot) -baseFolder $BaseFolder
+                    Resolve-CodeCoverageSourceRootData -settings $settings `
+                        -projectPath $BaseFolder -baseFolder $BaseFolder
                 } | Should -Throw '*reparse point*'
             }
         }
@@ -464,10 +479,17 @@ Describe 'RunTests.psm1 Tests' {
             } {
                 param($Settings, $TargetSettings, $ProjectPath, $BaseFolder)
                 Mock ReadSettings { return $TargetSettings }
-                Mock Invoke-CodeCoverageAnalyzeRepo { return $TargetSettings }
+                $script:analyzeRepoCalls = 0
+                $analyzeRepo = {
+                    param($settings, $baseFolder, $project)
+                    $null = $baseFolder
+                    $null = $project
+                    $script:analyzeRepoCalls++
+                    return $settings
+                }
 
                 $rootData = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
-                        -projectPath $ProjectPath -baseFolder $BaseFolder)
+                        -projectPath $ProjectPath -baseFolder $BaseFolder -analyzeRepo $analyzeRepo)
                 $roots = @($rootData | ForEach-Object { $_.Path })
 
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')))
@@ -482,9 +504,34 @@ Describe 'RunTests.psm1 Tests' {
                 Should -Invoke ReadSettings -Times 1 -Exactly -ParameterFilter {
                     $project -eq 'build/projects/Apps W1' -and $baseFolder -eq $BaseFolder
                 }
-                Should -Invoke Invoke-CodeCoverageAnalyzeRepo -Times 1 -Exactly -ParameterFilter {
-                    $project -eq 'build/projects/Apps W1'
-                }
+                $script:analyzeRepoCalls | Should -Be 1
+            }
+        }
+
+        It 'Requires the AnalyzeRepo callback for projectsToTest source roots' {
+            $baseFolder = Join-Path $TestDrive 'Repository'
+            $projectPath = Join-Path $baseFolder 'Project'
+            $targetProjectPath = Join-Path $baseFolder 'Target'
+            New-Item -Path $projectPath -ItemType Directory -Force | Out-Null
+            New-Item -Path $targetProjectPath -ItemType Directory -Force | Out-Null
+            $settings = @{
+                appFolders = @()
+                testFolders = @()
+                projectsToTest = @('Target')
+            }
+
+            InModuleScope CodeCoverageCoordinator -Parameters @{
+                Settings = $settings
+                ProjectPath = $projectPath
+                BaseFolder = $baseFolder
+            } {
+                param($Settings, $ProjectPath, $BaseFolder)
+                Mock ReadSettings { return @{ appFolders = @(); testFolders = @() } }
+
+                {
+                    Resolve-CodeCoverageSourceRootData -settings $Settings `
+                        -projectPath $ProjectPath -baseFolder $BaseFolder
+                } | Should -Throw 'Analyzing projectsToTest source roots requires the AnalyzeRepo callback.'
             }
         }
 
@@ -535,22 +582,28 @@ Describe 'RunTests.psm1 Tests' {
                     }
                     return $TargetTwoSettings
                 }
-                Mock Invoke-CodeCoverageAnalyzeRepo {
+                $script:analyzeRepoCalls = 0
+                $analyzeRepo = {
+                    param($settings, $baseFolder, $project)
+                    $null = $settings
+                    $null = $baseFolder
+                    $script:analyzeRepoCalls++
                     if ($project -eq 'build/projects/Apps W1') {
                         return $TargetOneSettings
                     }
                     return $TargetTwoSettings
                 }
 
-                $roots = @(Resolve-CodeCoverageSourceRoots -settings $Settings `
-                        -projectPath $ProjectPath -baseFolder $BaseFolder)
+                $roots = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
+                        -projectPath $ProjectPath -baseFolder $BaseFolder -analyzeRepo $analyzeRepo |
+                        ForEach-Object { "$($_.Path)" })
 
                 $roots.Count | Should -Be 3
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App')))
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\App\Nested')))
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Localized')))
                 Should -Invoke ReadSettings -Times 2 -Exactly
-                Should -Invoke Invoke-CodeCoverageAnalyzeRepo -Times 2 -Exactly
+                $script:analyzeRepoCalls | Should -Be 2
             }
         }
 
@@ -1101,6 +1154,9 @@ Describe 'RunTests.psm1 Tests' {
             $script:capturedCoverageRuns = @()
             $script:coverageStatusBeforeRuns = @()
             $script:coverageInvocation = 0
+            Mock -ModuleName RunTests Get-AlGoCodeCoverageCapability {
+                return @{ Supported = $true; Reason = "" }
+            }
             Mock -ModuleName RunTests Invoke-AlToolTestRun {
                 param(
                     $ExtensionId,
@@ -1172,9 +1228,10 @@ Describe 'RunTests.psm1 Tests' {
                 -containerPlatformVersion '30.0.56026.0'
 
             Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 2 -Exactly
+            Should -Invoke -ModuleName RunTests Get-AlGoCodeCoverageCapability -Times 1 -Exactly
             $script:capturedCoverageRuns.Count | Should -Be 2
-            $script:coverageStatusBeforeRuns[0] | Should -Be @('running', 'pending')
-            $script:coverageStatusBeforeRuns[1] | Should -Be @('complete', 'running')
+            $script:coverageStatusBeforeRuns[0] | Should -Be @('pending', 'pending')
+            $script:coverageStatusBeforeRuns[1] | Should -Be @('complete', 'pending')
             $script:capturedCoverageRuns[0].CoverageMode | Should -Be 'line'
             $script:capturedCoverageRuns[0].CoverageFormats | Should -Be @('bc-json', 'cobertura')
             $script:capturedCoverageRuns[0].CoverageSourceRoots | Should -Contain (

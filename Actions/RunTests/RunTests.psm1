@@ -347,8 +347,7 @@ function Invoke-AlGoTestRun {
                 -projectPath $projectPath -baseFolder $baseFolder -project $project `
                 -projectName $projectName -buildMode $buildMode -testType $testType `
                 -testApps $testApps -analyzeRepo $analyzeRepo `
-                -platformVersion $containerPlatformVersion `
-                -platformVersionReason $containerPlatformVersionReason `
+                -capability $coverageCapability `
                 -alToolPath $alToolPath
             if ($coverageSession.Supported) {
                 Write-Host "Code coverage enabled: mode=$($coverageSession.Mode), formats=$($coverageSession.Formats -join ','), container platform $containerPlatformVersion."
@@ -467,7 +466,7 @@ function Invoke-AlGoTestRun {
                     OutputWarning -message "Failed to record the current code coverage run after test execution failed. $($_.Exception.Message)"
                 }
             }
-            if ($coverageSession -and $coverageSession.Enabled -and -not $coverageSession.Finalized) {
+            if ($coverageSession -and -not $coverageSession.Finalized) {
                 try {
                     Complete-AlGoCodeCoverageSession -session $coverageSession -suppressFailure
                 }
