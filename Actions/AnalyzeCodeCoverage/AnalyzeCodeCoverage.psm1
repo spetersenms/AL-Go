@@ -441,7 +441,7 @@ function New-CoverageApplicationModels {
 function Merge-CoverageRunIntoApplications {
     Param(
         [object[]] $Applications,
-        [hashtable] $Lines,
+        [hashtable] $Scope,
         [object[]] $SourceRootDetails,
         [bool] $BlocksAllApplications,
         [bool] $LineGlobalUnsafe,
@@ -459,15 +459,16 @@ function Merge-CoverageRunIntoApplications {
         }
     }
 
-    foreach ($fact in $Lines.Values) {
-        $detail = Resolve-CoverageSourceRootDetail -SourceIdentity "$($fact.SourcePath)" `
-            -SourceRootDetails $SourceRootDetails
-        if ($detail -and "$($detail.Kind)" -eq "app" -and
-            $appsByRoot.ContainsKey("$($detail.Identity)")) {
-            $app = $appsByRoot["$($detail.Identity)"]
-            $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-            Merge-CoverageFact -Facts $app.Lines -Key $key -Fact (@{} + $fact)
+    foreach ($rootIdentity in @($Scope.ApplicationLines.Keys)) {
+        if (-not $appsByRoot.ContainsKey("$rootIdentity")) {
+            continue
         }
+        $app = $appsByRoot["$rootIdentity"]
+        foreach ($key in @($Scope.ApplicationLines[$rootIdentity].Keys)) {
+            Merge-CoverageLine -Lines $app.Lines -Key "$key" `
+                -Covered ([bool]$Scope.ApplicationLines[$rootIdentity][$key])
+        }
+        $Scope.ApplicationLines[$rootIdentity].Clear()
     }
 
     if ($BlocksAllApplications -or $LineGlobalUnsafe) {
@@ -554,76 +555,682 @@ function Read-BcCoverageReport {
     .SYNOPSIS
         Parses and validates a Business Central coverage schema 1.0 report.
     #>
-    Param([string] $Path)
+    Param(
+        [string] $Path,
+        [hashtable] $Model = $null,
+        [AllowEmptyString()][string] $RequestedMode = "",
+        [AllowEmptyString()][string] $RepositoryRoot = ""
+    )
 
-    $json = Read-CoverageJson -Path $Path -Kind "Coverage report"
-    if (-not $json.Valid) {
-        return $json
+    $file = Get-Item -LiteralPath $Path
+    $readerType = $null
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $readerType = [type]::GetType("Newtonsoft.Json.JsonTextReader, Newtonsoft.Json", $false)
+        if (-not $readerType) {
+            $readerType = [AppDomain]::CurrentDomain.GetAssemblies() |
+                ForEach-Object { $_.GetType("Newtonsoft.Json.JsonTextReader", $false) } |
+                Where-Object { $_ } |
+                Select-Object -First 1
+        }
     }
-    $report = $json.Data
-    if (-not $report.Contains("schemaVersion") -or "$($report.schemaVersion)" -ne "1.0") {
-        return @{ Valid = $false; Data = $null; Reason = "Coverage report schemaVersion is not supported." }
+    $readerName = if ($readerType) { "Newtonsoft.Json" } else { "ConvertFrom-Json" }
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $outcome = "failed"
+    $extractedLineCount = 0
+    $acceptedLineCount = 0
+    $scope = @{
+        IncludedLineObjects = @{}
+        IncludedLineSources = @{}
+        ExcludedLineObjects = @{}
+        ApplicationLines = @{}
+        LineReasons = @()
+        ExcludedLineFacts = 0
     }
-    if (-not $report.Contains("coverageMode") -or -not (Test-CoverageMode "$($report.coverageMode)")) {
-        return @{ Valid = $false; Data = $null; Reason = "Coverage report mode is not supported." }
+    $sourceCache = [System.Collections.Generic.Dictionary[string,object]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $seenExcludedLines = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    $collectApplicationLines = $RequestedMode -in @("line", "all") -and $null -ne $Model
+    $reportData = @{
+        schemaVersion = $null
+        coverageMode = $null
+        complete = $null
+        diagnostics = @()
     }
-    if (-not $report.Contains("complete") -or $report.complete -isnot [bool]) {
-        return @{ Valid = $false; Data = $null; Reason = "Coverage report completeness value is invalid." }
-    }
+    $requiredRootProperties = @(
+        "schemaVersion", "coverageMode", "complete", "diagnostics", "sources",
+        "tests", "procedureEdges", "methods", "lines"
+    )
+    $seenRootProperties = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
 
     try {
-        foreach ($property in @("diagnostics", "sources", "tests", "procedureEdges", "methods", "lines")) {
-            if (-not $report.Contains($property)) {
-                throw "Missing array."
+        if ($readerType) {
+            $fileStream = $null
+            $textReader = $null
+            $jsonReader = $null
+            try {
+                $fileStream = [System.IO.FileStream]::new(
+                    $file.FullName,
+                    [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read,
+                    [System.IO.FileShare]::Read,
+                    65536,
+                    [System.IO.FileOptions]::SequentialScan)
+                $textReader = [System.IO.StreamReader]::new(
+                    $fileStream,
+                    [System.Text.Encoding]::UTF8,
+                    $true,
+                    65536,
+                    $false)
+                $jsonReader = [Newtonsoft.Json.JsonTextReader]::new($textReader)
+                if (-not $jsonReader.Read() -or
+                    $jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartObject) {
+                    throw [System.IO.InvalidDataException]::new("corrupt")
+                }
+
+                $rootComplete = $false
+                while ($jsonReader.Read()) {
+                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                        throw [System.IO.InvalidDataException]::new("corrupt")
+                    }
+                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndObject -and
+                        $jsonReader.Depth -eq 0) {
+                        $rootComplete = $true
+                        break
+                    }
+                    if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::PropertyName -or
+                        $jsonReader.Depth -ne 1) {
+                        throw [System.IO.InvalidDataException]::new("corrupt")
+                    }
+
+                    $propertyName = "$($jsonReader.Value)"
+                    if (-not $jsonReader.Read()) {
+                        throw [System.IO.InvalidDataException]::new("corrupt")
+                    }
+                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                        throw [System.IO.InvalidDataException]::new("corrupt")
+                    }
+                    if ($propertyName -cnotin $requiredRootProperties) {
+                        if ($jsonReader.TokenType -in @(
+                                [Newtonsoft.Json.JsonToken]::StartArray,
+                                [Newtonsoft.Json.JsonToken]::StartObject)) {
+                            $jsonReader.Skip()
+                        }
+                        continue
+                    }
+                    if (-not $seenRootProperties.Add($propertyName)) {
+                        throw [System.IO.InvalidDataException]::new("shape")
+                    }
+
+                    switch -CaseSensitive ($propertyName) {
+                        "schemaVersion" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::String) {
+                                throw [System.IO.InvalidDataException]::new("schema")
+                            }
+                            $reportData.schemaVersion = "$($jsonReader.Value)"
+                        }
+                        "coverageMode" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::String) {
+                                throw [System.IO.InvalidDataException]::new("mode")
+                            }
+                            $reportData.coverageMode = "$($jsonReader.Value)"
+                        }
+                        "complete" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::Boolean) {
+                                throw [System.IO.InvalidDataException]::new("complete")
+                            }
+                            $reportData.complete = [bool]$jsonReader.Value
+                        }
+                        "diagnostics" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartArray) {
+                                throw [System.IO.InvalidDataException]::new("shape")
+                            }
+                            $diagnostics = @()
+                            while ($jsonReader.Read()) {
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                                    throw [System.IO.InvalidDataException]::new("corrupt")
+                                }
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndArray) {
+                                    break
+                                }
+                                if ($jsonReader.TokenType -in @(
+                                        [Newtonsoft.Json.JsonToken]::StartArray,
+                                        [Newtonsoft.Json.JsonToken]::StartObject)) {
+                                    $token = [Newtonsoft.Json.Linq.JToken]::ReadFrom($jsonReader)
+                                    $diagnostics += $token.ToString([Newtonsoft.Json.Formatting]::None)
+                                }
+                                else {
+                                    $diagnostics += "$($jsonReader.Value)"
+                                }
+                            }
+                            $reportData.diagnostics = @($diagnostics)
+                        }
+                        { $_ -in @("sources", "tests") } {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartArray) {
+                                throw [System.IO.InvalidDataException]::new("shape")
+                            }
+                            $jsonReader.Skip()
+                        }
+                        "methods" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartArray) {
+                                throw [System.IO.InvalidDataException]::new("shape")
+                            }
+                            while ($jsonReader.Read()) {
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                                    throw [System.IO.InvalidDataException]::new("corrupt")
+                                }
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndArray) {
+                                    break
+                                }
+                                if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartObject) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                $method = [Newtonsoft.Json.Linq.JObject]::Load($jsonReader)
+                                $methodObjectType = $method["objectType"]
+                                $methodObjectId = $method["objectId"]
+                                $methodId = $method["methodId"]
+                                $methodName = $method["name"]
+                                $methodStartLine = $method["startLine"]
+                                $methodEndLine = $method["endLine"]
+                                $methodSourcePath = $method["sourcePath"]
+                                if ($null -eq $methodObjectType -or
+                                    $null -eq $methodObjectId -or
+                                    $null -eq $methodId -or
+                                    $null -eq $methodName -or
+                                    $null -eq $methodStartLine -or
+                                    $null -eq $methodEndLine -or
+                                    $null -eq $methodSourcePath -or
+                                    ($methodObjectType.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodObjectType.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($methodObjectId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodObjectId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($methodId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($methodStartLine.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodStartLine.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($methodEndLine.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodEndLine.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String)) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                try {
+                                    [void][int]$methodObjectType
+                                    [void][int]$methodObjectId
+                                    [void][int]$methodId
+                                    [void][int]$methodStartLine
+                                    [void][int]$methodEndLine
+                                }
+                                catch {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                            }
+                        }
+                        "procedureEdges" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartArray) {
+                                throw [System.IO.InvalidDataException]::new("shape")
+                            }
+                            while ($jsonReader.Read()) {
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                                    throw [System.IO.InvalidDataException]::new("corrupt")
+                                }
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndArray) {
+                                    break
+                                }
+                                if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartObject) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                $edge = [Newtonsoft.Json.Linq.JObject]::Load($jsonReader)
+                                $edgeObjectType = $edge["objectType"]
+                                $edgeObjectId = $edge["objectId"]
+                                $edgeMethodId = $edge["methodId"]
+                                $edgeTestId = $edge["testId"]
+                                if ($null -eq $edgeObjectType -or
+                                    $null -eq $edgeObjectId -or
+                                    $null -eq $edgeMethodId -or
+                                    $null -eq $edgeTestId -or
+                                    ($edgeObjectType.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $edgeObjectType.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($edgeObjectId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $edgeObjectId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($edgeMethodId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $edgeMethodId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($edgeTestId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $edgeTestId.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String)) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                try {
+                                    [void][int]$edgeObjectType
+                                    [void][int]$edgeObjectId
+                                    [void][int]$edgeMethodId
+                                    [void][int]$edgeTestId
+                                }
+                                catch {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                            }
+                        }
+                        "lines" {
+                            if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartArray) {
+                                throw [System.IO.InvalidDataException]::new("shape")
+                            }
+                            while ($jsonReader.Read()) {
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
+                                    throw [System.IO.InvalidDataException]::new("corrupt")
+                                }
+                                if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndArray) {
+                                    break
+                                }
+                                if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartObject) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                $line = [Newtonsoft.Json.Linq.JObject]::Load($jsonReader)
+                                $objectTypeToken = $line["objectType"]
+                                $objectIdToken = $line["objectId"]
+                                $lineNumberToken = $line["lineNumber"]
+                                $lineTypeToken = $line["lineType"]
+                                $methodIdToken = $line["methodId"]
+                                $hitCountToken = $line["hitCount"]
+                                $statusToken = $line["status"]
+                                $sourcePathToken = $line["sourcePath"]
+                                if ($null -eq $objectTypeToken -or
+                                    $null -eq $objectIdToken -or
+                                    $null -eq $lineNumberToken -or
+                                    $null -eq $lineTypeToken -or
+                                    $null -eq $methodIdToken -or
+                                    $null -eq $hitCountToken -or
+                                    $null -eq $statusToken -or
+                                    $null -eq $sourcePathToken -or
+                                    ($objectTypeToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $objectTypeToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($objectIdToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $objectIdToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($lineNumberToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $lineNumberToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($lineTypeToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $lineTypeToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($methodIdToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $methodIdToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($hitCountToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $hitCountToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    ($statusToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::Integer -and
+                                        $statusToken.Type -ne
+                                        [Newtonsoft.Json.Linq.JTokenType]::String) -or
+                                    $sourcePathToken.Type -in @(
+                                        [Newtonsoft.Json.Linq.JTokenType]::Array,
+                                        [Newtonsoft.Json.Linq.JTokenType]::Object)) {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                try {
+                                    $objectType = [int]$objectTypeToken
+                                    $objectId = [int]$objectIdToken
+                                    $lineNumber = [int]$lineNumberToken
+                                    $lineType = [int]$lineTypeToken
+                                    [void][int]$methodIdToken
+                                    $hitCount = [int]$hitCountToken
+                                    [void][int]$statusToken
+                                    $sourcePath = [string]$sourcePathToken
+                                }
+                                catch {
+                                    throw [System.IO.InvalidDataException]::new("shape")
+                                }
+                                $extractedLineCount++
+                                if ($lineType -ne 3) {
+                                    continue
+                                }
+
+                                $objectKey = "$objectType|$objectId"
+                                $source = $null
+                                if (-not $sourceCache.TryGetValue($sourcePath, [ref]$source)) {
+                                    $rawIdentity = ConvertTo-CoverageSourceIdentity $sourcePath
+                                    $source = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+                                        @{
+                                            Included = -not [string]::IsNullOrWhiteSpace($sourcePath)
+                                            Identity = $rawIdentity
+                                            LocalMappingFailed = $false
+                                        }
+                                    }
+                                    else {
+                                        Resolve-RepositoryCoverageSource -SourcePath $sourcePath `
+                                            -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
+                                    }
+                                    $source.RawIdentity = $rawIdentity
+                                    $source.AppRootIdentity = ""
+                                    if ($collectApplicationLines -and $source.Included) {
+                                        $detail = Resolve-CoverageSourceRootDetail `
+                                            -SourceIdentity $source.Identity `
+                                            -SourceRootDetails $Model.SourceRootDetails
+                                        if ($detail -and "$($detail.Kind)" -eq "app") {
+                                            $source.AppRootIdentity = "$($detail.Identity)"
+                                        }
+                                    }
+                                    $sourceCache[$sourcePath] = $source
+                                }
+                                else {
+                                    $rawIdentity = "$($source.RawIdentity)"
+                                }
+                                if ($source.Included) {
+                                    if (-not $scope.IncludedLineObjects.ContainsKey($objectKey)) {
+                                        $scope.IncludedLineObjects[$objectKey] = $true
+                                        $scope.IncludedLineSources[$objectKey] = @{}
+                                        $scope.IncludedLineSources[$objectKey][$source.Identity] = $true
+                                    }
+                                    $rootIdentity = "$($source.AppRootIdentity)"
+                                    if ($collectApplicationLines -and
+                                        -not [string]::IsNullOrWhiteSpace($rootIdentity)) {
+                                        if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
+                                            $scope.ApplicationLines[$rootIdentity] =
+                                                [System.Collections.Generic.Dictionary[string,bool]]::new(
+                                                    [System.StringComparer]::Ordinal)
+                                        }
+                                        $factKey = "$($source.Identity)|$objectType|$objectId|$lineNumber"
+                                        if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
+                                            $acceptedLineCount++
+                                            $scope.ApplicationLines[$rootIdentity].Add(
+                                                $factKey, $hitCount -gt 0)
+                                        }
+                                        elseif ($hitCount -gt 0) {
+                                            $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                                            }
+                                    }
+                                }
+                                else {
+                                    $scope.ExcludedLineObjects[$objectKey] = $true
+                                    if ($collectApplicationLines -and
+                                        $seenExcludedLines.Add(
+                                            "$rawIdentity|$objectType|$objectId|$lineNumber")) {
+                                        $scope.ExcludedLineFacts++
+                                    }
+                                    if ($collectApplicationLines -and
+                                        $source.LocalMappingFailed) {
+                                        $scope.LineReasons += "A repository source path could not be validated."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (-not $rootComplete -or $jsonReader.Read()) {
+                    throw [System.IO.InvalidDataException]::new("corrupt")
+                }
             }
-            [void](Get-CoverageArray $report[$property])
+            finally {
+                if ($jsonReader) {
+                    $jsonReader.Dispose()
+                }
+                if ($textReader) {
+                    $textReader.Dispose()
+                }
+                if ($fileStream) {
+                    $fileStream.Dispose()
+                }
+            }
         }
-        foreach ($method in @(Get-CoverageArray $report.methods)) {
-            if ($method -isnot [System.Collections.IDictionary]) { throw "Invalid method." }
-            foreach ($property in @("objectType", "objectId", "methodId", "name", "startLine", "endLine", "sourcePath")) {
-                if (-not $method.Contains($property)) { throw "Invalid method." }
+        else {
+            $report = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+            if ($report -isnot [System.Management.Automation.PSCustomObject]) {
+                throw [System.IO.InvalidDataException]::new("corrupt")
             }
-            [void](ConvertTo-CoverageInteger $method.objectType)
-            [void](ConvertTo-CoverageInteger $method.objectId)
-            [void](ConvertTo-CoverageInteger $method.methodId)
-            [void](ConvertTo-CoverageInteger $method.startLine)
-            [void](ConvertTo-CoverageInteger $method.endLine)
+            foreach ($propertyName in $requiredRootProperties) {
+                $properties = @($report.PSObject.Properties | Where-Object {
+                        $_.Name -ceq $propertyName
+                    })
+                if ($properties.Count -ne 1) {
+                    $failureKind = if ($propertyName -eq "schemaVersion") { "schema" }
+                        elseif ($propertyName -eq "coverageMode") { "mode" }
+                        elseif ($propertyName -eq "complete") { "complete" }
+                        else { "shape" }
+                    throw [System.IO.InvalidDataException]::new($failureKind)
+                }
+                $seenRootProperties.Add($propertyName) | Out-Null
+            }
+            if ($report.schemaVersion -isnot [string]) {
+                throw [System.IO.InvalidDataException]::new("schema")
+            }
+            if ($report.coverageMode -isnot [string]) {
+                throw [System.IO.InvalidDataException]::new("mode")
+            }
+            if ($report.complete -isnot [bool]) {
+                throw [System.IO.InvalidDataException]::new("complete")
+            }
+            $reportData.schemaVersion = "$($report.schemaVersion)"
+            $reportData.coverageMode = "$($report.coverageMode)"
+            $reportData.complete = [bool]$report.complete
+            try {
+                foreach ($propertyName in @(
+                        "diagnostics", "sources", "tests", "procedureEdges", "methods", "lines")) {
+                    [void](Get-CoverageArray $report.$propertyName)
+                }
+                $reportData.diagnostics = @(
+                    Get-CoverageArray $report.diagnostics | ForEach-Object { "$_" }
+                )
+                foreach ($method in @(Get-CoverageArray $report.methods)) {
+                    foreach ($propertyName in @(
+                            "objectType", "objectId", "methodId", "name",
+                            "startLine", "endLine", "sourcePath")) {
+                        if ($null -eq $method.PSObject.Properties[$propertyName]) {
+                            throw [System.IO.InvalidDataException]::new("shape")
+                        }
+                    }
+                    foreach ($propertyName in @(
+                            "objectType", "objectId", "methodId", "startLine", "endLine")) {
+                        [void](ConvertTo-CoverageInteger $method.$propertyName)
+                    }
+                }
+                foreach ($edge in @(Get-CoverageArray $report.procedureEdges)) {
+                    foreach ($propertyName in @("objectType", "objectId", "methodId", "testId")) {
+                        if ($null -eq $edge.PSObject.Properties[$propertyName]) {
+                            throw [System.IO.InvalidDataException]::new("shape")
+                        }
+                        [void](ConvertTo-CoverageInteger $edge.$propertyName)
+                    }
+                }
+                foreach ($line in @(Get-CoverageArray $report.lines)) {
+                    foreach ($propertyName in @(
+                            "objectType", "objectId", "lineNumber", "lineType",
+                            "methodId", "hitCount", "status", "sourcePath")) {
+                        if ($null -eq $line.PSObject.Properties[$propertyName]) {
+                            throw [System.IO.InvalidDataException]::new("shape")
+                        }
+                    }
+                    $objectType = ConvertTo-CoverageInteger $line.objectType
+                    $objectId = ConvertTo-CoverageInteger $line.objectId
+                    $lineNumber = ConvertTo-CoverageInteger $line.lineNumber
+                    $lineType = ConvertTo-CoverageInteger $line.lineType
+                    [void](ConvertTo-CoverageInteger $line.methodId)
+                    $hitCount = ConvertTo-CoverageInteger $line.hitCount
+                    [void](ConvertTo-CoverageInteger $line.status)
+                    $sourcePath = "$($line.sourcePath)"
+                    $extractedLineCount++
+                    if ($lineType -ne 3) {
+                        continue
+                    }
+
+                    $objectKey = "$objectType|$objectId"
+                    $source = $null
+                    if (-not $sourceCache.TryGetValue($sourcePath, [ref]$source)) {
+                        $rawIdentity = ConvertTo-CoverageSourceIdentity $sourcePath
+                        $source = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+                            @{
+                                Included = -not [string]::IsNullOrWhiteSpace($sourcePath)
+                                Identity = $rawIdentity
+                                LocalMappingFailed = $false
+                            }
+                        }
+                        else {
+                            Resolve-RepositoryCoverageSource -SourcePath $sourcePath `
+                                -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
+                        }
+                        $source.RawIdentity = $rawIdentity
+                        $source.AppRootIdentity = ""
+                        if ($collectApplicationLines -and $source.Included) {
+                            $detail = Resolve-CoverageSourceRootDetail `
+                                -SourceIdentity $source.Identity `
+                                -SourceRootDetails $Model.SourceRootDetails
+                            if ($detail -and "$($detail.Kind)" -eq "app") {
+                                $source.AppRootIdentity = "$($detail.Identity)"
+                            }
+                        }
+                        $sourceCache[$sourcePath] = $source
+                    }
+                    else {
+                        $rawIdentity = "$($source.RawIdentity)"
+                    }
+                    if ($source.Included) {
+                        if (-not $scope.IncludedLineObjects.ContainsKey($objectKey)) {
+                            $scope.IncludedLineObjects[$objectKey] = $true
+                            $scope.IncludedLineSources[$objectKey] = @{}
+                            $scope.IncludedLineSources[$objectKey][$source.Identity] = $true
+                        }
+                        $rootIdentity = "$($source.AppRootIdentity)"
+                        if ($collectApplicationLines -and
+                            -not [string]::IsNullOrWhiteSpace($rootIdentity)) {
+                            if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
+                                $scope.ApplicationLines[$rootIdentity] = @{}
+                            }
+                            $factKey = "$($source.Identity)|$objectType|$objectId|$lineNumber"
+                            if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
+                                $acceptedLineCount++
+                                $scope.ApplicationLines[$rootIdentity][$factKey] = $hitCount -gt 0
+                            }
+                            elseif ($hitCount -gt 0) {
+                                $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                            }
+                        }
+                    }
+                    else {
+                        $scope.ExcludedLineObjects[$objectKey] = $true
+                        if ($collectApplicationLines -and
+                            $seenExcludedLines.Add(
+                                "$rawIdentity|$objectType|$objectId|$lineNumber")) {
+                            $scope.ExcludedLineFacts++
+                        }
+                        if ($collectApplicationLines -and $source.LocalMappingFailed) {
+                            $scope.LineReasons +=
+                                "A repository source path could not be validated."
+                        }
+                    }
+                }
+            }
+            catch {
+                if ($_.Exception -is [System.IO.InvalidDataException]) {
+                    throw
+                }
+                throw [System.IO.InvalidDataException]::new("shape")
+            }
+            $report = $null
         }
-        foreach ($line in @(Get-CoverageArray $report.lines)) {
-            if ($line -isnot [System.Collections.IDictionary]) { throw "Invalid line." }
-            foreach ($property in @("objectType", "objectId", "lineNumber", "lineType", "methodId", "hitCount", "status", "sourcePath")) {
-                if (-not $line.Contains($property)) { throw "Invalid line." }
-            }
-            foreach ($property in @("objectType", "objectId", "lineNumber", "lineType", "methodId", "hitCount", "status")) {
-                [void](ConvertTo-CoverageInteger $line[$property])
+
+        foreach ($propertyName in $requiredRootProperties) {
+            if (-not $seenRootProperties.Contains($propertyName)) {
+                $failureKind = if ($propertyName -eq "schemaVersion") { "schema" }
+                    elseif ($propertyName -eq "coverageMode") { "mode" }
+                    elseif ($propertyName -eq "complete") { "complete" }
+                    else { "shape" }
+                throw [System.IO.InvalidDataException]::new($failureKind)
             }
         }
-        foreach ($edge in @(Get-CoverageArray $report.procedureEdges)) {
-            if ($edge -isnot [System.Collections.IDictionary]) { throw "Invalid procedure edge." }
-            foreach ($property in @("objectType", "objectId", "methodId", "testId")) {
-                if (-not $edge.Contains($property)) { throw "Invalid procedure edge." }
-                [void](ConvertTo-CoverageInteger $edge[$property])
-            }
+        if ("$($reportData.schemaVersion)" -ne "1.0") {
+            throw [System.IO.InvalidDataException]::new("schema")
+        }
+        if (-not (Test-CoverageMode "$($reportData.coverageMode)")) {
+            throw [System.IO.InvalidDataException]::new("mode")
+        }
+
+        $outcome = "passed"
+        return @{
+            Valid = $true
+            Data = $reportData
+            Scope = $scope
+            Reader = $readerName
+            ExtractedLineCount = $extractedLineCount
+            AcceptedLineCount = $acceptedLineCount
+            Reason = ""
         }
     }
     catch {
-        return @{ Valid = $false; Data = $null; Reason = "Coverage report does not match schemaVersion 1.0." }
+        $failureKind = if ($_.Exception -is [System.IO.InvalidDataException]) {
+            "$($_.Exception.Message)"
+        }
+        else {
+            "corrupt"
+        }
+        $reason = switch ($failureKind) {
+            "schema" { "Coverage report schemaVersion is not supported." }
+            "mode" { "Coverage report mode is not supported." }
+            "complete" { "Coverage report completeness value is invalid." }
+            "shape" { "Coverage report does not match schemaVersion 1.0." }
+            default { "Coverage report JSON is corrupt or invalid." }
+        }
+        return @{
+            Valid = $false
+            Data = $null
+            Scope = $null
+            Reader = $readerName
+            ExtractedLineCount = $extractedLineCount
+            AcceptedLineCount = $acceptedLineCount
+            Reason = $reason
+        }
     }
-    return @{ Valid = $true; Data = $report; Reason = "" }
+    finally {
+        $stopwatch.Stop()
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        Write-Host ("BC JSON analysis: reader={0}, size={1} MiB, elapsed={2}s, extractedLines={3}, acceptedLines={4}, outcome={5}." -f
+            $readerName,
+            ($file.Length / 1MB).ToString("0.0", $culture),
+            $stopwatch.Elapsed.TotalSeconds.ToString("0.000", $culture),
+            $extractedLineCount,
+            $acceptedLineCount,
+            $outcome)
+    }
 }
 
-function Merge-CoverageFact {
+function Merge-CoverageLine {
     Param(
-        [hashtable] $Facts,
+        [System.Collections.IDictionary] $Lines,
         [string] $Key,
-        [hashtable] $Fact
+        [bool] $Covered
     )
 
-    if ($Facts.ContainsKey($Key)) {
-        $Facts[$Key].Covered = [bool]$Facts[$Key].Covered -or [bool]$Fact.Covered
+    if ($Lines.Contains($Key)) {
+        $Lines[$Key] = [bool]$Lines[$Key] -or $Covered
     }
     else {
-        $Facts[$Key] = $Fact
+        $Lines[$Key] = $Covered
     }
 }
 
@@ -654,77 +1261,6 @@ function New-EmptyProjectCoverageModel {
         ExcludedLineFacts = 0
         StatusPath = ""
     }
-}
-
-function Add-ScopedCoverageReportFacts {
-    Param(
-        [hashtable] $Report,
-        [hashtable] $Model,
-        [string] $RequestedMode,
-        [AllowEmptyString()][string] $RepositoryRoot
-    )
-
-    $result = @{
-        IncludedLineObjects = @{}
-        IncludedLineSources = @{}
-        ExcludedLineObjects = @{}
-        Lines = @{}
-        LineReasons = @()
-    }
-
-    $rawLines = @{}
-    foreach ($line in @(Get-CoverageArray $Report.lines)) {
-        if ((ConvertTo-CoverageInteger $line.lineType) -ne 3) {
-            continue
-        }
-        $fact = @{
-            SourcePath = "$($line.sourcePath)"
-            ObjectType = ConvertTo-CoverageInteger $line.objectType
-            ObjectId = ConvertTo-CoverageInteger $line.objectId
-            LineNumber = ConvertTo-CoverageInteger $line.lineNumber
-            Covered = (ConvertTo-CoverageInteger $line.hitCount) -gt 0
-        }
-        $key = "$(ConvertTo-CoverageSourceIdentity $fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-        Merge-CoverageFact -Facts $rawLines -Key $key -Fact $fact
-    }
-
-    foreach ($fact in $rawLines.Values) {
-        $objectKey = "$($fact.ObjectType)|$($fact.ObjectId)"
-        $source = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
-            @{
-                Included = -not [string]::IsNullOrWhiteSpace("$($fact.SourcePath)")
-                Identity = ConvertTo-CoverageSourceIdentity "$($fact.SourcePath)"
-                LocalMappingFailed = $false
-            }
-        }
-        else {
-            Resolve-RepositoryCoverageSource -SourcePath "$($fact.SourcePath)" `
-                -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
-        }
-        if ($source.Included) {
-            $result.IncludedLineObjects[$objectKey] = $true
-            if (-not $result.IncludedLineSources.ContainsKey($objectKey)) {
-                $result.IncludedLineSources[$objectKey] = @{}
-            }
-            $result.IncludedLineSources[$objectKey][$source.Identity] = $true
-            if ($RequestedMode -in @("line", "all")) {
-                $copy = @{} + $fact
-                $copy.SourcePath = $source.Identity
-                $key = "$($source.Identity)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-                Merge-CoverageFact -Facts $result.Lines -Key $key -Fact (@{} + $copy)
-            }
-        }
-        else {
-            $result.ExcludedLineObjects[$objectKey] = $true
-            if ($RequestedMode -in @("line", "all")) {
-                $Model.ExcludedLineFacts++
-            }
-            if ($RequestedMode -in @("line", "all") -and $source.LocalMappingFailed) {
-                $result.LineReasons += "A repository source path could not be validated."
-            }
-        }
-    }
-    return $result
 }
 
 function Get-CoverageDiagnosticAssessment {
@@ -931,7 +1467,14 @@ function Get-ProjectCoverageModelFromStatus {
         }
 
         $reportPath = ""
-        $runLines = @{}
+        $scope = @{
+            IncludedLineObjects = @{}
+            IncludedLineSources = @{}
+            ExcludedLineObjects = @{}
+            ApplicationLines = @{}
+            LineReasons = @()
+            ExcludedLineFacts = 0
+        }
         $runLineReasons = @()
         $lineGlobalUnsafe = $false
         $lineAffectedSources = @()
@@ -941,7 +1484,8 @@ function Get-ProjectCoverageModelFromStatus {
                 $runReasons += "The bc-json report is missing."
             }
             else {
-                $reportResult = Read-BcCoverageReport -Path $reportPath
+                $reportResult = Read-BcCoverageReport -Path $reportPath -Model $model `
+                    -RequestedMode $model.Mode -RepositoryRoot $RepositoryRoot
                 if (-not $reportResult.Valid) {
                     $runReasons += $reportResult.Reason
                 }
@@ -951,9 +1495,8 @@ function Get-ProjectCoverageModelFromStatus {
                         $runReasons += "Coverage report mode does not match the status mode."
                     }
                     if ($runReasons.Count -eq 0) {
-                        $scope = Add-ScopedCoverageReportFacts -Report $report -Model $model `
-                            -RequestedMode $model.Mode -RepositoryRoot $RepositoryRoot
-                        $runLines = $scope.Lines
+                        $scope = $reportResult.Scope
+                        $model.ExcludedLineFacts += [int]$scope.ExcludedLineFacts
                         $assessment = Get-CoverageDiagnosticAssessment -Report $report `
                             -Scope $scope
                         $runLineReasons += $assessment.LineReasons
@@ -981,7 +1524,7 @@ function Get-ProjectCoverageModelFromStatus {
                 }
             }
         }
-        Merge-CoverageRunIntoApplications -Applications $model.Apps -Lines $runLines `
+        Merge-CoverageRunIntoApplications -Applications $model.Apps -Scope $scope `
             -SourceRootDetails $model.SourceRootDetails `
             -BlocksAllApplications ($model.Mode -notin @("line", "all") -or
                 $projectReasons.Count -gt 0 -or $runReasons.Count -gt 0) `
@@ -993,7 +1536,6 @@ function Get-ProjectCoverageModelFromStatus {
             OutputDirectory = $outputDirectory
             ReportPath = $reportPath
             LineComplete = $runLineComplete
-            Lines = $runLines
             Reasons = @($runReasons)
             LineReasons = @($runLineReasons | Select-Object -Unique)
             Notices = @($runNotices | Select-Object -Unique)
@@ -1034,9 +1576,9 @@ function Get-ProjectCoverageModelFromStatus {
         @($model.Apps | Where-Object { -not [bool]$_.LineComplete }).Count -eq 0
     if ($model.LineComplete) {
         foreach ($app in $model.Apps) {
-            foreach ($fact in $app.Lines.Values) {
-                $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-                Merge-CoverageFact -Facts $model.Lines -Key $key -Fact (@{} + $fact)
+            foreach ($key in $app.Lines.Keys) {
+                Merge-CoverageLine -Lines $model.Lines -Key "$key" `
+                    -Covered ([bool]$app.Lines[$key])
             }
         }
     }
@@ -1245,9 +1787,9 @@ function Get-RepositoryApplications {
                 $application.LineComplete = $false
                 continue
             }
-            foreach ($fact in @($projectApp.Lines.Values)) {
-                $factKey = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-                Merge-CoverageFact -Facts $application.Lines -Key $factKey -Fact (@{} + $fact)
+            foreach ($factKey in @($projectApp.Lines.Keys)) {
+                Merge-CoverageLine -Lines $application.Lines -Key "$factKey" `
+                    -Covered ([bool]$projectApp.Lines[$factKey])
             }
         }
     }
@@ -1384,9 +1926,9 @@ function Get-RepositoryCoverageModel {
     foreach ($projectModel in $projectModels) {
         $repositoryModel.ExcludedLineFacts += $projectModel.ExcludedLineFacts
         if ($projectModel.LineComplete) {
-            foreach ($fact in @($projectModel.Lines.Values)) {
-                $key = "$($fact.SourcePath)|$($fact.ObjectType)|$($fact.ObjectId)|$($fact.LineNumber)"
-                Merge-CoverageFact -Facts $repositoryModel.Lines -Key $key -Fact (@{} + $fact)
+            foreach ($key in @($projectModel.Lines.Keys)) {
+                Merge-CoverageLine -Lines $repositoryModel.Lines -Key "$key" `
+                    -Covered ([bool]$projectModel.Lines[$key])
             }
         }
     }
@@ -1406,7 +1948,12 @@ function Get-CoverageMetrics {
     Param([hashtable] $Facts)
 
     $total = $Facts.Count
-    $covered = @($Facts.Values | Where-Object { $_.Covered }).Count
+    $covered = 0
+    foreach ($value in $Facts.Values) {
+        if ([bool]$value) {
+            $covered++
+        }
+    }
     $percentage = if ($total -eq 0) { 100.0 } else { [Math]::Round(($covered * 100.0) / $total, 1) }
     return @{
         Total = $total
@@ -1457,17 +2004,32 @@ function Get-UncoveredObjectRows {
     Param([hashtable] $Lines)
 
     $objects = @{}
-    foreach ($fact in @($Lines.Values | Where-Object { -not $_.Covered })) {
-        $key = "$(ConvertTo-CoverageSourceIdentity "$($fact.SourcePath)")|$($fact.ObjectType)|$($fact.ObjectId)"
-        if (-not $objects.ContainsKey($key)) {
-            $objects[$key] = @{
-                ObjectType = $fact.ObjectType
-                ObjectId = $fact.ObjectId
-                SourcePath = $fact.SourcePath
+    foreach ($lineKey in $Lines.Keys) {
+        if ([bool]$Lines[$lineKey]) {
+            continue
+        }
+        $lineSeparator = $lineKey.LastIndexOf('|')
+        $objectIdSeparator = $lineKey.LastIndexOf('|', $lineSeparator - 1)
+        $objectTypeSeparator = $lineKey.LastIndexOf('|', $objectIdSeparator - 1)
+        if ($lineSeparator -lt 0 -or $objectIdSeparator -lt 0 -or
+            $objectTypeSeparator -lt 0) {
+            continue
+        }
+        $sourcePath = $lineKey.Substring(0, $objectTypeSeparator)
+        $objectType = [int]$lineKey.Substring(
+            $objectTypeSeparator + 1, $objectIdSeparator - $objectTypeSeparator - 1)
+        $objectId = [int]$lineKey.Substring(
+            $objectIdSeparator + 1, $lineSeparator - $objectIdSeparator - 1)
+        $objectKey = "$sourcePath|$objectType|$objectId"
+        if (-not $objects.ContainsKey($objectKey)) {
+            $objects[$objectKey] = @{
+                ObjectType = $objectType
+                ObjectId = $objectId
+                SourcePath = $sourcePath
                 UncoveredLines = 0
             }
         }
-        $objects[$key].UncoveredLines++
+        $objects[$objectKey].UncoveredLines++
     }
     return @($objects.Values |
         Sort-Object @{ Expression = "UncoveredLines"; Descending = $true },

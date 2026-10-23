@@ -14,7 +14,7 @@ The shared RunTests coverage coordinator remains the only writer of `coverage-st
 
 | Name | Required | Description | Default |
 | :-- | :-: | :-- | :-- |
-| `shell` | No | PowerShell host, `powershell` or `pwsh` | `powershell` |
+| `shell` | No | PowerShell host. Use `pwsh` for streaming large BC JSON reports. | `pwsh` |
 | `scope` | Yes | Summary scope, `project` or `repository` | |
 | `project` | No | Project folder | `.` |
 | `coveragePath` | Yes | Path containing project coverage artifacts or separately downloaded repository artifacts | |

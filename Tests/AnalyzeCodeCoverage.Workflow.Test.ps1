@@ -39,6 +39,7 @@ Describe "AnalyzeCodeCoverage workflow wiring" {
         $job | Should -Match "pattern: '\*-\*CodeCoverage-\*'"
         $job | Should -Match 'continue-on-error: true'
         $job | Should -Not -Match 'merge-multiple'
+        $job | Should -Match 'shell: pwsh'
         $job | Should -Match 'scope: repository'
         $job | Should -Match 'buildOrderJson: \$\{\{ needs\.Initialization\.outputs\.buildOrderJson \}\}'
 
@@ -56,6 +57,7 @@ Describe "AnalyzeCodeCoverage workflow wiring" {
                 -Raw -Encoding UTF8
 
             $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?scope: project'
+            $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?shell: pwsh'
             $content | Should -Match "coveragePath: '\$\{\{ inputs\.project \}\}/\.buildartifacts/CodeCoverage/'"
             $content | Should -Match 'CodeCoverage/coverage-status\.json'
         }

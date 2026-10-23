@@ -105,6 +105,19 @@ Describe "AnalyzeCodeCoverage" {
                 codeCoverageFormats = @("bc-json")
             }
         }
+
+        function New-StreamingReaderModel {
+            return @{
+                SourceRoots = @("app")
+                SourceRootDetails = @(@{
+                        Path = "app"
+                        Identity = "app"
+                        Kind = "app"
+                        AppId = "streaming-app"
+                        AppName = "Streaming app"
+                    })
+            }
+        }
     }
 
     It "parses the actual schema and counts only executable lines in line mode" {
@@ -115,7 +128,7 @@ Describe "AnalyzeCodeCoverage" {
         $model.Lines.Count | Should -Be 2
         (Get-CoverageMetrics $model.Lines).Covered | Should -Be 1
         $model.Runs[0].LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $model.Runs[0].Lines).Covered | Should -Be 1
+        $model.Runs[0].ContainsKey("Lines") | Should -BeFalse
         $summary = New-ProjectCoverageSummary $model
         $summary | Should -Match "Line coverage"
         $summary | Should -Not -Match "Procedure coverage"
@@ -227,6 +240,205 @@ Describe "AnalyzeCodeCoverage" {
         $summary | Should -Match "uncovered objects"
     }
 
+    Context "BC JSON streaming reader" {
+        It "uses the runtime-appropriate reader without recursive conversion" {
+            $path = Join-Path $fixtures "Line\CodeCoverage\line-app\coverage.bc.json"
+            InModuleScope AnalyzeCodeCoverage -Parameters @{
+                Path = $path
+                Model = (New-StreamingReaderModel)
+            } {
+                Mock ConvertTo-CoverageHashtable {
+                    throw "Recursive conversion must not be used for coverage reports."
+                }
+                $result = Read-BcCoverageReport -Path $Path -Model $Model `
+                    -RequestedMode "line"
+                $result.Valid | Should -BeTrue
+                $result.Valid | Should -BeTrue
+                $expectedReader = if ($PSVersionTable.PSVersion.Major -ge 7) {
+                    "Newtonsoft.Json"
+                }
+                else {
+                    "ConvertFrom-Json"
+                }
+                $result.Reader | Should -Be $expectedReader
+                @($result.Data.Keys | Sort-Object) | Should -Be @(
+                    "complete", "coverageMode", "diagnostics", "schemaVersion"
+                )
+                Should -Invoke ConvertTo-CoverageHashtable -Times 0 -Exactly
+            }
+        }
+
+        It "rejects malformed documents and invalid root contracts" -TestCases @(
+            @{
+                Name = "array root"
+                Json = '[]'
+                Expected = "*corrupt or invalid*"
+            },
+            @{
+                Name = "truncated"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line"'
+                Expected = "*corrupt or invalid*"
+            },
+            @{
+                Name = "trailing"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]} false'
+                Expected = "*corrupt or invalid*"
+            },
+            @{
+                Name = "missing schema"
+                Json = '{"coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]}'
+                Expected = "*schemaVersion*"
+            },
+            @{
+                Name = "numeric schema"
+                Json = '{"schemaVersion":1,"coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]}'
+                Expected = "*schemaVersion*"
+            },
+            @{
+                Name = "Boolean mode"
+                Json = '{"schemaVersion":"1.0","coverageMode":true,"complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]}'
+                Expected = "*mode*"
+            },
+            @{
+                Name = "string completeness"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":"true","diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]}'
+                Expected = "*completeness*"
+            },
+            @{
+                Name = "invalid diagnostics"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":{},"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[]}'
+                Expected = "*does not match schemaVersion*"
+            },
+            @{
+                Name = "invalid method"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[{"objectType":5}],"lines":[]}'
+                Expected = "*does not match schemaVersion*"
+            },
+            @{
+                Name = "invalid method type"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[{"objectType":true,"objectId":1,"methodId":1,"name":"Run","startLine":1,"endLine":1,"sourcePath":"app/Code.al"}],"lines":[]}'
+                Expected = "*does not match schemaVersion*"
+            },
+            @{
+                Name = "invalid line"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[{"objectType":5}]}'
+                Expected = "*does not match schemaVersion*"
+            },
+            @{
+                Name = "invalid line type"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[],"lines":[{"objectType":true,"objectId":1,"lineNumber":1,"lineType":3,"methodId":1,"hitCount":1,"status":1,"sourcePath":"app/Code.al"}]}'
+                Expected = "*does not match schemaVersion*"
+            }
+        ) {
+            Param($Name, $Json, $Expected)
+
+            $path = Join-Path $TestDrive "$Name.json"
+            Set-Content -LiteralPath $path -Value $Json -Encoding UTF8
+            $result = Read-BcCoverageReport -Path $path
+            $result.Valid | Should -BeFalse
+            $result.Reason | Should -BeLike $Expected
+        }
+
+        It "rejects duplicate required root properties on the streaming path" `
+            -Skip:($PSVersionTable.PSVersion.Major -lt 7) {
+            $path = Join-Path $TestDrive "duplicate-root.json"
+            Set-Content -LiteralPath $path -Encoding UTF8 -Value @'
+{
+  "schemaVersion": "1.0",
+  "coverageMode": "line",
+  "coverageMode": "all",
+  "complete": true,
+  "diagnostics": [],
+  "sources": [],
+  "tests": [],
+  "procedureEdges": [],
+  "methods": [],
+  "lines": []
+}
+'@
+            $result = Read-BcCoverageReport -Path $path
+            $result.Valid | Should -BeFalse
+            $result.Reason | Should -Match "does not match schemaVersion"
+        }
+
+        It "retains diagnostics and OR-unions duplicate line identities" {
+            $path = Join-Path $TestDrive "duplicate-lines.json"
+            Set-Content -LiteralPath $path -Encoding UTF8 -Value @'
+{
+  "schemaVersion": "1.0",
+  "coverageMode": "line",
+  "complete": false,
+  "diagnostics": ["Coverage method identity resolution failed for 'app'."],
+  "sources": ["app/Code.al"],
+  "tests": [],
+  "procedureEdges": [],
+  "methods": [],
+  "lines": [
+    {"objectType":5,"objectId":1,"lineNumber":10,"lineType":3,"methodId":1,"hitCount":0,"status":0,"sourcePath":"app/Code.al"},
+    {"objectType":5,"objectId":1,"lineNumber":10,"lineType":3,"methodId":1,"hitCount":1,"status":1,"sourcePath":"app/Code.al"}
+  ]
+}
+'@
+            $result = Read-BcCoverageReport -Path $path `
+                -Model (New-StreamingReaderModel) -RequestedMode "line"
+
+            $result.Valid | Should -BeTrue
+            $result.Data.complete | Should -BeFalse
+            $result.Data.diagnostics | Should -Be @(
+                "Coverage method identity resolution failed for 'app'."
+            )
+            $result.ExtractedLineCount | Should -Be 2
+            $result.AcceptedLineCount | Should -Be 1
+            $facts = $result.Scope.ApplicationLines["app"]
+            $facts.Count | Should -Be 1
+            @($facts.Values)[0] | Should -BeTrue
+        }
+
+        It "streams a representative large-shaped report without recursive conversion" `
+            -Skip:($PSVersionTable.PSVersion.Major -lt 7) {
+            $path = Join-Path $TestDrive "large-streaming.json"
+            $writer = [System.IO.StreamWriter]::new(
+                $path, $false, [System.Text.UTF8Encoding]::new($false), 65536)
+            try {
+                $writer.Write('{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":["app/Code.al"],"tests":[],"procedureEdges":[],"methods":[],"lines":[')
+                foreach ($index in 1..50000) {
+                    if ($index -gt 1) {
+                        $writer.Write(',')
+                    }
+                    $writer.Write('{"objectType":5,"objectId":1,"lineNumber":')
+                    $writer.Write($index)
+                    $writer.Write(',"lineType":3,"methodId":1,"hitCount":1,"status":1,"sourcePath":"app/Code.al"}')
+                }
+                $writer.Write(']}')
+            }
+            finally {
+                $writer.Dispose()
+            }
+
+            (Get-Item -LiteralPath $path).Length | Should -BeGreaterThan 5MB
+            InModuleScope AnalyzeCodeCoverage -Parameters @{
+                Path = $path
+                Model = (New-StreamingReaderModel)
+            } {
+                Mock ConvertTo-CoverageHashtable {
+                    throw "Recursive conversion must not be used for coverage reports."
+                }
+                $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $result = Read-BcCoverageReport -Path $Path -Model $Model `
+                    -RequestedMode "line"
+                $stopwatch.Stop()
+
+                $result.Valid | Should -BeTrue
+                $result.Reader | Should -Be "Newtonsoft.Json"
+                $result.ExtractedLineCount | Should -Be 50000
+                $result.AcceptedLineCount | Should -Be 50000
+                $result.Scope.ApplicationLines["app"].Count | Should -Be 50000
+                $stopwatch.Elapsed.TotalSeconds | Should -BeLessThan 30
+                Should -Invoke ConvertTo-CoverageHashtable -Times 0 -Exactly
+            }
+        }
+    }
+
     It "escapes report-derived Markdown and HTML and bounds values" {
         $unsafe = "A|B`r`n<script>& [click](https://example.invalid) **bold** ![image](x) ``code``" + ("x" * 300)
         $safe = ConvertTo-SafeCoverageText $unsafe
@@ -244,11 +456,7 @@ Describe "AnalyzeCodeCoverage" {
         $summary | Should -Not -Match "<script>"
         $summary | Should -Match "&lt;script&gt;"
 
-        foreach ($fact in $model.Lines.Values) {
-            $fact.SourcePath = "bad|<script>.al"
-            $fact.Covered = $false
-            break
-        }
+        $model.Lines = @{ "bad|<script>.al|5|1|10" = $false }
         { New-ProjectCoverageSummary $model } | Should -Not -Throw
         (New-ProjectCoverageSummary $model) | Should -Match "bad\\\|&lt;script&gt;"
         (New-ProjectCoverageSummary $model) | Should -Not -Match "bad\\\|&lt;script&gt;\.al"
@@ -461,13 +669,6 @@ Describe "AnalyzeCodeCoverage" {
     }
 
     It "keeps duplicate regular app IDs at different roots as separate rows" {
-        $fact = @{
-            SourcePath = "src/one/App.Codeunit.al"
-            ObjectType = 5
-            ObjectId = 70000
-            LineNumber = 10
-            Covered = $true
-        }
         $projectModels = @(@{
                 Project = "Apps"
                 ProjectName = "Apps"
@@ -481,14 +682,14 @@ Describe "AnalyzeCodeCoverage" {
                         AppName = "Localized app"
                         RootIdentity = "src/one"
                         LineComplete = $true
-                        Lines = @{ one = $fact }
+                        Lines = @{ "src/one/App.Codeunit.al|5|70000|10" = $true }
                     },
                     @{
                         AppId = "duplicate"
                         AppName = "Localized app"
                         RootIdentity = "src/two"
                         LineComplete = $true
-                        Lines = @{ two = (@{} + $fact) }
+                        Lines = @{ "src/two/App.Codeunit.al|5|70000|10" = $true }
                     }
                 )
             })
@@ -683,10 +884,8 @@ Describe "AnalyzeCodeCoverage" {
         $lineMetrics.Total | Should -Be 2
         $model.Runs[0].LineComplete | Should -BeTrue
         $model.Runs[1].LineComplete | Should -BeTrue
-        (Get-CoverageMetrics $model.Runs[0].Lines).Covered | Should -Be 5
-        (Get-CoverageMetrics $model.Runs[0].Lines).Total | Should -Be 14
-        (Get-CoverageMetrics $model.Runs[1].Lines).Covered | Should -Be 5
-        (Get-CoverageMetrics $model.Runs[1].Lines).Total | Should -Be 14
+        $model.Runs[0].ContainsKey("Lines") | Should -BeFalse
+        $model.Runs[1].ContainsKey("Lines") | Should -BeFalse
         $model.Apps.Count | Should -Be 1
         $model.Apps[0].AppName | Should -Be "app1"
         $model.Apps[0].LineComplete | Should -BeTrue
@@ -988,7 +1187,7 @@ Describe "AnalyzeCodeCoverage" {
 
     It "declares the focused composite action contract" {
         $yaml = (Get-Content -LiteralPath $actionYamlPath -Raw -Encoding UTF8).Replace("`r", "")
-        $yaml | Should -Match "(?ms)^  shell:.*?^    default: powershell$"
+        $yaml | Should -Match "(?ms)^  shell:.*?^    default: pwsh$"
         $yaml | Should -Match "(?ms)^  scope:.*?^    required: true$"
         $yaml | Should -Match "(?ms)^  project:.*?^    default: '\.'$"
         $yaml | Should -Match "(?ms)^  coveragePath:.*?^    required: true$"

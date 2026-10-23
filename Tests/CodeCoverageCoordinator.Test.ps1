@@ -405,8 +405,8 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $model.Complete | Should -BeTrue
         $model.LineComplete | Should -BeTrue
         $model.Runs.Count | Should -Be 2
-        $model.Runs[0].Lines.Count | Should -Be 0
-        $model.Runs[1].Lines.Count | Should -Be 1
+        $model.Runs[0].ContainsKey("Lines") | Should -BeFalse
+        $model.Runs[1].ContainsKey("Lines") | Should -BeFalse
         $model.Lines.Count | Should -Be 1
         $metrics = Get-CoverageMetrics $model.Lines
         $metrics.Covered | Should -Be 1
