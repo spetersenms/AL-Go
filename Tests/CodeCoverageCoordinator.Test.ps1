@@ -69,9 +69,34 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
                 -platformVersionReason ""
             return New-AlGoCodeCoverageSession -settings $settings -projectPath $projectPath `
                 -baseFolder $projectPath -project "." -projectName "Project" -buildMode "Default" `
-                -testType "IntegrationTest" -testApps $testApps -analyzeRepo $analyzeRepo `
-                -capability $capability `
-                -alToolPath "C:\tools\al.exe"
+                -testApps $testApps -analyzeRepo $analyzeRepo `
+                -capability $capability
+        }
+
+        function Get-CoordinatorRun {
+            Param(
+                [hashtable] $session,
+                [string] $appId
+            )
+
+            $normalizedAppId = ([guid]$appId).ToString()
+            return @($session.Runs | Where-Object { $_.AppId -eq $normalizedAppId })[0]
+        }
+
+        function New-CoordinatorContext {
+            Param(
+                [hashtable] $session,
+                [hashtable] $run
+            )
+
+            return New-AlGoCodeCoverageInvocationContext -session $session -run $run `
+                -reason "Test capability reason." -alToolPath "C:\tools\al.exe"
+        }
+
+        function Get-CoordinatorStatusPath {
+            Param([hashtable] $session)
+
+            return Join-Path $session.RootPath "coverage-status.json"
         }
 
         function Write-CoordinatorCoverageArtifacts {
@@ -103,7 +128,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
                     Join-Path $context.coverageOutputPath "coverage.cobertura.xml"
                 ) -Value "<coverage />" -Encoding UTF8
             }
-            $context.result.coverageIsComplete = $complete
+            $context.coverageIsComplete = $complete
         }
 
         function Write-CodeCoverageMetadataFixture {
@@ -118,7 +143,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         }
     }
 
-    It 'Creates one deterministic isolated run per selected test app' {
+    It 'Creates one deterministic isolated run plan without publishing intermediate status' {
         $projectPath = New-CoordinatorProject
         $testApps = @(
             [PSCustomObject]@{
@@ -134,54 +159,77 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         )
         $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
 
-        $first = Start-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id
-        $second = Start-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id
+        $first = Get-CoordinatorRun -session $session -appId $testApps[0].Id
+        $second = Get-CoordinatorRun -session $session -appId $testApps[1].Id
 
-        $first.coverageOutputPath | Should -Not -Be $second.coverageOutputPath
-        $first.outputDirectory | Should -Be "CodeCoverage/$($testApps[0].Id)"
-        $second.outputDirectory | Should -Be "CodeCoverage/$($testApps[1].Id)"
-        $session.Runs[$testApps[0].Id].State | Should -Be "pending"
-        $session.Runs[$testApps[1].Id].State | Should -Be "pending"
-        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        @($status.runs.state) | Should -Be @("pending", "pending")
+        $firstContext = New-CoordinatorContext -session $session -run $first
+        $secondContext = New-CoordinatorContext -session $session -run $second
+        $firstContext.coverageOutputPath | Should -Not -Be $secondContext.coverageOutputPath
+        @($session.Keys | Sort-Object) | Should -Be @(
+            "BuildMode",
+            "Compactor",
+            "CompactorFailure",
+            "CompactorTelemetry",
+            "Formats",
+            "Project",
+            "ProjectName",
+            "RepositoryRoot",
+            "RootPath",
+            "Runs",
+            "SourceRootRecords",
+            "Supported"
+        )
+        @($session.Runs).Count | Should -Be 2
+        @($first.Keys | Sort-Object) | Should -Be @("AppId", "AppName", "State")
+        $first.State | Should -BeNullOrEmpty
+        $second.State | Should -BeNullOrEmpty
+        Test-Path -LiteralPath (Get-CoordinatorStatusPath $session) | Should -BeFalse
     }
 
-    It 'Returns a non-secret app-specific override context with authoritative roots' {
+    It 'Returns a minimal non-secret version 2 override context with authoritative roots' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
-        $disabledTests = @(@{ codeunitName = "Tests"; method = "TestOne" })
+        $run = Get-CoordinatorRun -session $session `
+            -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
 
-        $context = Start-AlGoCodeCoverageRun -session $session `
-            -appId "22222222-2222-2222-2222-222222222222" `
-            -disabledTests $disabledTests
-
-        $context.contractVersion | Should -Be 1
-        $context.app.id | Should -Be "22222222-2222-2222-2222-222222222222"
-        $context.app.name | Should -Be "Test App"
-        $context.app.disabledTests[0].method | Should -Be "TestOne"
-        $context.testType | Should -Be "IntegrationTest"
+        @($context.Keys | Sort-Object) | Should -Be @(
+            "alToolModulePath",
+            "alToolPath",
+            "contractVersion",
+            "coverageIsComplete",
+            "coverageOutputPath",
+            "formats",
+            "mode",
+            "reason",
+            "sourceRoots",
+            "supported"
+        )
+        $context.contractVersion | Should -Be 2
         $context.mode | Should -Be "line"
         $context.formats | Should -Be @("bc-json")
         $context.alToolModulePath | Should -Match "AlToolTestRunner\.psm1$"
         $context.alToolPath | Should -Be "C:\tools\al.exe"
         $context.Contains("credential") | Should -BeFalse
-        @($context.sourceRootDetails.appName) | Should -Contain "Regular App"
-        @($context.sourceRootDetails.appName) | Should -Contain "Test App"
+        $context.sourceRoots | Should -Contain (Join-Path $projectPath "App")
+        $context.sourceRoots | Should -Contain (Join-Path $projectPath "Test")
     }
 
     It 'Validates both formats and finalizes complete coverage' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath `
             -formats @("bc-json", "cobertura")
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context
 
-        Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
-            -rawComplete $context.result.coverageIsComplete
+        Complete-AlGoCodeCoverageRun -session $session -run $run `
+            -coverageIsComplete $context.coverageIsComplete
         Complete-AlGoCodeCoverageSession -session $session
 
-        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status = Get-Content -LiteralPath (Get-CoordinatorStatusPath $session) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
         $status.runs[0].state | Should -Be "complete"
     }
 
@@ -355,7 +403,8 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         )
         $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
 
-        $emptyContext = Start-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id
+        $emptyRun = Get-CoordinatorRun -session $session -appId $testApps[0].Id
+        $emptyContext = New-CoordinatorContext -session $session -run $emptyRun
         InModuleScope AlToolTestRunner -Parameters @{
             CoverageMode = $emptyContext.mode
             CoverageOutputPath = $emptyContext.coverageOutputPath
@@ -364,13 +413,14 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
             Write-EmptyAlToolCoverageArtifacts -CoverageMode $CoverageMode `
                 -CoverageOutputPath $CoverageOutputPath -CoverageFormats $CoverageFormats
         }
-        $emptyContext.result.coverageIsComplete = $true
-        Complete-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id `
-            -rawComplete $emptyContext.result.coverageIsComplete
+        $emptyContext.coverageIsComplete = $true
+        Complete-AlGoCodeCoverageRun -session $session -run $emptyRun `
+            -coverageIsComplete $emptyContext.coverageIsComplete
 
         $sourcePath = Join-Path $projectPath "App\Coverage.al"
         Set-Content -LiteralPath $sourcePath -Value "codeunit 70000 Coverage { }" -Encoding UTF8
-        $coveredContext = Start-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id
+        $coveredRun = Get-CoordinatorRun -session $session -appId $testApps[1].Id
+        $coveredContext = New-CoordinatorContext -session $session -run $coveredRun
         New-Item -Path $coveredContext.coverageOutputPath -ItemType Directory -Force | Out-Null
         @{
             schemaVersion = "1.0"
@@ -394,9 +444,9 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (
             Join-Path $coveredContext.coverageOutputPath "coverage.bc.json"
         ) -Encoding UTF8
-        $coveredContext.result.coverageIsComplete = $true
-        Complete-AlGoCodeCoverageRun -session $session -appId $testApps[1].Id `
-            -rawComplete $coveredContext.result.coverageIsComplete
+        $coveredContext.coverageIsComplete = $true
+        Complete-AlGoCodeCoverageRun -session $session -run $coveredRun `
+            -coverageIsComplete $coveredContext.coverageIsComplete
         Complete-AlGoCodeCoverageSession -session $session
 
         $model = Get-ProjectCoverageModel -CoveragePath $session.RootPath `
@@ -416,27 +466,30 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
     It 'Accepts incomplete coverage and Cobertura-only coverage' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath -formats @("cobertura")
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -complete $false
 
-        Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
-            -rawComplete $context.result.coverageIsComplete
+        Complete-AlGoCodeCoverageRun -session $session -run $run `
+            -coverageIsComplete $context.coverageIsComplete
         Complete-AlGoCodeCoverageSession -session $session
 
-        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status = Get-Content -LiteralPath (Get-CoordinatorStatusPath $session) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
         $status.runs[0].state | Should -Be "incomplete"
     }
 
     It 'Fails closed when required artifacts are missing' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
 
         {
-            Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
-                -rawComplete $true
+            Complete-AlGoCodeCoverageRun -session $session -run $run `
+                -coverageIsComplete $true
         } | Should -Throw "*expected 'bc-json' coverage artifact*"
         { Complete-AlGoCodeCoverageSession -session $session } |
             Should -Throw "*did not produce valid code coverage*"
@@ -445,33 +498,30 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
     It 'Fails closed when reported completeness disagrees with BC JSON' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -complete $false
 
         {
-            Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
-                -rawComplete $true
+            Complete-AlGoCodeCoverageRun -session $session -run $run `
+                -coverageIsComplete $true
         } | Should -Throw "*does not match the BC JSON report*"
     }
 
-    It 'Rejects unknown apps and duplicate completion clearly' {
+    It 'Rejects duplicate completion clearly' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
         $knownAppId = "22222222-2222-2222-2222-222222222222"
-        $unknownAppId = "99999999-9999-9999-9999-999999999999"
-
-        { Start-AlGoCodeCoverageRun -session $session -appId $unknownAppId } |
-            Should -Throw "*unknown test app '$unknownAppId'*"
-
-        $context = Start-AlGoCodeCoverageRun -session $session -appId $knownAppId
+        $run = Get-CoordinatorRun -session $session -appId $knownAppId
+        $context = New-CoordinatorContext -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context
-        Complete-AlGoCodeCoverageRun -session $session -appId $knownAppId `
-            -rawComplete $context.result.coverageIsComplete
+        Complete-AlGoCodeCoverageRun -session $session -run $run `
+            -coverageIsComplete $context.coverageIsComplete
 
         {
-            Complete-AlGoCodeCoverageRun -session $session -appId $knownAppId `
-                -rawComplete $context.result.coverageIsComplete
+            Complete-AlGoCodeCoverageRun -session $session -run $run `
+                -coverageIsComplete $true
         } | Should -Throw "*cannot complete from state 'complete'*"
     }
 
@@ -483,14 +533,15 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
 
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -schemaVersion $SchemaVersion `
             -coverageMode $CoverageMode
 
         {
-            Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id `
-                -rawComplete $true
+            Complete-AlGoCodeCoverageRun -session $session -run $run `
+                -coverageIsComplete $true
         } | Should -Throw $ExpectedError
     }
 
@@ -498,26 +549,30 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath `
             -platformVersion "30.0.56025.999"
-        $context = Start-AlGoCodeCoverageRun -session $session `
+        $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
+        $context = New-CoordinatorContext -session $session -run $run
 
         $context.supported | Should -BeFalse
         $context.sourceRoots.Count | Should -Be 0
-        { Complete-AlGoCodeCoverageRun -session $session -appId $context.app.id } |
+        { Complete-AlGoCodeCoverageRun -session $session -run $run } |
             Should -Not -Throw
         { Complete-AlGoCodeCoverageSession -session $session } | Should -Not -Throw
-        $status = Get-Content -LiteralPath $session.StatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status = Get-Content -LiteralPath (Get-CoordinatorStatusPath $session) `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
         $status.runs[0].state | Should -Be "unsupported"
     }
 
-    It 'Rejects pending runs and double finalization' {
+    It 'Fails unresolved runs and publishes one final status' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath
 
         { Complete-AlGoCodeCoverageSession -session $session } |
             Should -Throw "*did not produce final code coverage*"
-        { Complete-AlGoCodeCoverageSession -session $session } |
-            Should -Throw "*already been finalized*"
+        $status = Get-Content -LiteralPath (Get-CoordinatorStatusPath $session) `
+            -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $status.runs[0].state | Should -Be "failed"
     }
 
     It 'Rejects duplicate app identities' {
@@ -550,10 +605,10 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         )
 
         $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
-        $context = Start-AlGoCodeCoverageRun -session $session -appId $testApps[0].Id
+        $run = Get-CoordinatorRun -session $session -appId $testApps[0].Id
+        $context = New-CoordinatorContext -session $session -run $run
 
-        $context.app.id | Should -Be "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        $context.outputDirectory | Should -Be "CodeCoverage/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        $run.AppId | Should -Be "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         Split-Path -Path $context.coverageOutputPath -Leaf |
             Should -Be "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     }
@@ -572,7 +627,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
             Should -Throw "*Selected test app ID 'not-an-app-id' is invalid*"
     }
 
-    It 'Resolves direct projectsToTest roots before returning app contexts' {
+    It 'Resolves direct projectsToTest roots before creating run contexts' {
         $projectPath = New-CoordinatorProject
         $targetPath = Join-Path $projectPath "Target"
         $targetAppPath = Join-Path $targetPath "TargetApp"
@@ -612,11 +667,8 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
 
         $session = New-CoordinatorSession -projectPath $projectPath -settings $settings `
             -analyzeRepo $analyzeRepo
-        $context = Start-AlGoCodeCoverageRun -session $session `
-            -appId "22222222-2222-2222-2222-222222222222"
-
-        @($context.sourceRootDetails.appName) | Should -Contain "Target App"
-        @($context.sourceRootDetails.appName) | Should -Contain "Target Tests"
+        @($session.SourceRootRecords.AppName) | Should -Contain "Target App"
+        @($session.SourceRootRecords.AppName) | Should -Contain "Target Tests"
     }
 
     It 'Rejects source roots outside the repository' {

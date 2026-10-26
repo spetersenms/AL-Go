@@ -1,15 +1,29 @@
 ### Separate test execution from RunPipeline (PREVIEW)
 
-A new `useSeparateTestAction` complex setting (default `{ "enabled": false, "testType": "", "codeCoverageEnabled": false, "codeCoverageFormats": [ "bc-json", "cobertura" ], "codeCoverageSummary": "both" }`) runs normal tests (`testFolders`) in a dedicated `RunTests` action when `enabled` is `true`. The separate action is used when tests are enabled and the build uses one local container. Builds with `additionalCountries` or without a local build container continue to run normal tests in `RunPipeline`. BCPT and page scripting tests remain in `RunPipeline`.
+A new `useSeparateTestAction` setting can run normal tests from `testFolders` in a dedicated `RunTests` action. Enable it in AL-Go settings:
 
-The action uses AlTool by default, running each app's enabled normal tests in one batch and connection. It honors `disabledTests.json` definitions and the optional `useSeparateTestAction.testType` value. The built-in runner supports `UnitTest`, `IntegrationTest`, and `Uncategorized`, while custom `RunTestsInBcContainer` overrides may interpret other values such as `Legacy`. Test results remain available to AnalyzeTests and are included in the build artifacts when produced. Failure diagnostics include a refreshed container event log with events from the separate test run.
+```json
+{
+  "useSeparateTestAction": {
+    "enabled": true,
+    "testType": "",
+    "codeCoverageEnabled": false,
+    "codeCoverageFormats": [ "bc-json", "cobertura" ],
+    "codeCoverageSummary": "both"
+  }
+}
+```
 
-Optional code coverage uses the latest prerelease `Microsoft.Dynamics.BusinessCentral.Development.Tools` package. RunPipeline hands the actual build container platform version to RunTests, which requires platform 30.0.56026.0 or later before requesting coverage. Older, malformed, missing, or failed platform-version detection warns and continues tests without coverage; failures after platform support is confirmed remain errors. RunTests preserves per-app Cobertura files and compacts BC JSON into an AL-Go aggregate before artifact upload. If compaction fails, the raw BC JSON reports are retained for safe fallback analysis.
+The separate action is used when normal tests are enabled and the build uses one local container. Builds with `additionalCountries` or without a local build container continue to run normal tests in `RunPipeline`. BCPT and page scripting tests remain in `RunPipeline`.
 
-RunTests now uses a shared coverage coordinator for built-in AlTool execution and coverage-aware `RunTestsInBcContainer.ps1` overrides. Existing overrides keep their historical per-app Boolean contract. With coverage disabled, the parameter shape is unchanged. With coverage enabled, AL-Go adds a versioned `[hashtable] $codeCoverageContext` for the current app without inspecting the override signature or downgrading to noncoverage execution, so repository owners must update custom overrides before enabling coverage. The context supplies the action-owned AlTool module and resolved executable, centrally resolved source roots, configured formats, and an isolated app output path. The override runs the current app once and reports AlTool completeness; AL-Go validates the fixed artifacts and remains the only writer of the final status manifest.
+The built-in runner uses AlTool, honors `disabledTests.json`, and supports the optional `testType` values `UnitTest`, `IntegrationTest`, and `Uncategorized`. Blank runs all supported test types. Test results continue to appear in AnalyzeTests and the TestResults artifact, and test failures include the refreshed container event log.
+
+Set `codeCoverageEnabled` to `true` to collect executable-line coverage. Coverage requires Business Central container platform 30.0.56026.0 or later. Older or unconfirmed versions produce a warning and continue running tests without coverage. `codeCoverageFormats` supports `bc-json`, `cobertura`, or both. `codeCoverageSummary` controls project and repository job summaries with `none`, `project`, `repository`, or `both`. Summaries require `bc-json`; use `none` for Cobertura-only collection. Coverage files are published in the CodeCoverage artifact.
+
+Projects with a custom `.AL-Go/RunTestsInBcContainer.ps1` can continue using it. Before enabling coverage, update the override to accept the additional `[hashtable] $codeCoverageContext` parameter and use the supplied coverage values. Coverage disabled behavior is unchanged. See the [RunTests action documentation](Actions/RunTests/README.md) for the override example and supported fields.
 
 > [!NOTE]
-> The built-in AlTool execution path does not run `Legacy` test-type codeunits or tests that require UI or client-callback interaction. Projects that rely on those can retain their original override and optionally declare `codeCoverageContext` for coverage-aware custom execution.
+> The built-in AlTool runner does not support `Legacy` test-type codeunits or tests that require UI or client-callback interaction. Projects that need those scenarios can retain their custom `RunTestsInBcContainer.ps1` implementation.
 
 ### New `unpublishOldVersions` setting for deployment
 

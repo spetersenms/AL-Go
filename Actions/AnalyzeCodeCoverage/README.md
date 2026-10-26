@@ -2,6 +2,8 @@
 
 Creates a focused Markdown job summary from Business Central JSON coverage reports produced by the separate test action. Raw coverage artifacts are read without modification.
 
+For the end-to-end collection, compaction, artifact, and analysis lifecycle, see [RunTests code coverage architecture](../RunTests/CodeCoverageArchitecture.md).
+
 Project summaries are emitted only when `useSeparateTestAction.codeCoverageSummary` is `project` or `both`. Repository execution is expected to be workflow-gated and uses the expected build dimensions in `buildOrderJson`.
 
 Summaries report executable-line coverage for authoritative regular `appFolders` only. Raw facts from `testFolders`, external Microsoft objects, and procedure enrichment remain in the artifacts and logs but do not contribute to visualization metrics or completeness.

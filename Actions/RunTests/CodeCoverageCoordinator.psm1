@@ -7,6 +7,8 @@ Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageAggregateFormat.
 Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
     -DisableNameChecking
 
+$script:CodeCoverageMode = "line"
+
 <#
 .SYNOPSIS
     Shared code coverage lifecycle for the RunTests action.
@@ -162,21 +164,43 @@ function Get-CodeCoverageSourceRootDetails {
     )
 }
 
-function Write-CodeCoverageStatusInternal {
+function Get-CodeCoverageStatusPath {
     Param([hashtable] $session)
+
+    return Join-Path $session.RootPath "coverage-status.json"
+}
+
+function Get-CodeCoverageAggregatePath {
+    Param([hashtable] $session)
+
+    return Join-Path $session.RootPath "coverage-aggregate.bin.gz"
+}
+
+function Get-CodeCoverageRunOutputPath {
+    Param(
+        [hashtable] $session,
+        [hashtable] $run
+    )
+
+    return [System.IO.Path]::GetFullPath((Join-Path $session.RootPath "$($run.AppId)"))
+}
+
+function Write-CodeCoverageStatusInternal {
+    Param(
+        [hashtable] $session,
+        [hashtable] $aggregate = $null
+    )
 
     New-Item -Path $session.RootPath -ItemType Directory -Force | Out-Null
     $temporaryPath = Join-Path $session.RootPath "coverage-status.$([Guid]::NewGuid().ToString('N')).tmp"
-    $backupPath = "$($session.StatusPath).backup"
     try {
         $runs = @(
-            foreach ($appId in @($session.RunOrder)) {
-                $run = $session.Runs[$appId]
+            foreach ($run in @($session.Runs)) {
                 [ordered]@{
                     appId = "$($run.AppId)"
                     appName = "$($run.AppName)"
-                    outputDirectory = "$($run.OutputDirectory)"
-                    state = "$($run.State)"
+                    outputDirectory = "CodeCoverage/$($run.AppId)"
+                    state = if ($session.Supported) { "$($run.State)" } else { "unsupported" }
                 }
             }
         )
@@ -184,37 +208,30 @@ function Write-CodeCoverageStatusInternal {
             project = "$($session.Project)"
             projectName = "$($session.ProjectName)"
             buildMode = "$($session.BuildMode)"
-            mode = "$($session.Mode)"
+            mode = $script:CodeCoverageMode
             formats = @($session.Formats)
             sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.RelativePath)" })
             sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
             runs = @($runs)
         }
-        if ($session.ContainsKey("Aggregate") -and $session.Aggregate) {
+        if ($aggregate) {
             $status["aggregate"] = [ordered]@{
-                format = "$($session.Aggregate.Format)"
-                contractVersion = [int]$session.Aggregate.ContractVersion
-                path = "$($session.Aggregate.Path)"
-                sha256 = "$($session.Aggregate.Sha256)"
-                sourceRootFingerprint = "$($session.Aggregate.SourceRootFingerprint)"
-                runCount = [int]$session.Aggregate.RunCount
-                lineCount = [int]$session.Aggregate.LineCount
-                sizeBytes = [long]$session.Aggregate.SizeBytes
+                format = "$($aggregate.Format)"
+                contractVersion = [int]$aggregate.ContractVersion
+                path = "$($aggregate.Path)"
+                sha256 = "$($aggregate.Sha256)"
+                sourceRootFingerprint = "$($aggregate.SourceRootFingerprint)"
+                runCount = [int]$aggregate.RunCount
+                lineCount = [int]$aggregate.LineCount
+                sizeBytes = [long]$aggregate.SizeBytes
             }
         }
         ConvertTo-Json -InputObject $status -Depth 6 |
             Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-        if (Test-Path -LiteralPath $session.StatusPath -PathType Leaf) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-            [System.IO.File]::Replace($temporaryPath, $session.StatusPath, $backupPath)
-        }
-        else {
-            [System.IO.File]::Move($temporaryPath, $session.StatusPath)
-        }
+        [System.IO.File]::Move($temporaryPath, (Get-CodeCoverageStatusPath -session $session))
     }
     finally {
         Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -250,8 +267,9 @@ function Remove-CodeCoverageRawReports {
     Param([hashtable] $session)
 
     $removedBytes = [long]0
-    foreach ($appId in @($session.RunOrder)) {
-        $reportPath = Join-Path $session.Runs[$appId].OutputPath "coverage.bc.json"
+    foreach ($run in @($session.Runs)) {
+        $reportPath = Join-Path (Get-CodeCoverageRunOutputPath -session $session -run $run) `
+            "coverage.bc.json"
         if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
             $removedBytes += (Get-Item -LiteralPath $reportPath).Length
             Remove-Item -LiteralPath $reportPath -Force
@@ -300,14 +318,16 @@ function Test-CodeCoverageArtifacts {
         "cobertura" = "coverage.cobertura.xml"
     }
     foreach ($coverageFormat in @($session.Formats)) {
-        $artifactPath = Join-Path $run.OutputPath $expectedArtifacts[$coverageFormat]
+        $artifactPath = Join-Path (Get-CodeCoverageRunOutputPath -session $session -run $run) `
+            $expectedArtifacts[$coverageFormat]
         if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
             throw "The expected '$coverageFormat' coverage artifact '$artifactPath' was not created."
         }
     }
 
     if ("bc-json" -in $session.Formats) {
-        $reportPath = Join-Path $run.OutputPath "coverage.bc.json"
+        $reportPath = Join-Path (Get-CodeCoverageRunOutputPath -session $session -run $run) `
+            "coverage.bc.json"
         try {
             $report = Read-CodeCoverageReportMetadata -path $reportPath
         }
@@ -317,7 +337,7 @@ function Test-CodeCoverageArtifacts {
         if ($report.SchemaVersion -ne "1.0") {
             throw "The produced BC JSON schemaVersion is not supported."
         }
-        if ($report.CoverageMode.ToLowerInvariant() -ne "$($session.Mode)") {
+        if ($report.CoverageMode.ToLowerInvariant() -ne $script:CodeCoverageMode) {
             throw "The produced BC JSON coverage mode does not match the requested mode."
         }
         if ($report.Complete -ne [bool]$rawComplete) {
@@ -380,8 +400,9 @@ function Get-AlGoCodeCoverageCapability {
 .SYNOPSIS
     Creates the AL-Go-owned code coverage session for one project test run.
 .DESCRIPTION
-    Resolves authoritative ordered source roots while AnalyzeRepo is in scope, allocates one
-    isolated output directory per selected test app, and writes the initial status manifest.
+    Resolves authoritative ordered source roots while AnalyzeRepo is in scope and creates one
+    minimal ordered run record per selected test app. Output paths and override contexts are
+    derived only when needed.
 .PARAMETER settings
     Analyzed AL-Go settings for the project.
 .PARAMETER projectPath
@@ -394,16 +415,12 @@ function Get-AlGoCodeCoverageCapability {
     Display name recorded in coverage-status.json.
 .PARAMETER buildMode
     Build-mode dimension recorded in coverage-status.json.
-.PARAMETER testType
-    Test-type selection supplied to the separate test action.
 .PARAMETER testApps
     Selected test apps for this run.
 .PARAMETER analyzeRepo
     Callback used to analyze source roots from projectsToTest.
 .PARAMETER capability
     Capability result computed once by Get-AlGoCodeCoverageCapability.
-.PARAMETER alToolPath
-    Resolved path to the AlTool executable when available.
 #>
 function New-AlGoCodeCoverageSession {
     Param(
@@ -413,11 +430,9 @@ function New-AlGoCodeCoverageSession {
         [string] $project = ".",
         [string] $projectName = "",
         [string] $buildMode = "Default",
-        [AllowEmptyString()][string] $testType = "",
         [object[]] $testApps = @(),
         [scriptblock] $analyzeRepo = $null,
-        [hashtable] $capability,
-        [AllowEmptyString()][string] $alToolPath = ""
+        [hashtable] $capability
     )
 
     if ([string]::IsNullOrWhiteSpace($baseFolder)) {
@@ -446,9 +461,10 @@ function New-AlGoCodeCoverageSession {
             -projectPath $projectPath -baseFolder $baseFolder -analyzeRepo $analyzeRepo)
     }
 
-    $runs = @{}
-    $runOrder = [System.Collections.Generic.List[string]]::new()
-    $runSequence = 0
+    $runs = [System.Collections.Generic.List[object]]::new()
+    $appIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
     foreach ($testApp in @($testApps)) {
         $candidateAppId = "$($testApp.Id)"
         if ([string]::IsNullOrWhiteSpace($candidateAppId)) {
@@ -459,153 +475,108 @@ function New-AlGoCodeCoverageSession {
             throw "Selected test app ID '$candidateAppId' is invalid."
         }
         $appId = $parsedAppId.ToString()
-        if ($runs.ContainsKey($appId)) {
+        if (-not $appIds.Add($appId)) {
             throw "Selected test app ID '$candidateAppId' is duplicated."
         }
-        $outputPath = [System.IO.Path]::GetFullPath((Join-Path $coverageRoot $appId))
-        $runs[$appId] = @{
-            AppId = $appId
-            AppName = "$($testApp.Name)"
-            AppPath = "$($testApp.Path)"
-            OutputPath = $outputPath
-            OutputDirectory = "CodeCoverage/$appId"
-            State = if ($capability.Supported) { "pending" } else { "unsupported" }
-            Sequence = $runSequence
-        }
-        $runOrder.Add($appId)
-        $runSequence++
+        $runs.Add(@{
+                AppId = $appId
+                AppName = "$($testApp.Name)"
+                State = ""
+            })
     }
 
     $session = @{
         Supported = [bool]$capability.Supported
-        SupportReason = "$($capability.Reason)"
         Project = if ([string]::IsNullOrWhiteSpace($project)) { "." } else { $project.Replace('\', '/') }
         ProjectName = $projectName
         BuildMode = $buildMode
-        TestType = $testType
-        Mode = "line"
         Formats = @($coverageFormats)
         RootPath = $coverageRoot
-        StatusPath = Join-Path $coverageRoot "coverage-status.json"
+        RepositoryRoot = [System.IO.Path]::GetFullPath($baseFolder)
         SourceRootRecords = @($sourceRootData)
-        Runs = $runs
-        RunOrder = $runOrder
-        AlToolModulePath = Join-Path $PSScriptRoot "AlToolTestRunner.psm1"
-        AlToolPath = $alToolPath
-        Finalized = $false
-        Aggregate = $null
+        Runs = @($runs)
         Compactor = $null
-        CompactorConfig = $null
         CompactorFailure = ""
         CompactorTelemetry = [System.Collections.Generic.List[object]]::new()
     }
     if ($session.Supported -and "bc-json" -in $session.Formats) {
-        if ($PSVersionTable.PSVersion.Major -ge 7) {
-            $sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
-            $sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.RelativePath)" })
-            $fingerprint = Get-CodeCoverageSourceRootFingerprint `
-                -sourceRoots $sourceRoots -sourceRootDetails $sourceRootDetails
-            $aggregatePath = Join-Path $session.RootPath "coverage-aggregate.bin.gz"
-            $aggregateMetadata = @{
-                Project = "$($session.Project)"
-                ProjectName = "$($session.ProjectName)"
-                BuildMode = "$($session.BuildMode)"
-                Mode = "$($session.Mode)"
-                Formats = @($session.Formats)
-                SourceRoots = @($sourceRoots)
-                SourceRootDetails = @($sourceRootDetails)
-                SourceRootFingerprint = $fingerprint
-            }
-            $session.CompactorConfig = @{
-                ReaderModulePath = Join-Path $PSScriptRoot "..\.Modules\CodeCoverageReportReader.psm1" -Resolve
-                RepositoryRoot = [System.IO.Path]::GetFullPath($baseFolder)
-                Metadata = $aggregateMetadata
-                TemporaryPath = "$aggregatePath.$([guid]::NewGuid().ToString('N')).tmp"
-                PublishedPath = $aggregatePath
-            }
-        }
-        else {
+        if ($PSVersionTable.PSVersion.Major -lt 7) {
             Write-Host "::Warning::Code coverage compaction requires PowerShell 7. Raw BC JSON reports will be retained."
         }
     }
-    Write-CodeCoverageStatusInternal -session $session
     return $session
 }
 
 <#
 .SYNOPSIS
-    Starts one test app's code coverage run and returns its override context.
+    Creates the transient version 2 override context for one test app invocation.
 .DESCRIPTION
-    Validates the selected app and returns non-secret, app-specific AlTool coverage inputs.
-    The returned result hashtable is the only mutable output surface expected from an override.
+    Projects session-wide coverage values and the app-specific output path into the public
+    override contract without retaining the context in the run model.
 .PARAMETER session
     AL-Go-owned session returned by New-AlGoCodeCoverageSession.
-.PARAMETER appId
-    ID of the current test app.
-.PARAMETER disabledTests
-    Disabled tests already resolved by AL-Go for the current app.
+.PARAMETER run
+    AL-Go-owned run record for the current test app.
+.PARAMETER reason
+    Capability reason returned by Get-AlGoCodeCoverageCapability.
+.PARAMETER alToolPath
+    Resolved AlTool executable path when coverage is supported.
 #>
-function Start-AlGoCodeCoverageRun {
+function New-AlGoCodeCoverageInvocationContext {
     Param(
         [hashtable] $session,
-        [string] $appId,
-        [AllowEmptyCollection()][hashtable[]] $disabledTests = @()
+        [hashtable] $run,
+        [AllowEmptyString()][string] $reason,
+        [AllowEmptyString()][string] $alToolPath = ""
     )
 
-    if (-not $session -or -not $session.ContainsKey("Runs")) {
+    if (-not $session -or -not $session.ContainsKey("Runs") -or -not $run) {
         throw "The code coverage session is invalid or uses an unsupported coordinator contract."
     }
-    $parsedAppId = [guid]::Empty
-    $normalizedAppId = if ([guid]::TryParse($appId, [ref]$parsedAppId)) {
-        $parsedAppId.ToString()
-    }
-    else {
-        ""
-    }
-    if ([string]::IsNullOrWhiteSpace($normalizedAppId) -or
-        -not $session.Runs.ContainsKey($normalizedAppId)) {
-        throw "Code coverage references unknown test app '$appId'."
-    }
-    $run = $session.Runs[$normalizedAppId]
-    if ($session.Finalized) {
-        throw "The code coverage session has already been finalized."
-    }
-    if ($session.Supported) {
-        if ($run.State -ne "pending") {
-            throw "Code coverage for test app '$appId' cannot start from state '$($run.State)'."
+
+    return @{
+        contractVersion = 2
+        supported = [bool]$session.Supported
+        reason = $reason
+        mode = $script:CodeCoverageMode
+        formats = @($session.Formats)
+        sourceRoots = if ($session.Supported) {
+            @($session.SourceRootRecords | ForEach-Object { "$($_.Path)" })
         }
-        Write-CodeCoverageCompactorEvents -session $session
-        $run.StartedAtUtc = [DateTime]::UtcNow
+        else {
+            @()
+        }
+        coverageOutputPath = Get-CodeCoverageRunOutputPath -session $session -run $run
+        alToolModulePath = Join-Path $PSScriptRoot "AlToolTestRunner.psm1"
+        alToolPath = if ($session.Supported) { $alToolPath } else { "" }
+        coverageIsComplete = $null
     }
+}
+
+function Start-CodeCoverageCompactorInternal {
+    Param([hashtable] $session)
 
     $sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
-    return @{
-        contractVersion = 1
-        enabled = $true
-        supported = [bool]$session.Supported
-        reason = "$($session.SupportReason)"
-        project = "$($session.Project)"
-        projectName = "$($session.ProjectName)"
-        buildMode = "$($session.BuildMode)"
-        testType = "$($session.TestType)"
-        app = [ordered]@{
-            path = "$($run.AppPath)"
-            id = "$($run.AppId)"
-            name = "$($run.AppName)"
-            disabledTests = @($disabledTests)
-        }
-        mode = "$($session.Mode)"
-        formats = @($session.Formats)
-        sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.Path)" })
-        sourceRootDetails = @($sourceRootDetails)
-        coverageOutputPath = "$($run.OutputPath)"
-        outputDirectory = "$($run.OutputDirectory)"
-        alToolModulePath = "$($session.AlToolModulePath)"
-        alToolPath = "$($session.AlToolPath)"
-        result = @{
-            coverageIsComplete = $null
-        }
+    $sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.RelativePath)" })
+    $fingerprint = Get-CodeCoverageSourceRootFingerprint `
+        -sourceRoots $sourceRoots -sourceRootDetails $sourceRootDetails
+    $aggregatePath = Get-CodeCoverageAggregatePath -session $session
+    $metadata = @{
+        Project = "$($session.Project)"
+        ProjectName = "$($session.ProjectName)"
+        BuildMode = "$($session.BuildMode)"
+        Mode = $script:CodeCoverageMode
+        Formats = @($session.Formats)
+        SourceRoots = @($sourceRoots)
+        SourceRootDetails = @($sourceRootDetails)
+        SourceRootFingerprint = $fingerprint
     }
+    return Start-CodeCoverageAggregateWorker `
+        -readerModulePath (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
+        -repositoryRoot $session.RepositoryRoot `
+        -metadata $metadata `
+        -temporaryPath "$aggregatePath.$([guid]::NewGuid().ToString('N')).tmp" `
+        -publishedPath $aggregatePath
 }
 
 <#
@@ -616,71 +587,60 @@ function Start-AlGoCodeCoverageRun {
     completeness, so failed tests can retain valid coverage.
 .PARAMETER session
     AL-Go-owned session returned by New-AlGoCodeCoverageSession.
-.PARAMETER appId
-    ID of the current test app.
-.PARAMETER rawComplete
-    Completeness reported by the AlTool runner.
+.PARAMETER run
+    AL-Go-owned run record for the current test app.
+.PARAMETER coverageIsComplete
+    Completeness value returned by the current built-in runner or override invocation.
 .PARAMETER executionFailed
     Marks an invocation that failed before valid coverage could be produced.
 #>
 function Complete-AlGoCodeCoverageRun {
     Param(
         [hashtable] $session,
-        [string] $appId,
-        $rawComplete = $null,
+        [hashtable] $run,
+        $coverageIsComplete = $null,
         [switch] $executionFailed
     )
 
-    if (-not $session -or -not $session.ContainsKey("Runs")) {
+    if (-not $session -or -not $session.ContainsKey("Runs") -or -not $run) {
         throw "The code coverage session is invalid or uses an unsupported coordinator contract."
     }
-    $parsedAppId = [guid]::Empty
-    $normalizedAppId = if ([guid]::TryParse($appId, [ref]$parsedAppId)) {
-        $parsedAppId.ToString()
-    }
-    else {
-        ""
-    }
-    if ([string]::IsNullOrWhiteSpace($normalizedAppId) -or
-        -not $session.Runs.ContainsKey($normalizedAppId)) {
-        throw "Code coverage references unknown test app '$appId'."
-    }
-    $run = $session.Runs[$normalizedAppId]
     if (-not $session.Supported) {
         return
     }
-    if ($run.State -ne "pending") {
-        throw "Code coverage for test app '$appId' cannot complete from state '$($run.State)'."
+    if (-not [string]::IsNullOrWhiteSpace("$($run.State)")) {
+        throw "Code coverage for test app '$($run.AppId)' cannot complete from state '$($run.State)'."
     }
     if ($executionFailed) {
         $run.State = "failed"
         $run.CompletedAtUtc = [DateTime]::UtcNow
-        Write-CodeCoverageStatusInternal -session $session
         return
     }
     try {
-        Test-CodeCoverageArtifacts -session $session -run $run -rawComplete $rawComplete
-        $run.State = if ([bool]$rawComplete) { "complete" } else { "incomplete" }
+        Test-CodeCoverageArtifacts -session $session -run $run `
+            -rawComplete $coverageIsComplete
+        $run.State = if ([bool]$coverageIsComplete) { "complete" } else { "incomplete" }
         $run.CompletedAtUtc = [DateTime]::UtcNow
-        Write-CodeCoverageStatusInternal -session $session
-        if ($session.CompactorConfig -and [string]::IsNullOrWhiteSpace($session.CompactorFailure)) {
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and
+            "bc-json" -in $session.Formats -and
+            [string]::IsNullOrWhiteSpace($session.CompactorFailure)) {
             try {
                 if (-not $session.Compactor) {
-                    $session.Compactor = Start-CodeCoverageAggregateWorker `
-                        -readerModulePath $session.CompactorConfig.ReaderModulePath `
-                        -repositoryRoot $session.CompactorConfig.RepositoryRoot `
-                        -metadata $session.CompactorConfig.Metadata `
-                        -temporaryPath $session.CompactorConfig.TemporaryPath `
-                        -publishedPath $session.CompactorConfig.PublishedPath
+                    $session.Compactor = Start-CodeCoverageCompactorInternal -session $session
                     Write-Host "Started one PowerShell 7 code coverage compactor worker."
                 }
+                $sequence = [array]::IndexOf([object[]]$session.Runs, $run)
+                if ($sequence -lt 0) {
+                    throw "The code coverage run is not part of the supplied session."
+                }
                 Add-CodeCoverageAggregateWorkItem -worker $session.Compactor -descriptor @{
-                    Sequence = [int]$run.Sequence
+                    Sequence = $sequence
                     AppId = "$($run.AppId)"
                     AppName = "$($run.AppName)"
-                    State = "$($run.State)"
-                    Complete = [bool]$rawComplete
-                    ReportPath = Join-Path $run.OutputPath "coverage.bc.json"
+                    Complete = [bool]$coverageIsComplete
+                    ReportPath = Join-Path (
+                        Get-CodeCoverageRunOutputPath -session $session -run $run
+                    ) "coverage.bc.json"
                 }
             }
             catch {
@@ -692,7 +652,6 @@ function Complete-AlGoCodeCoverageRun {
     }
     catch {
         $run.State = "failed"
-        Write-CodeCoverageStatusInternal -session $session
         throw
     }
 }
@@ -701,7 +660,8 @@ function Complete-AlGoCodeCoverageRun {
 .SYNOPSIS
     Finalizes the AL-Go-owned code coverage session.
 .DESCRIPTION
-    Verifies that every supported app run reached a final state. Unsupported sessions retain
+    Verifies that every supported app run reached a final state, drains aggregate compaction,
+    and atomically writes the single final status manifest. Unsupported sessions retain
     unsupported runs without failing test execution.
 .PARAMETER session
     AL-Go-owned session returned by New-AlGoCodeCoverageSession.
@@ -717,19 +677,13 @@ function Complete-AlGoCodeCoverageSession {
     if (-not $session -or -not $session.ContainsKey("Runs")) {
         throw "The code coverage session is invalid or uses an unsupported coordinator contract."
     }
-    if ($session.Finalized) {
-        throw "The code coverage session has already been finalized."
-    }
 
     $failureReasons = @()
-    $statusChanged = $false
     if ($session.Supported) {
-        foreach ($appId in @($session.RunOrder)) {
-            $run = $session.Runs[$appId]
-            if ($run.State -eq "pending") {
+        foreach ($run in @($session.Runs)) {
+            if ([string]::IsNullOrWhiteSpace("$($run.State)")) {
+                $run.State = "failed"
                 if (-not $suppressFailure) {
-                    $run.State = "failed"
-                    $statusChanged = $true
                     $failureReasons += "Test app '$($run.AppName)' did not produce final code coverage."
                 }
             }
@@ -738,78 +692,82 @@ function Complete-AlGoCodeCoverageSession {
             }
         }
     }
-    if ($statusChanged) {
-        Write-CodeCoverageStatusInternal -session $session
-    }
+    $aggregate = $null
+    $drainStopwatch = $null
     if ($session.Compactor) {
         $drainStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $aggregate = $null
-        $aggregateReferencedByStatus = $false
         try {
             $aggregate = Complete-CodeCoverageAggregateWorker -worker $session.Compactor
             Write-CodeCoverageCompactorEvents -session $session
             if (-not [string]::IsNullOrWhiteSpace($session.CompactorFailure)) {
                 throw $session.CompactorFailure
             }
-            $expectedRunCount = @($session.RunOrder | Where-Object {
-                    $session.Runs[$_].State -in @("complete", "incomplete")
+            $expectedRunCount = @($session.Runs | Where-Object {
+                    $_.State -in @("complete", "incomplete")
                 }).Count
             if (-not $aggregate -or [int]$aggregate.RunCount -ne $expectedRunCount) {
                 throw "The code coverage aggregate does not contain every valid run."
             }
-            $session.Aggregate = $aggregate
-            Write-CodeCoverageStatusInternal -session $session
-            $aggregateReferencedByStatus = $true
-            $removedBytes = [long]0
-            try {
-                $removedBytes = Remove-CodeCoverageRawReports -session $session
-            }
-            catch {
-                Write-Host "::Warning::The code coverage aggregate was published, but one or more raw BC JSON reports could not be deleted. $($_.Exception.Message)"
-            }
-            $drainStopwatch.Stop()
-
-            $overlappedReports = 0
-            foreach ($telemetry in @($session.CompactorTelemetry)) {
-                $parseStart = [DateTime]$telemetry.ParseStartedAtUtc
-                $parseEnd = [DateTime]$telemetry.ParseEndedAtUtc
-                if (@($session.RunOrder | Where-Object {
-                            $candidate = $session.Runs[$_]
-                            $candidate.ContainsKey("StartedAtUtc") -and
-                            [DateTime]$candidate.StartedAtUtc -lt $parseEnd -and
-                            ($candidate.ContainsKey("CompletedAtUtc") -eq $false -or
-                                [DateTime]$candidate.CompletedAtUtc -gt $parseStart) -and
-                            "$($candidate.AppId)" -ne "$($telemetry.AppId)"
-                        }).Count -gt 0) {
-                    $overlappedReports++
-                }
-            }
-            $culture = [System.Globalization.CultureInfo]::InvariantCulture
-            Write-Host ("Code coverage compaction complete: runs={0}, lines={1}, activeParse={2}s, finalDrain={3}s, aggregateSize={4} MiB, rawRemoved={5} MiB, parserProducerOverlap={6}/{0}, outcome=passed." -f
-                $aggregate.RunCount,
-                $aggregate.LineCount,
-                ([double]$aggregate.TotalParseMilliseconds / 1000).ToString("0.000", $culture),
-                $drainStopwatch.Elapsed.TotalSeconds.ToString("0.000", $culture),
-                ([long]$aggregate.SizeBytes / 1MB).ToString("0.0", $culture),
-                ($removedBytes / 1MB).ToString("0.0", $culture),
-                $overlappedReports)
         }
         catch {
-            $drainStopwatch.Stop()
-            if (-not $aggregateReferencedByStatus) {
-                $session.Aggregate = $null
-                if ($aggregate -and $session.CompactorConfig) {
-                    Remove-Item -LiteralPath $session.CompactorConfig.PublishedPath `
-                        -Force -ErrorAction SilentlyContinue
-                }
-            }
+            $aggregate = $null
+            Remove-Item -LiteralPath (Get-CodeCoverageAggregatePath -session $session) `
+                -Force -ErrorAction SilentlyContinue
             Write-Host "::Warning::Code coverage compaction failed. Raw BC JSON reports are retained and the historical analyzer path remains authoritative. $($_.Exception.Message)"
         }
         finally {
             $session.Compactor = $null
         }
     }
-    $session.Finalized = $true
+    try {
+        Write-CodeCoverageStatusInternal -session $session -aggregate $aggregate
+    }
+    catch {
+        if (-not $aggregate) {
+            throw
+        }
+        $statusError = $_
+        $aggregate = $null
+        Remove-Item -LiteralPath (Get-CodeCoverageAggregatePath -session $session) `
+            -Force -ErrorAction SilentlyContinue
+        Write-Host "::Warning::The code coverage aggregate could not be referenced by the final status. Raw BC JSON reports are retained. $($statusError.Exception.Message)"
+        Write-CodeCoverageStatusInternal -session $session
+    }
+    if ($aggregate) {
+        $removedBytes = [long]0
+        try {
+            $removedBytes = Remove-CodeCoverageRawReports -session $session
+        }
+        catch {
+            Write-Host "::Warning::The code coverage aggregate was published, but one or more raw BC JSON reports could not be deleted. $($_.Exception.Message)"
+        }
+        $drainStopwatch.Stop()
+
+        $overlappedReports = 0
+        foreach ($telemetry in @($session.CompactorTelemetry)) {
+            $parseStart = [DateTime]$telemetry.ParseStartedAtUtc
+            $parseEnd = [DateTime]$telemetry.ParseEndedAtUtc
+            if (@($session.Runs | Where-Object {
+                        $candidate = $_
+                        $candidate.ContainsKey("StartedAtUtc") -and
+                        [DateTime]$candidate.StartedAtUtc -lt $parseEnd -and
+                        ($candidate.ContainsKey("CompletedAtUtc") -eq $false -or
+                            [DateTime]$candidate.CompletedAtUtc -gt $parseStart) -and
+                        "$($candidate.AppId)" -ne "$($telemetry.AppId)"
+                    }).Count -gt 0) {
+                $overlappedReports++
+            }
+        }
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        Write-Host ("Code coverage compaction complete: runs={0}, lines={1}, activeParse={2}s, finalDrain={3}s, aggregateSize={4} MiB, rawRemoved={5} MiB, parserProducerOverlap={6}/{0}, outcome=passed." -f
+            $aggregate.RunCount,
+            $aggregate.LineCount,
+            ([double]$aggregate.TotalParseMilliseconds / 1000).ToString("0.000", $culture),
+            $drainStopwatch.Elapsed.TotalSeconds.ToString("0.000", $culture),
+            ([long]$aggregate.SizeBytes / 1MB).ToString("0.0", $culture),
+            ($removedBytes / 1MB).ToString("0.0", $culture),
+            $overlappedReports)
+    }
     if ($failureReasons.Count -gt 0 -and -not $suppressFailure) {
         throw ($failureReasons | Select-Object -Unique) -join " "
     }
@@ -818,6 +776,6 @@ function Complete-AlGoCodeCoverageSession {
 Export-ModuleMember -Function `
     Get-AlGoCodeCoverageCapability, `
     New-AlGoCodeCoverageSession, `
-    Start-AlGoCodeCoverageRun, `
+    New-AlGoCodeCoverageInvocationContext, `
     Complete-AlGoCodeCoverageRun, `
     Complete-AlGoCodeCoverageSession

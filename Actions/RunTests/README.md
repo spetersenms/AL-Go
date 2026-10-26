@@ -2,6 +2,8 @@
 
 Run normal tests (`testFolders`) against the build container kept alive by the RunPipeline action.
 
+For the developer-facing call sequence, worker lifecycle, file contracts, and failure behavior, see [RunTests code coverage architecture](CodeCoverageArchitecture.md).
+
 Enable this action with `useSeparateTestAction.enabled`. It is used when normal tests are enabled and RunPipeline creates one local build container. Builds with `additionalCountries` or without a local build container continue to run normal tests in RunPipeline. BCPT and page scripting tests always remain in RunPipeline.
 
 The action keeps `TestResults.xml` in the project folder for AnalyzeTests and copies a produced result to `.buildartifacts/TestResults.xml` for artifact upload. It does not create a result artifact when no result is produced. After the run, it refreshes `ContainerEventLog.evtx` in the project folder so failure diagnostics include test-time events.
@@ -14,7 +16,7 @@ By default, AlTool runs enabled normal tests for each app through one batch and 
 
 To use another test runner, add `RunTestsInBcContainer.ps1` under the project's `.AL-Go` folder. When coverage is disabled, the historical signature accepts only `[hashtable] $parameters`, runs once per test app, receives the standard BcContainerHelper test parameters including `testType`, and returns a Boolean test result. Custom overrides may interpret additional test types such as `Legacy`.
 
-Before enabling coverage, the repository owner must update the override to accept the contract-version 1 context parameter:
+Before enabling coverage, the repository owner must update the override to accept the contract-version 2 context parameter:
 
 ```powershell
 param(
@@ -25,7 +27,7 @@ param(
 
 When coverage is disabled, AL-Go does not pass `codeCoverageContext`, does not create a coverage session or manifest, and retains the historical per-app invocation behavior. When coverage is requested and an override exists, AL-Go keeps the same per-app invocation and always adds the context parameter. AL-Go does not inspect the override signature or downgrade to noncoverage execution. An override that does not accept the parameter fails rather than running without the requested coverage.
 
-The non-secret context contains `contractVersion`, `enabled`, `supported`, `reason`, `project`, `projectName`, `buildMode`, `testType`, current `app` metadata (`path`, `id`, `name`, and `disabledTests`), line `mode`, ordered `formats`, absolute ordered `sourceRoots`, repository-relative `sourceRootDetails`, the allocated `coverageOutputPath` and `outputDirectory`, the action-owned `alToolModulePath`, the resolved `alToolPath` when coverage is supported, and a mutable `result.coverageIsComplete` output. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in `$parameters` and must not be serialized into artifacts or diagnostics.
+The non-secret context contains `contractVersion`, `supported`, `reason`, line `mode`, ordered `formats`, absolute ordered `sourceRoots`, the allocated `coverageOutputPath`, the action-owned `alToolModulePath`, the resolved `alToolPath` when coverage is supported, and a mutable `coverageIsComplete` output. App identity, test type, and disabled tests already exist in the historical `$parameters` hashtable and are not duplicated in the coverage context. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in `$parameters` and must not be serialized into artifacts or diagnostics.
 
 For supported coverage, the override imports `alToolModulePath`, invokes `Invoke-AlToolTestRun` once for the current app with the supplied coverage values, and copies the runner's completeness output into the context:
 
@@ -35,12 +37,12 @@ $coverageIsComplete = $null
 $passed = Invoke-AlToolTestRun `
     -ContainerName $parameters.containerName `
     -Credential $parameters.credential `
-    -ExtensionId $codeCoverageContext.app.id `
-    -AppName $codeCoverageContext.app.name `
+    -ExtensionId $parameters.extensionId `
+    -AppName $parameters.appName `
     -CompanyName $parameters.companyName `
     -Tenant 'default' `
-    -TestType $codeCoverageContext.testType `
-    -DisabledTests $codeCoverageContext.app.disabledTests `
+    -TestType $parameters.testType `
+    -DisabledTests $parameters.disabledTests `
     -AlToolPath $codeCoverageContext.alToolPath `
     -JUnitResultFileName $parameters.JUnitResultFileName `
     -CoverageMode $codeCoverageContext.mode `
@@ -48,7 +50,7 @@ $passed = Invoke-AlToolTestRun `
     -CoverageFormats $codeCoverageContext.formats `
     -CoverageSourceRoots $codeCoverageContext.sourceRoots `
     -CoverageIsComplete ([ref] $coverageIsComplete)
-$codeCoverageContext.result.coverageIsComplete = $coverageIsComplete
+$codeCoverageContext.coverageIsComplete = $coverageIsComplete
 return [bool]$passed
 ```
 
@@ -60,7 +62,7 @@ Set `useSeparateTestAction.codeCoverageEnabled` to `true` to collect coverage wi
 
 AL-Go collects executable-line coverage. Procedure coverage is not currently exposed because AlTool source enrichment cannot reliably construct a local method inventory in the separate-test environment. `codeCoverageFormats` accepts `bc-json` and `cobertura` and defaults to both. `codeCoverageSummary` accepts `none`, `project`, `repository`, or `both` and defaults to `both`; `none` disables visualization without disabling raw collection. Project and repository summaries require `bc-json`, so use `codeCoverageSummary: none` for Cobertura-only collection. Existing app and test folders in the current AL-Go project are passed automatically as source roots to improve source mapping. Test projects also use the analyzed app and test folders from their direct `projectsToTest` targets.
 
-RunTests records repository-relative source-root identities in `coverage-status.json` so repository summaries can map raw report paths consistently across build jobs. Ordered source-root details classify each root as an app or test folder and include available app identity from `app.json`. These roots are action-level attribution data and are not repeated per test-app run.
+RunTests writes one final `coverage-status.json` after every selected app has reached a final state and aggregate publication has either succeeded or safely fallen back to raw reports. Repository-relative source-root identities let repository summaries map raw report paths consistently across build jobs. Ordered source-root details classify each root as an app or test folder and include available app identity from `app.json`. These details are action-level attribution data and are not repeated per test-app run or in the override context.
 
 Each built-in or override test-app run initially writes to `.buildartifacts/CodeCoverage/<app-id>/` with the fixed `coverage.bc.json` and `coverage.cobertura.xml` names. On PowerShell 7, one background worker per coverage session streams validated BC JSON reports while later test apps run, preserving the semantic executable-line union and per-run diagnostic assessment needed by AL-Go summaries. After all queued reports have been parsed, AL-Go atomically publishes the versioned `coverage-aggregate.bin.gz`, references it from `coverage-status.json`, and deletes the raw per-app BC JSON files. Per-app Cobertura files remain available for external tooling.
 

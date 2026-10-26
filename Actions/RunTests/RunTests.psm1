@@ -8,9 +8,8 @@
 #>
 
 Import-Module (Join-Path $PSScriptRoot 'AlToolTestRunner.psm1' -Resolve) -DisableNameChecking -Force
-$script:codeCoverageCoordinatorModule = Import-Module `
-    (Join-Path $PSScriptRoot 'CodeCoverageCoordinator.psm1' -Resolve) `
-    -DisableNameChecking -Force -PassThru
+Import-Module (Join-Path $PSScriptRoot 'CodeCoverageCoordinator.psm1' -Resolve) `
+    -DisableNameChecking -Force
 
 function Get-TestAppsToRun {
     <#
@@ -345,16 +344,15 @@ function Invoke-AlGoTestRun {
             }
             $coverageSession = New-AlGoCodeCoverageSession -settings $settings `
                 -projectPath $projectPath -baseFolder $baseFolder -project $project `
-                -projectName $projectName -buildMode $buildMode -testType $testType `
+                -projectName $projectName -buildMode $buildMode `
                 -testApps $testApps -analyzeRepo $analyzeRepo `
-                -capability $coverageCapability `
-                -alToolPath $alToolPath
+                -capability $coverageCapability
             if ($coverageSession.Supported) {
                 Write-Host "Code coverage enabled: mode=$($coverageSession.Mode), formats=$($coverageSession.Formats -join ','), container platform $containerPlatformVersion."
                 Write-Host "Code coverage artifacts will be retained under '$($coverageSession.RootPath)'."
             }
             else {
-                OutputWarning -message "Code coverage requires container platform 30.0.56026.0 or later. $($coverageSession.SupportReason) Tests will continue without coverage."
+                OutputWarning -message "Code coverage requires container platform 30.0.56026.0 or later. $($coverageCapability.Reason) Tests will continue without coverage."
             }
         }
 
@@ -367,23 +365,35 @@ function Invoke-AlGoTestRun {
 
         $allTestsPassed = $true
         $testRunError = $null
-        $currentCoverageAppId = ""
+        $currentCoverageRun = $null
         $coverageInvocationActive = $false
         Push-Location $projectPath
         try {
+            $testAppIndex = 0
             foreach ($testApp in $testApps) {
                 Write-Host "Running tests in $($testApp.Name) ($($testApp.Id))"
                 $disabledTests = @(Get-DisabledTestsForApp -settings $settings `
                     -projectPath $projectPath -appId "$($testApp.Id)")
-                $currentCoverageAppId = "$($testApp.Id)"
-                $coverageRunContext = if ($coverageSession) {
-                    Start-AlGoCodeCoverageRun -session $coverageSession `
-                        -appId $currentCoverageAppId -disabledTests $disabledTests
+                $currentCoverageRun = if ($coverageSession) {
+                    $coverageSession.Runs[$testAppIndex]
+                }
+                else {
+                    $null
+                }
+                $coverageRunContext = if ($currentCoverageRun) {
+                    New-AlGoCodeCoverageInvocationContext `
+                        -session $coverageSession `
+                        -run $currentCoverageRun `
+                        -reason "$($coverageCapability.Reason)" `
+                        -alToolPath $alToolPath
                 }
                 else {
                     $null
                 }
                 $coverageInvocationActive = $coverageSession -and $coverageSession.Supported
+                if ($coverageInvocationActive) {
+                    $currentCoverageRun.StartedAtUtc = [DateTime]::UtcNow
+                }
 
                 if ($runTestsOverride) {
                     $runTestsParams = @{
@@ -399,7 +409,7 @@ function Invoke-AlGoTestRun {
                         "GitHubActions" = $gitHubActionsSeverity
                         "returnTrueIfAllPassed" = $true
                     }
-                    if (-not [string]::IsNullOrWhiteSpace($testType)) {
+                    if ($coverageSession -or -not [string]::IsNullOrWhiteSpace($testType)) {
                         $runTestsParams["testType"] = $testType
                     }
                     $passed = if ($coverageSession) {
@@ -436,48 +446,52 @@ function Invoke-AlGoTestRun {
                     }
                     $passed = Invoke-AlToolTestRun @alToolParameters
                     if ($coverageSession -and $coverageSession.Supported) {
-                        $coverageRunContext.result.coverageIsComplete = $coverageIsComplete
+                        $coverageRunContext.coverageIsComplete = $coverageIsComplete
                     }
                 }
 
                 if ($coverageSession -and $coverageSession.Supported) {
                     $coverageInvocationActive = $false
                     Complete-AlGoCodeCoverageRun -session $coverageSession `
-                        -appId $currentCoverageAppId `
-                        -rawComplete $coverageRunContext.result.coverageIsComplete
+                        -run $currentCoverageRun `
+                        -coverageIsComplete $coverageRunContext.coverageIsComplete
                 }
-                $currentCoverageAppId = ""
+                $currentCoverageRun = $null
+                $testAppIndex++
                 if (-not $passed) {
                     $allTestsPassed = $false
                 }
             }
-            if ($coverageSession) {
-                Complete-AlGoCodeCoverageSession -session $coverageSession
-            }
         }
         catch {
             $caughtTestRunError = $_
-            if ($coverageInvocationActive -and -not [string]::IsNullOrWhiteSpace($currentCoverageAppId)) {
+            if ($coverageInvocationActive -and $currentCoverageRun) {
                 try {
                     Complete-AlGoCodeCoverageRun -session $coverageSession `
-                        -appId $currentCoverageAppId -executionFailed
+                        -run $currentCoverageRun -executionFailed
                 }
                 catch {
                     OutputWarning -message "Failed to record the current code coverage run after test execution failed. $($_.Exception.Message)"
-                }
-            }
-            if ($coverageSession -and -not $coverageSession.Finalized) {
-                try {
-                    Complete-AlGoCodeCoverageSession -session $coverageSession -suppressFailure
-                }
-                catch {
-                    OutputWarning -message "Failed to finalize code coverage status after test execution failed. $($_.Exception.Message)"
                 }
             }
             $testRunError = $caughtTestRunError
         }
         finally {
             Pop-Location
+        }
+        if ($coverageSession) {
+            try {
+                Complete-AlGoCodeCoverageSession -session $coverageSession `
+                    -suppressFailure:([bool]$testRunError)
+            }
+            catch {
+                if ($testRunError) {
+                    OutputWarning -message "Failed to finalize code coverage status after test execution failed. $($_.Exception.Message)"
+                }
+                else {
+                    $testRunError = $_
+                }
+            }
         }
 
         try {

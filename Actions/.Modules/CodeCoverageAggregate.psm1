@@ -37,7 +37,6 @@ function Invoke-CodeCoverageAggregateWorker {
     $semanticRootOrder = [System.Collections.Generic.List[string]]::new()
     $semanticLineCount = 0
     $runAssessments = [System.Collections.Generic.List[object]]::new()
-    $totalRawBytes = [long]0
     $totalParseMilliseconds = [double]0
 
     try {
@@ -64,7 +63,7 @@ function Invoke-CodeCoverageAggregateWorker {
                     Sequence = [int]$descriptor.Sequence
                     AppId = "$($descriptor.AppId)"
                     AppName = "$($descriptor.AppName)"
-                    State = "$($descriptor.State)"
+                    State = if ([bool]$descriptor.Complete) { "complete" } else { "incomplete" }
                     Complete = [bool]$descriptor.Complete
                     LineReasons = @($assessment.LineReasons)
                     Notices = @($assessment.Notices)
@@ -74,18 +73,15 @@ function Invoke-CodeCoverageAggregateWorker {
                 })
             $stopwatch.Stop()
             $parseEndedAt = [DateTime]::UtcNow
-            $totalRawBytes += $file.Length
             $totalParseMilliseconds += $stopwatch.Elapsed.TotalMilliseconds
             $semanticLineCount += [int]$reportResult.NewLineCount
             $memoryAfter = [System.Diagnostics.Process]::GetCurrentProcess().PrivateMemorySize64
             $events.Enqueue([PSCustomObject]@{
                     Type = "report"
-                    Sequence = [int]$descriptor.Sequence
                     AppId = "$($descriptor.AppId)"
                     Bytes = [long]$file.Length
                     QueueWaitMilliseconds = ($parseStartedAt - [DateTime]$descriptor.EnqueuedAtUtc).TotalMilliseconds
                     QueueDepthAtEnqueue = [int]$descriptor.QueueDepthAtEnqueue
-                    QueueDepthAtCompletion = [int]$queue.Count
                     ParseMilliseconds = $stopwatch.Elapsed.TotalMilliseconds
                     ParseStartedAtUtc = $parseStartedAt
                     ParseEndedAtUtc = $parseEndedAt
@@ -98,7 +94,6 @@ function Invoke-CodeCoverageAggregateWorker {
                 })
         }
 
-        $writeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         Write-CodeCoverageAggregateFile -path $temporaryPath -metadata $metadata `
             -runs @($runAssessments) -lines $semanticLines -rootOrder $semanticRootOrder
@@ -112,7 +107,6 @@ function Invoke-CodeCoverageAggregateWorker {
             throw "The generated code coverage aggregate failed validation. $($validation.Reason)"
         }
         [System.IO.File]::Move($temporaryPath, $publishedPath, $true)
-        $writeStopwatch.Stop()
         $publishedFile = Get-Item -LiteralPath $publishedPath
         return @{
             Format = "al-go-line-union-binary-gzip"
@@ -123,9 +117,7 @@ function Invoke-CodeCoverageAggregateWorker {
             RunCount = $runAssessments.Count
             LineCount = $semanticLineCount
             SizeBytes = [long]$publishedFile.Length
-            RawBytes = $totalRawBytes
             TotalParseMilliseconds = $totalParseMilliseconds
-            WriteMilliseconds = $writeStopwatch.Elapsed.TotalMilliseconds
         }
     }
     finally {

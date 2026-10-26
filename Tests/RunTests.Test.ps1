@@ -1152,7 +1152,7 @@ Describe 'RunTests.psm1 Tests' {
 
         It 'Tracks supported coverage completeness in unique stable output directories for every app' {
             $script:capturedCoverageRuns = @()
-            $script:coverageStatusBeforeRuns = @()
+            $script:coverageStatusObservedDuringRuns = @()
             $script:coverageInvocation = 0
             Mock -ModuleName RunTests Get-AlGoCodeCoverageCapability {
                 return @{ Supported = $true; Reason = "" }
@@ -1168,9 +1168,9 @@ Describe 'RunTests.psm1 Tests' {
                     [ref] $CoverageIsComplete
                 )
                 $coverageRootAtInvocation = Split-Path -Path $CoverageOutputPath -Parent
-                $status = Get-Content -LiteralPath (Join-Path $coverageRootAtInvocation 'coverage-status.json') `
-                    -Raw -Encoding UTF8 | ConvertFrom-Json
-                $script:coverageStatusBeforeRuns += ,@($status.runs | ForEach-Object { $_.state })
+                $script:coverageStatusObservedDuringRuns += Test-Path -LiteralPath (
+                    Join-Path $coverageRootAtInvocation 'coverage-status.json'
+                )
                 $script:capturedCoverageRuns += [PSCustomObject]@{
                     ExtensionId        = $ExtensionId
                     AppName            = $AppName
@@ -1230,8 +1230,7 @@ Describe 'RunTests.psm1 Tests' {
             Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 2 -Exactly
             Should -Invoke -ModuleName RunTests Get-AlGoCodeCoverageCapability -Times 1 -Exactly
             $script:capturedCoverageRuns.Count | Should -Be 2
-            $script:coverageStatusBeforeRuns[0] | Should -Be @('pending', 'pending')
-            $script:coverageStatusBeforeRuns[1] | Should -Be @('complete', 'pending')
+            $script:coverageStatusObservedDuringRuns | Should -Be @($false, $false)
             $script:capturedCoverageRuns[0].CoverageMode | Should -Be 'line'
             $script:capturedCoverageRuns[0].CoverageFormats | Should -Be @('bc-json', 'cobertura')
             $script:capturedCoverageRuns[0].CoverageSourceRoots | Should -Contain (
@@ -1404,7 +1403,7 @@ Describe 'RunTests.psm1 Tests' {
                 $coverageStatusByAppId[$run.appId] = $run.state
             }
             $coverageStatusByAppId[$appOneId] | Should -Be 'failed'
-            $coverageStatusByAppId[$appTwoId] | Should -Be 'pending'
+            $coverageStatusByAppId[$appTwoId] | Should -Be 'failed'
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
@@ -1697,8 +1696,6 @@ Describe 'RunTests.psm1 Tests' {
                 )
                 $script:coverageOverrideCalls++
                 $script:coverageOverrideContexts += $codeCoverageContext
-                $parameters.extensionId | Should -Be $codeCoverageContext.app.id
-                $parameters.appName | Should -Be $codeCoverageContext.app.name
                 $parameters.credential | Should -Be $testCredential
                 $codeCoverageContext.ContainsKey('credential') | Should -BeFalse
                 New-Item -Path $codeCoverageContext.coverageOutputPath `
@@ -1719,7 +1716,7 @@ Describe 'RunTests.psm1 Tests' {
                 Set-Content -LiteralPath (
                     Join-Path $codeCoverageContext.coverageOutputPath 'coverage.cobertura.xml'
                 ) -Value '<coverage />' -Encoding UTF8
-                $codeCoverageContext.result.coverageIsComplete = $true
+                $codeCoverageContext.coverageIsComplete = $true
                 return $true
             }
 
@@ -1732,16 +1729,26 @@ Describe 'RunTests.psm1 Tests' {
 
             $script:coverageOverrideCalls | Should -Be 2
             $script:coverageAnalyzeRepoCalls | Should -Be 1
-            @($script:coverageOverrideContexts.app.id) | Should -Be @($firstAppId, $secondAppId)
             @($script:coverageOverrideContexts.coverageOutputPath | Select-Object -Unique).Count |
                 Should -Be 2
             foreach ($context in $script:coverageOverrideContexts) {
-                $context.contractVersion | Should -Be 1
-                $context.testType | Should -Be 'IntegrationTest'
+                @($context.Keys | Sort-Object) | Should -Be @(
+                    'alToolModulePath',
+                    'alToolPath',
+                    'contractVersion',
+                    'coverageIsComplete',
+                    'coverageOutputPath',
+                    'formats',
+                    'mode',
+                    'reason',
+                    'sourceRoots',
+                    'supported'
+                )
+                $context.contractVersion | Should -Be 2
                 $context.alToolPath | Should -Be 'C:\dotnet-tools\al.exe'
                 $context.alToolModulePath | Should -Match 'AlToolTestRunner\.psm1$'
-                @($context.sourceRootDetails.appName) | Should -Contain 'Regular App'
-                @($context.sourceRootDetails.appName) | Should -Contain 'Target App'
+                $context.sourceRoots | Should -Contain $appFolder
+                $context.sourceRoots | Should -Contain $targetAppPath
             }
             $status = Get-Content -LiteralPath (
                 Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
@@ -1774,7 +1781,7 @@ Describe 'RunTests.psm1 Tests' {
                     [hashtable] $codeCoverageContext
                 )
                 $null = $parameters
-                $codeCoverageContext.result.coverageIsComplete = $true
+                $codeCoverageContext.coverageIsComplete = $true
                 return $true
             }
 
@@ -1859,7 +1866,8 @@ Describe 'RunTests.psm1 Tests' {
             }
             $override = {
                 param([hashtable] $parameters)
-                $null = $parameters
+                $parameters.ContainsKey('testType') | Should -BeTrue
+                $parameters.testType | Should -Be ''
                 $args.Count | Should -Be 2
                 $args[0] | Should -Be '-codeCoverageContext'
                 $args[1] | Should -BeOfType System.Collections.Hashtable
@@ -1911,7 +1919,7 @@ Describe 'RunTests.psm1 Tests' {
                 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
                     Join-Path $codeCoverageContext.coverageOutputPath 'coverage.bc.json'
                 ) -Encoding UTF8
-                $codeCoverageContext.result.coverageIsComplete = $true
+                $codeCoverageContext.coverageIsComplete = $true
                 return $false
             }
 
