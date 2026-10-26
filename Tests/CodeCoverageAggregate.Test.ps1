@@ -10,6 +10,9 @@ Import-Module (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageAggregat
 
 Describe "Code coverage aggregate" {
     BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageAggregateFormat.psm1" -Resolve) `
+            -Force -DisableNameChecking
+
         function New-AggregateRepository {
             Param([string] $name)
 
@@ -115,7 +118,7 @@ Describe "Code coverage aggregate" {
             $metadata = Get-AggregateMetadata -status $status
             $publishedPath = Join-Path $coverageRoot "coverage-aggregate.bin.gz"
             $worker = Start-CodeCoverageAggregateWorker `
-                -analyzerModulePath (Join-Path $PSScriptRoot "..\Actions\AnalyzeCodeCoverage\AnalyzeCodeCoverage.psm1" -Resolve) `
+                -readerModulePath (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
                 -repositoryRoot $repositoryRoot -metadata $metadata `
                 -temporaryPath "$publishedPath.tmp" -publishedPath $publishedPath
             $sequence = 0
@@ -228,7 +231,7 @@ Describe "Code coverage aggregate" {
         $metadata = Get-AggregateMetadata -status $status
         $publishedPath = Join-Path $coverageRoot "coverage-aggregate.bin.gz"
         $worker = Start-CodeCoverageAggregateWorker `
-            -analyzerModulePath (Join-Path $PSScriptRoot "..\Actions\AnalyzeCodeCoverage\AnalyzeCodeCoverage.psm1" -Resolve) `
+            -readerModulePath (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
             -repositoryRoot $repositoryRoot -metadata $metadata `
             -temporaryPath "$publishedPath.tmp" -publishedPath $publishedPath
         Add-CodeCoverageAggregateWorkItem -worker $worker -descriptor @{
@@ -284,7 +287,7 @@ Describe "Code coverage aggregate" {
         Set-Content -LiteralPath $reportPath -Value '{"schemaVersion":' -Encoding UTF8
         $publishedPath = Join-Path $coverageRoot "coverage-aggregate.bin.gz"
         $worker = Start-CodeCoverageAggregateWorker `
-            -analyzerModulePath (Join-Path $PSScriptRoot "..\Actions\AnalyzeCodeCoverage\AnalyzeCodeCoverage.psm1" -Resolve) `
+            -readerModulePath (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
             -repositoryRoot $repositoryRoot -metadata (Get-AggregateMetadata -status $status) `
             -temporaryPath "$publishedPath.tmp" -publishedPath $publishedPath
         Add-CodeCoverageAggregateWorkItem -worker $worker -descriptor @{

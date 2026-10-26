@@ -310,13 +310,8 @@ Describe "AnalyzeCodeCoverage" {
                 Expected = "*does not match schemaVersion*"
             },
             @{
-                Name = "invalid method"
-                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[{"objectType":5}],"lines":[]}'
-                Expected = "*does not match schemaVersion*"
-            },
-            @{
-                Name = "invalid method type"
-                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":[{"objectType":true,"objectId":1,"methodId":1,"name":"Run","startLine":1,"endLine":1,"sourcePath":"app/Code.al"}],"lines":[]}'
+                Name = "invalid methods root"
+                Json = '{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[],"methods":{},"lines":[]}'
                 Expected = "*does not match schemaVersion*"
             },
             @{
@@ -337,6 +332,20 @@ Describe "AnalyzeCodeCoverage" {
             $result = Read-BcCoverageReport -Path $path
             $result.Valid | Should -BeFalse
             $result.Reason | Should -BeLike $Expected
+        }
+
+        It "validates but does not materialize unused methods and procedure edges" {
+            $path = Join-Path $TestDrive "unused-structures.json"
+            Set-Content -LiteralPath $path -Encoding UTF8 -Value @'
+{"schemaVersion":"1.0","coverageMode":"line","complete":true,"diagnostics":[],"sources":[],"tests":[],"procedureEdges":[{"unexpected":true}],"methods":[{"unexpected":true}],"lines":[]}
+'@
+
+            $result = Read-BcCoverageReport -Path $path
+
+            $result.Valid | Should -BeTrue
+            @($result.Data.Keys | Sort-Object) | Should -Be @(
+                "complete", "coverageMode", "diagnostics", "schemaVersion"
+            )
         }
 
         It "rejects duplicate required root properties on the streaming path" `

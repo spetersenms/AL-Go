@@ -169,7 +169,7 @@ jobs:
         env:
           Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
         with:
-          shell: pwsh
+          shell: ${{ inputs.shell }}
           project: ${{ inputs.project }}
           buildMode: ${{ inputs.buildMode }}
           projectDependenciesJson: ${{ inputs.projectDependenciesJson }}
@@ -235,7 +235,7 @@ jobs:
         env:
           Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
         with:
-          shell: ${{ inputs.shell }}
+          shell: pwsh
           project: ${{ inputs.project }}
           projectName: ${{ inputs.projectName }}
           buildMode: ${{ inputs.buildMode }}

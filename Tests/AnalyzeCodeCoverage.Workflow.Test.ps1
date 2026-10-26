@@ -55,8 +55,19 @@ Describe "AnalyzeCodeCoverage workflow wiring" {
         foreach ($templateRoot in $templateRoots) {
             $content = Get-Content -LiteralPath (Join-Path $templateRoot "_BuildALGoProject.yaml") `
                 -Raw -Encoding UTF8
+            $runTestsStep = [regex]::Match(
+                $content,
+                '(?ms)^      - name: Run Tests\r?\n(?<body>.*?)(?=^      - name: |\z)'
+            )
+            $downloadDependenciesStep = [regex]::Match(
+                $content,
+                '(?ms)^      - name: Download Project Dependencies\r?\n(?<body>.*?)(?=^      - name: |\z)'
+            )
 
-            $content | Should -Match '(?ms)- name: Run Tests.*?shell: pwsh'
+            $runTestsStep.Success | Should -BeTrue
+            $runTestsStep.Value | Should -Match 'shell: pwsh'
+            $downloadDependenciesStep.Success | Should -BeTrue
+            $downloadDependenciesStep.Value | Should -Match 'shell: \$\{\{ inputs\.shell \}\}'
             $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?scope: project'
             $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?shell: pwsh'
             $content | Should -Match "coveragePath: '\$\{\{ inputs\.project \}\}/\.buildartifacts/CodeCoverage/'"

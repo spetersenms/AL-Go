@@ -388,7 +388,7 @@
                         "bc-json",
                         "cobertura"
                     ],
-                    "description": "Coverage artifact formats produced for every selected test app. Supported values are bc-json and cobertura."
+                    "description": "Coverage artifact formats produced for every selected test app. Supported values are bc-json and cobertura. Project and repository summaries require bc-json."
                 },
                 "codeCoverageSummary": {
                     "type": "string",
@@ -399,7 +399,7 @@
                         "both"
                     ],
                     "default": "both",
-                    "description": "Controls GitHub executable-line coverage visualization when code coverage is enabled: none, project, repository, or both."
+                    "description": "Controls GitHub executable-line coverage visualization when code coverage is enabled: none, project, repository, or both. Use none when collecting only Cobertura."
                 }
             },
             "additionalProperties": false

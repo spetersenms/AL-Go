@@ -1,7 +1,11 @@
 $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
 
 Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageAggregate.psm1" -Resolve) `
-    -Force -DisableNameChecking
+    -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageAggregateFormat.psm1" -Resolve) `
+    -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
+    -DisableNameChecking
 
 <#
 .SYNOPSIS
@@ -10,46 +14,6 @@ Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageAggregate.psm1" 
     Resolves authoritative source roots, allocates one isolated output directory per test app,
     validates produced artifacts, and remains the only writer of coverage-status.json.
 #>
-
-function Test-CodeCoveragePathWithoutReparsePoint {
-    Param(
-        [string] $path,
-        [string] $root
-    )
-
-    $current = [System.IO.Path]::GetFullPath($path).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar)
-    $rootPath = [System.IO.Path]::GetFullPath($root).TrimEnd(
-        [System.IO.Path]::DirectorySeparatorChar,
-        [System.IO.Path]::AltDirectorySeparatorChar)
-    $comparison = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-        [System.StringComparison]::OrdinalIgnoreCase
-    }
-    else {
-        [System.StringComparison]::Ordinal
-    }
-
-    while ($true) {
-        if (-not (Test-Path -LiteralPath $current)) {
-            return $false
-        }
-        $attributes = [System.IO.File]::GetAttributes($current)
-        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return $false
-        }
-        if ($current.Equals($rootPath, $comparison)) {
-            return $true
-        }
-        $parent = [System.IO.Path]::GetDirectoryName($current)
-        if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, $comparison)) {
-            return $false
-        }
-        $current = $parent.TrimEnd(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar)
-    }
-}
 
 function Resolve-CodeCoverageSourceRootData {
     Param(
@@ -96,7 +60,7 @@ function Resolve-CodeCoverageSourceRootData {
                 }
                 $resolvedPath = Resolve-Path -LiteralPath $folderPath
                 $resolvedFullPath = [System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)
-                if (-not (Test-CodeCoveragePathWithoutReparsePoint -path $resolvedFullPath -root $repositoryRoot)) {
+                if (-not (Test-CoveragePathWithoutReparsePoint -Path $resolvedFullPath -Root $repositoryRoot)) {
                     throw "Code coverage source root '$resolvedFullPath' contains a reparse point or is outside the repository."
                 }
                 if (-not $sourceRoots.ContainsKey($resolvedFullPath)) {
@@ -183,6 +147,21 @@ function Resolve-CodeCoverageSourceRootData {
     return @($result)
 }
 
+function Get-CodeCoverageSourceRootDetails {
+    Param([object[]] $sourceRootRecords)
+
+    return @(
+        foreach ($sourceRoot in $sourceRootRecords) {
+            [ordered]@{
+                path = "$($sourceRoot.RelativePath)"
+                kind = "$($sourceRoot.Kind)"
+                appId = "$($sourceRoot.AppId)"
+                appName = "$($sourceRoot.AppName)"
+            }
+        }
+    )
+}
+
 function Write-CodeCoverageStatusInternal {
     Param([hashtable] $session)
 
@@ -208,16 +187,7 @@ function Write-CodeCoverageStatusInternal {
             mode = "$($session.Mode)"
             formats = @($session.Formats)
             sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.RelativePath)" })
-            sourceRootDetails = @(
-                foreach ($sourceRoot in @($session.SourceRootRecords)) {
-                    [ordered]@{
-                        path = "$($sourceRoot.RelativePath)"
-                        kind = "$($sourceRoot.Kind)"
-                        appId = "$($sourceRoot.AppId)"
-                        appName = "$($sourceRoot.AppName)"
-                    }
-                }
-            )
+            sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
             runs = @($runs)
         }
         if ($session.ContainsKey("Aggregate") -and $session.Aggregate) {
@@ -272,9 +242,6 @@ function Write-CodeCoverageCompactorEvents {
                 ([long]$telemetryEvent.MemoryBeforeBytes / 1MB).ToString("0.0", $culture),
                 ([long]$telemetryEvent.MemoryAfterBytes / 1MB).ToString("0.0", $culture))
         }
-        elseif ("$($telemetryEvent.Type)" -eq "session") {
-            $session.CompactorSessionEvent = $telemetryEvent
-        }
         $telemetryEvent = $null
     }
 }
@@ -296,166 +263,27 @@ function Remove-CodeCoverageRawReports {
 function Read-CodeCoverageReportMetadata {
     Param([string] $path)
 
-    $file = Get-Item -LiteralPath $path
-    $readerType = $null
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $readerType = [type]::GetType("Newtonsoft.Json.JsonTextReader, Newtonsoft.Json", $false)
-        if (-not $readerType) {
-            $readerType = [AppDomain]::CurrentDomain.GetAssemblies() |
-                ForEach-Object { $_.GetType("Newtonsoft.Json.JsonTextReader", $false) } |
-                Where-Object { $_ } |
-                Select-Object -First 1
+    $result = Read-BcCoverageReport -Path $path -MetadataOnly
+    if (-not $result.Valid) {
+        if ("$($result.FailureDetail)".StartsWith("duplicate:", [System.StringComparison]::Ordinal)) {
+            $propertyName = "$($result.FailureDetail)".Substring("duplicate:".Length)
+            throw "The JSON contains duplicate top-level property '$propertyName'."
         }
+        $message = switch ("$($result.FailureDetail)") {
+            "schema" { "The produced BC JSON schemaVersion is not supported." }
+            "mode" { "The produced BC JSON coverage mode does not match the requested mode." }
+            "complete" { "The produced BC JSON completeness value is invalid." }
+            default { "$($result.Reason)" }
+        }
+        throw $message
     }
-    $readerName = if ($readerType) { "Newtonsoft.Json" } else { "ConvertFrom-Json" }
-    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $succeeded = $false
-    try {
-        $metadata = @{}
-        if ($readerType) {
-            $fileStream = $null
-            $textReader = $null
-            $jsonReader = $null
-            try {
-                $fileStream = [System.IO.FileStream]::new(
-                    $file.FullName,
-                    [System.IO.FileMode]::Open,
-                    [System.IO.FileAccess]::Read,
-                    [System.IO.FileShare]::Read,
-                    65536,
-                    [System.IO.FileOptions]::SequentialScan)
-                $textReader = [System.IO.StreamReader]::new(
-                    $fileStream,
-                    [System.Text.Encoding]::UTF8,
-                    $true,
-                    65536,
-                    $false)
-                $jsonReader = [Newtonsoft.Json.JsonTextReader]::new($textReader)
-                if (-not $jsonReader.Read() -or
-                    $jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::StartObject) {
-                    throw "The JSON root must be an object."
-                }
-
-                $rootComplete = $false
-                while ($jsonReader.Read()) {
-                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
-                        throw "JSON comments are not supported."
-                    }
-                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::EndObject -and
-                        $jsonReader.Depth -eq 0) {
-                        $rootComplete = $true
-                        break
-                    }
-                    if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::PropertyName -or
-                        $jsonReader.Depth -ne 1) {
-                        continue
-                    }
-
-                    $propertyName = "$($jsonReader.Value)"
-                    if (-not $jsonReader.Read()) {
-                        throw "The JSON root object is incomplete."
-                    }
-                    if ($jsonReader.TokenType -eq [Newtonsoft.Json.JsonToken]::Comment) {
-                        throw "JSON comments are not supported."
-                    }
-
-                    if ($propertyName -cnotin @("schemaVersion", "coverageMode", "complete")) {
-                        if ($jsonReader.TokenType -in @(
-                                [Newtonsoft.Json.JsonToken]::StartArray,
-                                [Newtonsoft.Json.JsonToken]::StartObject)) {
-                            $jsonReader.Skip()
-                        }
-                        continue
-                    }
-                    if ($metadata.ContainsKey($propertyName)) {
-                        throw "The JSON contains duplicate top-level property '$propertyName'."
-                    }
-
-                    if ($propertyName -ceq "complete") {
-                        if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::Boolean) {
-                            throw "The produced BC JSON completeness value is invalid."
-                        }
-                        $metadata[$propertyName] = [bool]$jsonReader.Value
-                    }
-                    else {
-                        if ($jsonReader.TokenType -ne [Newtonsoft.Json.JsonToken]::String) {
-                            if ($propertyName -ceq "schemaVersion") {
-                                throw "The produced BC JSON schemaVersion is not supported."
-                            }
-                            throw "The produced BC JSON coverage mode does not match the requested mode."
-                        }
-                        $metadata[$propertyName] = "$($jsonReader.Value)"
-                    }
-                }
-                if (-not $rootComplete) {
-                    throw "The JSON root object is incomplete."
-                }
-                if ($jsonReader.Read()) {
-                    throw "The JSON contains trailing content."
-                }
-            }
-            finally {
-                if ($jsonReader) {
-                    $jsonReader.Dispose()
-                }
-                if ($textReader) {
-                    $textReader.Dispose()
-                }
-                if ($fileStream) {
-                    $fileStream.Dispose()
-                }
-            }
-        }
-        else {
-            $report = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 |
-                ConvertFrom-Json -ErrorAction Stop
-            if ($report -isnot [System.Management.Automation.PSCustomObject]) {
-                throw "The JSON root must be an object."
-            }
-            foreach ($propertyName in @("schemaVersion", "coverageMode", "complete")) {
-                $properties = @($report.PSObject.Properties | Where-Object {
-                        $_.Name -ceq $propertyName
-                    })
-                if ($properties.Count -eq 1) {
-                    $metadata[$propertyName] = $properties[0].Value
-                }
-            }
-        }
-
-        if (-not $metadata.ContainsKey("schemaVersion") -or
-            $metadata.schemaVersion -isnot [string]) {
-            throw "The produced BC JSON schemaVersion is not supported."
-        }
-        if (-not $metadata.ContainsKey("coverageMode") -or
-            $metadata.coverageMode -isnot [string]) {
-            throw "The produced BC JSON coverage mode does not match the requested mode."
-        }
-        if (-not $metadata.ContainsKey("complete") -or
-            $metadata.complete -isnot [bool]) {
-            throw "The produced BC JSON completeness value is invalid."
-        }
-
-        $succeeded = $true
-        return @{
-            SchemaVersion = "$($metadata.schemaVersion)"
-            CoverageMode = "$($metadata.coverageMode)"
-            Complete = [bool]$metadata.complete
-            Reader = $readerName
-        }
-    }
-    finally {
-        $stopwatch.Stop()
-        $sizeMiB = $file.Length / 1MB
-        $outcome = if ($succeeded) { "passed" } else { "failed" }
-        $culture = [System.Globalization.CultureInfo]::InvariantCulture
-        Write-Host ("BC JSON metadata validation: reader={0}, size={1} MiB, elapsed={2}s, outcome={3}." -f
-            $readerName,
-            $sizeMiB.ToString("0.0", $culture),
-            $stopwatch.Elapsed.TotalSeconds.ToString("0.000", $culture),
-            $outcome)
+    return @{
+        SchemaVersion = "$($result.Data.schemaVersion)"
+        CoverageMode = "$($result.Data.coverageMode)"
+        Complete = [bool]$result.Data.complete
+        Reader = "$($result.Reader)"
     }
 }
-
 function Test-CodeCoverageArtifacts {
     Param(
         [hashtable] $session,
@@ -575,7 +403,7 @@ function Get-AlGoCodeCoverageCapability {
 .PARAMETER capability
     Capability result computed once by Get-AlGoCodeCoverageCapability.
 .PARAMETER alToolPath
-    Resolved path to the pinned AlTool executable when available.
+    Resolved path to the AlTool executable when available.
 #>
 function New-AlGoCodeCoverageSession {
     Param(
@@ -670,20 +498,10 @@ function New-AlGoCodeCoverageSession {
         CompactorConfig = $null
         CompactorFailure = ""
         CompactorTelemetry = [System.Collections.Generic.List[object]]::new()
-        CompactorSessionEvent = $null
     }
     if ($session.Supported -and "bc-json" -in $session.Formats) {
         if ($PSVersionTable.PSVersion.Major -ge 7) {
-            $sourceRootDetails = @(
-                foreach ($sourceRoot in @($session.SourceRootRecords)) {
-                    [ordered]@{
-                        path = "$($sourceRoot.RelativePath)"
-                        kind = "$($sourceRoot.Kind)"
-                        appId = "$($sourceRoot.AppId)"
-                        appName = "$($sourceRoot.AppName)"
-                    }
-                }
-            )
+            $sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
             $sourceRoots = @($session.SourceRootRecords | ForEach-Object { "$($_.RelativePath)" })
             $fingerprint = Get-CodeCoverageSourceRootFingerprint `
                 -sourceRoots $sourceRoots -sourceRootDetails $sourceRootDetails
@@ -699,7 +517,7 @@ function New-AlGoCodeCoverageSession {
                 SourceRootFingerprint = $fingerprint
             }
             $session.CompactorConfig = @{
-                AnalyzerModulePath = Join-Path $PSScriptRoot "..\AnalyzeCodeCoverage\AnalyzeCodeCoverage.psm1" -Resolve
+                ReaderModulePath = Join-Path $PSScriptRoot "..\.Modules\CodeCoverageReportReader.psm1" -Resolve
                 RepositoryRoot = [System.IO.Path]::GetFullPath($baseFolder)
                 Metadata = $aggregateMetadata
                 TemporaryPath = "$aggregatePath.$([guid]::NewGuid().ToString('N')).tmp"
@@ -760,16 +578,7 @@ function Start-AlGoCodeCoverageRun {
         $run.StartedAtUtc = [DateTime]::UtcNow
     }
 
-    $sourceRootDetails = @(
-        foreach ($sourceRoot in @($session.SourceRootRecords)) {
-            [ordered]@{
-                path = "$($sourceRoot.RelativePath)"
-                kind = "$($sourceRoot.Kind)"
-                appId = "$($sourceRoot.AppId)"
-                appName = "$($sourceRoot.AppName)"
-            }
-        }
-    )
+    $sourceRootDetails = @(Get-CodeCoverageSourceRootDetails $session.SourceRootRecords)
     return @{
         contractVersion = 1
         enabled = $true
@@ -858,7 +667,7 @@ function Complete-AlGoCodeCoverageRun {
             try {
                 if (-not $session.Compactor) {
                     $session.Compactor = Start-CodeCoverageAggregateWorker `
-                        -analyzerModulePath $session.CompactorConfig.AnalyzerModulePath `
+                        -readerModulePath $session.CompactorConfig.ReaderModulePath `
                         -repositoryRoot $session.CompactorConfig.RepositoryRoot `
                         -metadata $session.CompactorConfig.Metadata `
                         -temporaryPath $session.CompactorConfig.TemporaryPath `
