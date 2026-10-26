@@ -56,6 +56,7 @@ Describe "AnalyzeCodeCoverage workflow wiring" {
             $content = Get-Content -LiteralPath (Join-Path $templateRoot "_BuildALGoProject.yaml") `
                 -Raw -Encoding UTF8
 
+            $content | Should -Match '(?ms)- name: Run Tests.*?shell: pwsh'
             $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?scope: project'
             $content | Should -Match '(?ms)- name: Analyze Code Coverage.*?shell: pwsh'
             $content | Should -Match "coveragePath: '\$\{\{ inputs\.project \}\}/\.buildartifacts/CodeCoverage/'"

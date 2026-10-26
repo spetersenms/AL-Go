@@ -49,6 +49,12 @@ Describe "RunTests Action Tests" {
         $script:previousSettings = $ENV:Settings
     }
 
+    It "uses PowerShell 7 by default for background code coverage compaction" {
+        $actionYaml = Get-Content -LiteralPath (Join-Path $scriptRoot "action.yaml") `
+            -Raw -Encoding UTF8
+        $actionYaml | Should -Match '(?ms)inputs:\s+shell:.*?default: pwsh'
+    }
+
     AfterEach {
         if ($null -eq $script:previousContainerCredential) {
             Remove-Item Env:\containerCredential -ErrorAction SilentlyContinue
@@ -107,7 +113,8 @@ Describe "RunTests Action Tests" {
     It 'Test action.yaml matches script' {
         $outputs = [ordered]@{
         }
-        YamlTest -scriptRoot $scriptRoot -actionName $actionName -actionScript $actionScript -outputs $outputs
+        YamlTest -scriptRoot $scriptRoot -actionName $actionName -actionScript $actionScript `
+            -outputs $outputs -defaultShell 'pwsh'
     }
 
     It 'Loads the original runner override and delegates event log capture to the module' {

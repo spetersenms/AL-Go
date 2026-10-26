@@ -56,6 +56,8 @@ function YamlTest {
         [string] $actionName,
         [string] $actionScript,
         $outputs = @{},
+        [ValidateSet('powershell', 'pwsh')]
+        [string] $defaultShell = 'powershell',
         [switch] $ContinueOnError
     )
 
@@ -74,7 +76,7 @@ function YamlTest {
     $yaml.AppendLine("  shell:") | Out-Null
     $yaml.AppendLine("    description: Shell in which you want to run the action (powershell or pwsh)") | Out-Null
     $yaml.AppendLine("    required: false") | Out-Null
-    $yaml.AppendLine("    default: powershell") | Out-Null
+    $yaml.AppendLine("    default: $defaultShell") | Out-Null
     $parameterString = ""
     $warningLines = @()
     $envLines = [System.Text.StringBuilder]::new()

@@ -1280,6 +1280,9 @@ Describe 'RunTests.psm1 Tests' {
             }
             $coverageStatusByAppId[$appOneId] | Should -Be 'complete'
             $coverageStatusByAppId[$appTwoId] | Should -Be 'incomplete'
+            @($coverageStatus.PSObject.Properties.Name) | Should -Not -Contain 'aggregate'
+            @(Get-ChildItem -LiteralPath $coverageRoot -Filter 'coverage.bc.json' -File -Recurse).Count |
+                Should -Be 2
             ($coverageStatus | ConvertTo-Json -Depth 5) | Should -Not -Match 'admin|password|diagnostic'
             Remove-Item -Path $projectPath -Recurse -Force
         }
@@ -1924,6 +1927,20 @@ Describe 'RunTests.psm1 Tests' {
                     'coverage-status.json'
             ) -Raw -Encoding UTF8 | ConvertFrom-Json
             $status.runs[0].state | Should -Be 'complete'
+            $coverageRoot = Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                $status.aggregate.format | Should -Be 'al-go-line-union-binary-gzip'
+                Test-Path -LiteralPath (
+                    Join-Path $coverageRoot 'coverage-aggregate.bin.gz'
+                ) | Should -BeTrue
+                @(Get-ChildItem -LiteralPath $coverageRoot `
+                        -Filter 'coverage.bc.json' -File -Recurse).Count | Should -Be 0
+            }
+            else {
+                @($status.PSObject.Properties.Name) | Should -Not -Contain 'aggregate'
+                @(Get-ChildItem -LiteralPath $coverageRoot `
+                        -Filter 'coverage.bc.json' -File -Recurse).Count | Should -Be 1
+            }
             Remove-Item -Path $projectPath -Recurse -Force
         }
     }

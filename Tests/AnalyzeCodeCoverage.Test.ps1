@@ -437,6 +437,43 @@ Describe "AnalyzeCodeCoverage" {
                 Should -Invoke ConvertTo-CoverageHashtable -Times 0 -Exactly
             }
         }
+
+        It "streams accepted lines directly into an aggregate union without retaining per-run lines" `
+            -Skip:($PSVersionTable.PSVersion.Major -lt 7) {
+            $reportPath = Join-Path $TestDrive "direct-union.json"
+            Set-Content -LiteralPath $reportPath -Encoding UTF8 -Value @'
+{
+  "schemaVersion": "1.0",
+  "coverageMode": "line",
+  "complete": true,
+  "diagnostics": [],
+  "sources": ["app/Code.al"],
+  "tests": [],
+  "procedureEdges": [],
+  "methods": [],
+  "lines": [
+    {"objectType":5,"objectId":1,"lineNumber":10,"lineType":3,"methodId":1,"hitCount":0,"status":0,"sourcePath":"app/Code.al"},
+    {"objectType":5,"objectId":1,"lineNumber":10,"lineType":3,"methodId":1,"hitCount":1,"status":1,"sourcePath":"app/Code.al"},
+    {"objectType":5,"objectId":1,"lineNumber":11,"lineType":3,"methodId":1,"hitCount":0,"status":0,"sourcePath":"app/Code.al"}
+  ]
+}
+'@
+            $union = @{}
+            $rootOrder = [System.Collections.Generic.List[string]]::new()
+
+            $result = Read-BcCoverageReport -Path $reportPath -Model (New-StreamingReaderModel) `
+                -RequestedMode "line" -SemanticLineUnion $union `
+                -SemanticRootOrder $rootOrder
+
+            $result.Valid | Should -BeTrue
+            $result.Scope.ApplicationLines.Count | Should -Be 0
+            $result.AcceptedLineCount | Should -Be 2
+            $result.NewLineCount | Should -Be 2
+            $union.Count | Should -Be 1
+            $union["app"].Count | Should -Be 2
+            $rootOrder | Should -Be @("app")
+            @($union["app"].Values | Where-Object { $_ }).Count | Should -Be 1
+        }
     }
 
     It "escapes report-derived Markdown and HTML and bounds values" {

@@ -1,5 +1,8 @@
 $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
 
+Import-Module (Join-Path $PSScriptRoot "..\.Modules\CodeCoverageAggregate.psm1" -Resolve) `
+    -Force -DisableNameChecking
+
 $script:SupportedCoverageModes = @("all", "line", "procedure")
 $script:CoverageObjectTypeNames = @{
     0 = "TableData"
@@ -559,7 +562,9 @@ function Read-BcCoverageReport {
         [string] $Path,
         [hashtable] $Model = $null,
         [AllowEmptyString()][string] $RequestedMode = "",
-        [AllowEmptyString()][string] $RepositoryRoot = ""
+        [AllowEmptyString()][string] $RepositoryRoot = "",
+        [hashtable] $SemanticLineUnion = $null,
+        [System.Collections.Generic.List[string]] $SemanticRootOrder = $null
     )
 
     $file = Get-Item -LiteralPath $Path
@@ -578,6 +583,7 @@ function Read-BcCoverageReport {
     $outcome = "failed"
     $extractedLineCount = 0
     $acceptedLineCount = 0
+    $newLineCount = 0
     $scope = @{
         IncludedLineObjects = @{}
         IncludedLineSources = @{}
@@ -593,6 +599,25 @@ function Read-BcCoverageReport {
         [System.StringComparer]::Ordinal
     )
     $collectApplicationLines = $RequestedMode -in @("line", "all") -and $null -ne $Model
+    $normalizedRepositoryRoot = ""
+    $normalizedSourceRoots = @()
+    if (-not [string]::IsNullOrWhiteSpace($RepositoryRoot) -and $null -ne $Model) {
+        try {
+            $normalizedRepositoryRoot = [System.IO.Path]::GetFullPath(
+                (Resolve-Path -LiteralPath $RepositoryRoot).ProviderPath
+            ).TrimEnd(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar)
+            $normalizedSourceRoots = @(
+                Get-NormalizedCoverageSourceRoots -RepositoryRoot $normalizedRepositoryRoot `
+                    -SourceRoots $Model.SourceRoots
+            )
+        }
+        catch {
+            $normalizedRepositoryRoot = ""
+            $normalizedSourceRoots = @()
+        }
+    }
     $reportData = @{
         schemaVersion = $null
         coverageMode = $null
@@ -924,15 +949,25 @@ function Read-BcCoverageReport {
                                         }
                                     }
                                     else {
-                                        Resolve-RepositoryCoverageSource -SourcePath $sourcePath `
-                                            -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
+                                        Resolve-NormalizedRepositoryCoverageSource `
+                                            -SourcePath $sourcePath `
+                                            -RepositoryRoot $normalizedRepositoryRoot `
+                                            -NormalizedRoots $normalizedSourceRoots
                                     }
                                     $source.RawIdentity = $rawIdentity
                                     $source.AppRootIdentity = ""
                                     if ($collectApplicationLines -and $source.Included) {
-                                        $detail = Resolve-CoverageSourceRootDetail `
-                                            -SourceIdentity $source.Identity `
-                                            -SourceRootDetails $Model.SourceRootDetails
+                                        $detail = $null
+                                        if ($source.Contains("SourceRootIndex") -and
+                                            [int]$source.SourceRootIndex -ge 0 -and
+                                            [int]$source.SourceRootIndex -lt $Model.SourceRootDetails.Count) {
+                                            $detail = $Model.SourceRootDetails[[int]$source.SourceRootIndex]
+                                        }
+                                        else {
+                                            $detail = Resolve-CoverageSourceRootDetail `
+                                                -SourceIdentity $source.Identity `
+                                                -SourceRootDetails $Model.SourceRootDetails
+                                        }
                                         if ($detail -and "$($detail.Kind)" -eq "app") {
                                             $source.AppRootIdentity = "$($detail.Identity)"
                                         }
@@ -951,20 +986,41 @@ function Read-BcCoverageReport {
                                     $rootIdentity = "$($source.AppRootIdentity)"
                                     if ($collectApplicationLines -and
                                         -not [string]::IsNullOrWhiteSpace($rootIdentity)) {
-                                        if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
-                                            $scope.ApplicationLines[$rootIdentity] =
-                                                [System.Collections.Generic.Dictionary[string,bool]]::new(
-                                                    [System.StringComparer]::Ordinal)
-                                        }
                                         $factKey = "$($source.Identity)|$objectType|$objectId|$lineNumber"
-                                        if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
-                                            $acceptedLineCount++
-                                            $scope.ApplicationLines[$rootIdentity].Add(
-                                                $factKey, $hitCount -gt 0)
-                                        }
-                                        elseif ($hitCount -gt 0) {
-                                            $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                                        if ($null -ne $SemanticLineUnion) {
+                                            if (-not $SemanticLineUnion.ContainsKey($rootIdentity)) {
+                                                $SemanticLineUnion[$rootIdentity] =
+                                                    [System.Collections.Generic.Dictionary[string,bool]]::new(
+                                                        [System.StringComparer]::Ordinal)
+                                                if ($null -ne $SemanticRootOrder) {
+                                                    $SemanticRootOrder.Add($rootIdentity)
+                                                }
                                             }
+                                            $rootLines = $SemanticLineUnion[$rootIdentity]
+                                            if (-not $rootLines.ContainsKey($factKey)) {
+                                                $acceptedLineCount++
+                                                $newLineCount++
+                                                $rootLines.Add($factKey, $hitCount -gt 0)
+                                            }
+                                            elseif ($hitCount -gt 0) {
+                                                $rootLines[$factKey] = $true
+                                            }
+                                        }
+                                        else {
+                                            if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
+                                                $scope.ApplicationLines[$rootIdentity] =
+                                                    [System.Collections.Generic.Dictionary[string,bool]]::new(
+                                                        [System.StringComparer]::Ordinal)
+                                            }
+                                            if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
+                                                $acceptedLineCount++
+                                                $scope.ApplicationLines[$rootIdentity].Add(
+                                                    $factKey, $hitCount -gt 0)
+                                            }
+                                            elseif ($hitCount -gt 0) {
+                                                $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                                            }
+                                        }
                                     }
                                 }
                                 else {
@@ -1092,15 +1148,25 @@ function Read-BcCoverageReport {
                             }
                         }
                         else {
-                            Resolve-RepositoryCoverageSource -SourcePath $sourcePath `
-                                -RepositoryRoot $RepositoryRoot -SourceRoots $Model.SourceRoots
+                            Resolve-NormalizedRepositoryCoverageSource `
+                                -SourcePath $sourcePath `
+                                -RepositoryRoot $normalizedRepositoryRoot `
+                                -NormalizedRoots $normalizedSourceRoots
                         }
                         $source.RawIdentity = $rawIdentity
                         $source.AppRootIdentity = ""
                         if ($collectApplicationLines -and $source.Included) {
-                            $detail = Resolve-CoverageSourceRootDetail `
-                                -SourceIdentity $source.Identity `
-                                -SourceRootDetails $Model.SourceRootDetails
+                            $detail = $null
+                            if ($source.Contains("SourceRootIndex") -and
+                                [int]$source.SourceRootIndex -ge 0 -and
+                                [int]$source.SourceRootIndex -lt $Model.SourceRootDetails.Count) {
+                                $detail = $Model.SourceRootDetails[[int]$source.SourceRootIndex]
+                            }
+                            else {
+                                $detail = Resolve-CoverageSourceRootDetail `
+                                    -SourceIdentity $source.Identity `
+                                    -SourceRootDetails $Model.SourceRootDetails
+                            }
                             if ($detail -and "$($detail.Kind)" -eq "app") {
                                 $source.AppRootIdentity = "$($detail.Identity)"
                             }
@@ -1119,16 +1185,37 @@ function Read-BcCoverageReport {
                         $rootIdentity = "$($source.AppRootIdentity)"
                         if ($collectApplicationLines -and
                             -not [string]::IsNullOrWhiteSpace($rootIdentity)) {
-                            if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
-                                $scope.ApplicationLines[$rootIdentity] = @{}
-                            }
                             $factKey = "$($source.Identity)|$objectType|$objectId|$lineNumber"
-                            if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
-                                $acceptedLineCount++
-                                $scope.ApplicationLines[$rootIdentity][$factKey] = $hitCount -gt 0
+                            if ($null -ne $SemanticLineUnion) {
+                                if (-not $SemanticLineUnion.ContainsKey($rootIdentity)) {
+                                    $SemanticLineUnion[$rootIdentity] =
+                                        [System.Collections.Generic.Dictionary[string,bool]]::new(
+                                            [System.StringComparer]::Ordinal)
+                                    if ($null -ne $SemanticRootOrder) {
+                                        $SemanticRootOrder.Add($rootIdentity)
+                                    }
+                                }
+                                $rootLines = $SemanticLineUnion[$rootIdentity]
+                                if (-not $rootLines.ContainsKey($factKey)) {
+                                    $acceptedLineCount++
+                                    $newLineCount++
+                                    $rootLines.Add($factKey, $hitCount -gt 0)
+                                }
+                                elseif ($hitCount -gt 0) {
+                                    $rootLines[$factKey] = $true
+                                }
                             }
-                            elseif ($hitCount -gt 0) {
-                                $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                            else {
+                                if (-not $scope.ApplicationLines.ContainsKey($rootIdentity)) {
+                                    $scope.ApplicationLines[$rootIdentity] = @{}
+                                }
+                                if (-not $scope.ApplicationLines[$rootIdentity].ContainsKey($factKey)) {
+                                    $acceptedLineCount++
+                                    $scope.ApplicationLines[$rootIdentity][$factKey] = $hitCount -gt 0
+                                }
+                                elseif ($hitCount -gt 0) {
+                                    $scope.ApplicationLines[$rootIdentity][$factKey] = $true
+                                }
                             }
                         }
                     }
@@ -1179,6 +1266,7 @@ function Read-BcCoverageReport {
             Reader = $readerName
             ExtractedLineCount = $extractedLineCount
             AcceptedLineCount = $acceptedLineCount
+            NewLineCount = $newLineCount
             Reason = ""
         }
     }
@@ -1203,6 +1291,7 @@ function Read-BcCoverageReport {
             Reader = $readerName
             ExtractedLineCount = $extractedLineCount
             AcceptedLineCount = $acceptedLineCount
+            NewLineCount = $newLineCount
             Reason = $reason
         }
     }
@@ -1264,6 +1353,10 @@ function New-EmptyProjectCoverageModel {
 }
 
 function Get-CoverageDiagnosticAssessment {
+    <#
+    .SYNOPSIS
+        Classifies coverage diagnostics against included and excluded sources.
+    #>
     Param(
         [hashtable] $Report,
         [hashtable] $Scope
@@ -1444,6 +1537,97 @@ function Get-ProjectCoverageModelFromStatus {
     }
 
     $projectReasons = @($reasons)
+    $aggregateAuthoritative = $status.Contains("aggregate")
+    $aggregateResult = $null
+    $aggregatePath = ""
+    if ($aggregateAuthoritative) {
+        try {
+            if ($status.aggregate -isnot [System.Collections.IDictionary]) {
+                throw "Coverage aggregate descriptor is invalid."
+            }
+            foreach ($property in @(
+                    "format", "contractVersion", "path", "sha256",
+                    "sourceRootFingerprint", "runCount", "lineCount", "sizeBytes"
+                )) {
+                if (-not $status.aggregate.Contains($property)) {
+                    throw "Coverage aggregate descriptor is missing required data."
+                }
+            }
+            if ("$($status.aggregate.format)" -cne "al-go-line-union-binary-gzip" -or
+                [int]$status.aggregate.contractVersion -ne 1) {
+                throw "Coverage aggregate format is not supported."
+            }
+            $relativeAggregatePath = "$($status.aggregate.path)".Replace('\', '/')
+            if ([string]::IsNullOrWhiteSpace($relativeAggregatePath) -or
+                [System.IO.Path]::IsPathRooted($relativeAggregatePath) -or
+                $relativeAggregatePath -match '(^|/)\.\.(/|$)') {
+                throw "Coverage aggregate path is invalid."
+            }
+            $statusDirectory = Split-Path -Path $StatusPath -Parent
+            $aggregatePath = [System.IO.Path]::GetFullPath(
+                (Join-Path $statusDirectory $relativeAggregatePath.Replace(
+                        '/', [System.IO.Path]::DirectorySeparatorChar)))
+            $statusRoot = [System.IO.Path]::GetFullPath($statusDirectory)
+            if (-not (Test-PathInsideRoot -Path $aggregatePath -Root $statusRoot)) {
+                throw "Coverage aggregate path is outside the status directory."
+            }
+            $declaredDetails = @(Get-CoverageArray $status.sourceRootDetails)
+            $fingerprint = Get-CodeCoverageSourceRootFingerprint `
+                -sourceRoots $sourceRoots -sourceRootDetails $declaredDetails
+            if ($fingerprint -cne "$($status.aggregate.sourceRootFingerprint)") {
+                throw "Coverage aggregate source-root fingerprint does not match the status."
+            }
+            $aggregateResult = Read-CodeCoverageAggregate -path $aggregatePath `
+                -expectedSha256 "$($status.aggregate.sha256)" `
+                -expectedSourceRootFingerprint $fingerprint
+            if (-not $aggregateResult.Valid) {
+                throw $aggregateResult.Reason
+            }
+            if ([int]$status.aggregate.runCount -ne $aggregateResult.Runs.Count -or
+                [int]$status.aggregate.lineCount -ne $aggregateResult.LineCount -or
+                [long]$status.aggregate.sizeBytes -ne (Get-Item -LiteralPath $aggregatePath).Length) {
+                throw "Coverage aggregate descriptor does not match the published aggregate."
+            }
+            $aggregateHeader = $aggregateResult.Header | ConvertTo-CoverageHashtable
+            if ("$($aggregateHeader.project)" -cne $model.Project -or
+                "$($aggregateHeader.projectName)" -cne $model.ProjectName -or
+                "$($aggregateHeader.buildMode)" -cne $model.BuildMode -or
+                "$($aggregateHeader.mode)".ToLowerInvariant() -cne $model.Mode) {
+                throw "Coverage aggregate metadata does not match the status."
+            }
+            $aggregateFormats = @(Get-CoverageArray $aggregateHeader.formats |
+                ForEach-Object { "$_".ToLowerInvariant() })
+            if (($aggregateFormats -join [char]0x1f) -cne ($formats -join [char]0x1f)) {
+                throw "Coverage aggregate formats do not match the status."
+            }
+            $appsByRoot = @{}
+            foreach ($app in $model.Apps) {
+                $appsByRoot["$($app.RootIdentity)"] = $app
+            }
+            foreach ($rootIdentity in @($aggregateResult.ApplicationLines.Keys)) {
+                if (-not $appsByRoot.ContainsKey("$rootIdentity")) {
+                    throw "Coverage aggregate references an unknown application root."
+                }
+                foreach ($key in @($aggregateResult.ApplicationLines[$rootIdentity].Keys)) {
+                    Merge-CoverageLine -Lines $appsByRoot["$rootIdentity"].Lines -Key "$key" `
+                        -Covered ([bool]$aggregateResult.ApplicationLines[$rootIdentity][$key])
+                }
+            }
+            $validRunIds = @($statusRuns | Where-Object {
+                    $_ -is [System.Collections.IDictionary] -and
+                    $_.Contains("appId") -and
+                    "$($_.state)".ToLowerInvariant() -in @("complete", "incomplete")
+                } | ForEach-Object { "$($_.appId)" })
+            if ($aggregateResult.Runs.Count -ne $validRunIds.Count -or
+                @($aggregateResult.Runs.Keys | Where-Object { $_ -notin $validRunIds }).Count -gt 0) {
+                throw "Coverage aggregate run identities do not match the status."
+            }
+        }
+        catch {
+            $aggregateResult = $null
+            $projectReasons += "The published code coverage aggregate is invalid. $($_.Exception.Message)"
+        }
+    }
     $runModels = @()
     foreach ($run in $statusRuns) {
         if ($run -isnot [System.Collections.IDictionary]) {
@@ -1478,7 +1662,34 @@ function Get-ProjectCoverageModelFromStatus {
         $runLineReasons = @()
         $lineGlobalUnsafe = $false
         $lineAffectedSources = @()
-        if ($runReasons.Count -eq 0 -and "bc-json" -in $formats) {
+        if ($runReasons.Count -eq 0 -and "bc-json" -in $formats -and $aggregateAuthoritative) {
+            $reportPath = $aggregatePath
+            if (-not $aggregateResult) {
+                $runReasons += "The published code coverage aggregate is invalid."
+            }
+            elseif (-not $aggregateResult.Runs.ContainsKey($appId)) {
+                $runReasons += "The code coverage aggregate is missing the run assessment."
+            }
+            else {
+                $aggregateRun = $aggregateResult.Runs[$appId] | ConvertTo-CoverageHashtable
+                if ("$($aggregateRun.appName)" -cne $appName -or
+                    "$($aggregateRun.state)".ToLowerInvariant() -cne $state -or
+                    [bool]$aggregateRun.complete -ne ($state -eq "complete")) {
+                    $runReasons += "The code coverage aggregate run does not match the status."
+                }
+                else {
+                    $model.ExcludedLineFacts += [int]$aggregateRun.excludedLineFacts
+                    $runLineReasons += @(Get-CoverageArray $aggregateRun.lineReasons |
+                        ForEach-Object { "$_" })
+                    $runNotices += @(Get-CoverageArray $aggregateRun.notices |
+                        ForEach-Object { "$_" })
+                    $lineGlobalUnsafe = [bool]$aggregateRun.lineGlobalUnsafe
+                    $lineAffectedSources = @(Get-CoverageArray $aggregateRun.lineAffectedSources |
+                        ForEach-Object { "$_" })
+                }
+            }
+        }
+        elseif ($runReasons.Count -eq 0 -and "bc-json" -in $formats) {
             $reportPath = Resolve-CoverageReportPath -StatusPath $StatusPath -OutputDirectory $outputDirectory
             if ([string]::IsNullOrWhiteSpace($reportPath)) {
                 $runReasons += "The bc-json report is missing."
@@ -1611,50 +1822,56 @@ function Get-ProjectCoverageModel {
     return Get-ProjectCoverageModelFromStatus -StatusPath $statusFiles[0] -RepositoryRoot $RepositoryRoot
 }
 
-function Resolve-RepositoryCoverageSource {
-    <#
-    .SYNOPSIS
-        Maps a report source path to an existing repository file using the recorded source roots.
-    .DESCRIPTION
-        Exporter paths are decoded from the exact recorded source-root order. Other absolute or
-        repository-relative paths are matched against the most-specific recorded source root.
-    #>
+function Resolve-NormalizedRepositoryCoverageSource {
     Param(
         [AllowEmptyString()][string] $SourcePath,
-        [string] $RepositoryRoot,
-        [string[]] $SourceRoots = @()
+        [AllowEmptyString()][string] $RepositoryRoot,
+        [object[]] $NormalizedRoots
     )
 
     if ([string]::IsNullOrWhiteSpace($SourcePath)) {
         return @{ Included = $false; Identity = ""; Reason = "blank source path"; LocalMappingFailed = $false }
     }
+    if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+        return @{ Included = $false; Identity = ""; Reason = "source path is invalid"; LocalMappingFailed = $true }
+    }
     try {
-        $fullRoot = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $RepositoryRoot).ProviderPath).TrimEnd(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar)
-        $normalizedRoots = @(Get-NormalizedCoverageSourceRoots -RepositoryRoot $fullRoot -SourceRoots $SourceRoots)
         $normalizedSource = $SourcePath.Trim().Replace('\', '/')
 
         if ([System.IO.Path]::IsPathRooted($SourcePath)) {
             $fullSource = [System.IO.Path]::GetFullPath($SourcePath)
-            foreach ($sourceRoot in $normalizedRoots) {
-                if ($sourceRoot.Valid -and (Test-PathInsideRoot -Path $fullSource -Root $sourceRoot.FullPath)) {
+            for ($rootIndex = 0; $rootIndex -lt $NormalizedRoots.Count; $rootIndex++) {
+                $sourceRoot = $NormalizedRoots[$rootIndex]
+                if ($sourceRoot.Valid -and
+                    (Test-PathInsideRoot -Path $fullSource -Root $sourceRoot.FullPath)) {
                     $resolved = Resolve-ExistingCoverageSource -Candidate $fullSource `
-                        -RepositoryRoot $fullRoot -SourceRoot $sourceRoot.FullPath
+                        -RepositoryRoot $RepositoryRoot -SourceRoot $sourceRoot.FullPath
                     if ($resolved) {
+                        $resolved.SourceRootIndex = $rootIndex
                         return $resolved
                     }
                 }
             }
-            foreach ($sourceRoot in @($normalizedRoots | Sort-Object { $_.Relative.Length } -Descending)) {
+            $rootIndexes = if ($NormalizedRoots.Count -gt 0) {
+                @(0..($NormalizedRoots.Count - 1) |
+                    Sort-Object { $NormalizedRoots[$_].Relative.Length } -Descending)
+            }
+            else {
+                @()
+            }
+            foreach ($rootIndex in $rootIndexes) {
+                $sourceRoot = $NormalizedRoots[$rootIndex]
                 $marker = "/$($sourceRoot.Relative)/"
-                $markerIndex = $normalizedSource.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+                $markerIndex = $normalizedSource.IndexOf(
+                    $marker, [System.StringComparison]::OrdinalIgnoreCase)
                 if ($sourceRoot.Valid -and $markerIndex -ge 0) {
                     $relative = $normalizedSource.Substring($markerIndex + $marker.Length)
-                    $candidate = Join-Path $sourceRoot.FullPath $relative.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+                    $candidate = Join-Path $sourceRoot.FullPath `
+                        $relative.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
                     $resolved = Resolve-ExistingCoverageSource -Candidate $candidate `
-                        -RepositoryRoot $fullRoot -SourceRoot $sourceRoot.FullPath
+                        -RepositoryRoot $RepositoryRoot -SourceRoot $sourceRoot.FullPath
                     if ($resolved) {
+                        $resolved.SourceRootIndex = $rootIndex
                         return $resolved
                     }
                     return @{ Included = $false; Identity = ""; Reason = "source path could not be validated"; LocalMappingFailed = $true }
@@ -1670,7 +1887,7 @@ function Resolve-RepositoryCoverageSource {
         if ($relativeSource -match '^external-([0-9]+)/(.+)$') {
             $rootIndex = [int]$matches[1]
             $externalPath = $matches[2]
-            if ($rootIndex -le 0 -or $rootIndex -ge $normalizedRoots.Count) {
+            if ($rootIndex -le 0 -or $rootIndex -ge $NormalizedRoots.Count) {
                 return @{ Included = $false; Identity = ""; Reason = "external source-root index is invalid"; LocalMappingFailed = $true }
             }
             $separatorIndex = $externalPath.IndexOf('/')
@@ -1679,34 +1896,66 @@ function Resolve-RepositoryCoverageSource {
             }
             $rootName = $externalPath.Substring(0, $separatorIndex)
             $rootRelativePath = $externalPath.Substring($separatorIndex + 1)
-            $sourceRoot = $normalizedRoots[$rootIndex]
+            $sourceRoot = $NormalizedRoots[$rootIndex]
             if (-not $sourceRoot.Valid -or
-                -not $rootName.Equals($sourceRoot.Name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                -not $rootName.Equals(
+                    $sourceRoot.Name, [System.StringComparison]::OrdinalIgnoreCase)) {
                 return @{ Included = $false; Identity = ""; Reason = "external source-root name is invalid"; LocalMappingFailed = $true }
             }
-            $candidate = Join-Path $sourceRoot.FullPath $rootRelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            $candidate = Join-Path $sourceRoot.FullPath `
+                $rootRelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
             $resolved = Resolve-ExistingCoverageSource -Candidate $candidate `
-                -RepositoryRoot $fullRoot -SourceRoot $sourceRoot.FullPath
+                -RepositoryRoot $RepositoryRoot -SourceRoot $sourceRoot.FullPath
             if ($resolved) {
+                $resolved.SourceRootIndex = $rootIndex
                 return $resolved
             }
             return @{ Included = $false; Identity = ""; Reason = "external source path could not be validated"; LocalMappingFailed = $true }
         }
 
-        if ($normalizedRoots.Count -eq 0) {
+        if ($NormalizedRoots.Count -eq 0) {
             return @{ Included = $false; Identity = ""; Reason = "no source roots were recorded"; LocalMappingFailed = $false }
         }
-        $primaryRoot = $normalizedRoots[0]
+        $primaryRoot = $NormalizedRoots[0]
         if (-not $primaryRoot.Valid) {
             return @{ Included = $false; Identity = ""; Reason = "primary source root is invalid"; LocalMappingFailed = $true }
         }
-        $candidate = Join-Path $primaryRoot.FullPath $relativeSource.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $candidate = Join-Path $primaryRoot.FullPath `
+            $relativeSource.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
         $resolved = Resolve-ExistingCoverageSource -Candidate $candidate `
-            -RepositoryRoot $fullRoot -SourceRoot $primaryRoot.FullPath
+            -RepositoryRoot $RepositoryRoot -SourceRoot $primaryRoot.FullPath
         if ($resolved) {
+            $resolved.SourceRootIndex = 0
             return $resolved
         }
         return @{ Included = $false; Identity = ""; Reason = "primary source path could not be validated"; LocalMappingFailed = $true }
+    }
+    catch {
+        return @{ Included = $false; Identity = ""; Reason = "source path is invalid"; LocalMappingFailed = $true }
+    }
+}
+
+function Resolve-RepositoryCoverageSource {
+    <#
+    .SYNOPSIS
+        Maps a report source path to an existing repository file using the recorded source roots.
+    .DESCRIPTION
+        Exporter paths are decoded from the exact recorded source-root order. Other absolute or
+        repository-relative paths are matched against the most-specific recorded source root.
+    #>
+    Param(
+        [AllowEmptyString()][string] $SourcePath,
+        [string] $RepositoryRoot,
+        [string[]] $SourceRoots = @()
+    )
+
+    try {
+        $fullRoot = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $RepositoryRoot).ProviderPath).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar)
+        $normalizedRoots = @(Get-NormalizedCoverageSourceRoots -RepositoryRoot $fullRoot -SourceRoots $SourceRoots)
+        return Resolve-NormalizedRepositoryCoverageSource -SourcePath $SourcePath `
+            -RepositoryRoot $fullRoot -NormalizedRoots $normalizedRoots
     }
     catch {
         return @{ Included = $false; Identity = ""; Reason = "source path is invalid"; LocalMappingFailed = $true }
@@ -2235,6 +2484,7 @@ function New-RepositoryCoverageSummary {
 
 Export-ModuleMember -Function ConvertTo-CoverageHashtable, ConvertTo-SafeCoverageText,
     Limit-CoverageSummary, Test-CodeCoverageSummaryRequested, Read-BcCoverageReport,
+    Get-CoverageDiagnosticAssessment,
     Get-ProjectCoverageModel, Get-RepositoryCoverageModel,
     Resolve-RepositoryCoverageSource, Resolve-CoverageObjectAttribution,
     Get-CoverageMetrics, New-ProjectCoverageSummary, New-RepositoryCoverageSummary
