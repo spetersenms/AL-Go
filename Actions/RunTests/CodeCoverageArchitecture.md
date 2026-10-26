@@ -79,8 +79,6 @@ sequenceDiagram
     Coordinator-->>RunTests: Ordered runs, roots, and session state
 
     loop One selected test app at a time
-        RunTests->>Coordinator: New-AlGoCodeCoverageInvocationContext
-        Coordinator-->>RunTests: Transient app-specific context
         RunTests->>Runner: Invoke tests for current app
         Runner->>AlTool: al runtests with JUnit and coverage arguments
         AlTool-->>Runner: Structured result and coverage files
@@ -141,7 +139,6 @@ The repository AnalyzeCodeCoverage job starts after the build jobs. It downloads
 | `Get-TestAppsToRun` | `Invoke-AlGoTestRun` | Before session creation | Selects compiled test apps and optionally installed test apps. |
 | `Get-AlGoCodeCoverageCapability` | `Invoke-AlGoTestRun` | Once when coverage is requested | Accepts coverage only for container platform 30.0.56026.0 or later. |
 | `New-AlGoCodeCoverageSession` | `Invoke-AlGoTestRun` | Once before the app loop | Resolves ordered source roots and creates minimal ordered per-app run records. |
-| `New-AlGoCodeCoverageInvocationContext` | App loop | Immediately before invoking one app | Projects shared session values and the derived app output path into a transient version 2 override context. |
 | `Resolve-CodeCoverageSourceRootData` | Session creation | Once for a supported session | Collects existing app and test roots from the project and direct `projectsToTest`, rejects unsafe paths, deduplicates, and sorts roots. |
 | `Invoke-AlToolTestRun` | App loop or opted-in override | Once per selected test app | Enumerates tests, invokes AlTool, appends JUnit, surfaces diagnostics, and returns test success plus coverage completeness. |
 | `Invoke-AlRunTestsBatch` | `Invoke-AlToolTestRun` | Once per app with test codeunits | Builds the `al runtests` arguments, invokes the native process, and parses its structured output. |
@@ -190,11 +187,11 @@ An AlTool exit code of 1 can represent failed tests. Valid coverage and JUnit da
 A coverage-aware `.AL-Go/RunTestsInBcContainer.ps1` receives:
 
 - Historical test parameters in `$parameters`.
-- Coverage-only contract version 2 data in `$codeCoverageContext`.
+- Coverage-only values in the same hashtable when coverage is supported.
 
-The override runs once per app and must return a Boolean test result. For supported coverage it must write coverage into `coverageOutputPath` and set `coverageIsComplete`. AL-Go retains ownership of artifact validation, run state, compaction, and status publication.
+The coverage values are `codeCoverageMode`, `codeCoverageFormats`, `codeCoverageSourceRoots`, `codeCoverageOutputPath`, `codeCoverageAlToolModulePath`, `codeCoverageAlToolPath`, and `codeCoverageIsComplete`. The override runs once per app and must return a Boolean test result. For supported coverage it must write coverage into `codeCoverageOutputPath` and set `codeCoverageIsComplete`. AL-Go retains ownership of artifact validation, run state, compaction, and status publication.
 
-For unsupported coverage, `supported` is false and the override must run tests normally without requesting coverage.
+When coverage is disabled or unsupported, AL-Go omits the coverage values and the override runs with the historical parameter shape.
 
 ## Coverage session lifecycle
 

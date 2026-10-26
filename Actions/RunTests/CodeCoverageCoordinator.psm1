@@ -11,12 +11,22 @@ $script:CodeCoverageMode = "line"
 
 <#
 .SYNOPSIS
-    Shared code coverage lifecycle for the RunTests action.
+    Resolves the ordered source roots used for coverage collection and analysis.
 .DESCRIPTION
-    Resolves authoritative source roots, allocates one isolated output directory per test app,
-    validates produced artifacts, and remains the only writer of coverage-status.json.
+    Collects existing appFolders and testFolders from the current project and direct
+    projectsToTest targets. Rejects roots outside the repository or behind reparse points,
+    deduplicates paths, reads available app identity, and returns deterministic records.
+.PARAMETER settings
+    Analyzed settings for the current AL-Go project.
+.PARAMETER projectPath
+    Full path to the current AL-Go project.
+.PARAMETER baseFolder
+    Full repository root used for containment and repository-relative paths.
+.PARAMETER analyzeRepo
+    Callback used to analyze settings for direct projectsToTest targets.
+.OUTPUTS
+    Ordered hashtables containing absolute path, relative path, kind, app ID, and app name.
 #>
-
 function Resolve-CodeCoverageSourceRootData {
     Param(
         [hashtable] $settings,
@@ -149,6 +159,14 @@ function Resolve-CodeCoverageSourceRootData {
     return @($result)
 }
 
+<#
+.SYNOPSIS
+    Converts internal source-root records to the portable status and aggregate shape.
+.PARAMETER sourceRootRecords
+    Internal source-root records returned by Resolve-CodeCoverageSourceRootData.
+.OUTPUTS
+    Ordered hashtables containing path, kind, appId, and appName.
+#>
 function Get-CodeCoverageSourceRootDetails {
     Param([object[]] $sourceRootRecords)
 
@@ -164,18 +182,44 @@ function Get-CodeCoverageSourceRootDetails {
     )
 }
 
+<#
+.SYNOPSIS
+    Returns the final coverage status path for a session.
+.PARAMETER session
+    AL-Go-owned code coverage session.
+.OUTPUTS
+    Absolute path to coverage-status.json.
+#>
 function Get-CodeCoverageStatusPath {
     Param([hashtable] $session)
 
     return Join-Path $session.RootPath "coverage-status.json"
 }
 
+<#
+.SYNOPSIS
+    Returns the published aggregate path for a session.
+.PARAMETER session
+    AL-Go-owned code coverage session.
+.OUTPUTS
+    Absolute path to coverage-aggregate.bin.gz.
+#>
 function Get-CodeCoverageAggregatePath {
     Param([hashtable] $session)
 
     return Join-Path $session.RootPath "coverage-aggregate.bin.gz"
 }
 
+<#
+.SYNOPSIS
+    Returns the isolated coverage output path for one test app.
+.PARAMETER session
+    AL-Go-owned code coverage session.
+.PARAMETER run
+    AL-Go-owned run record containing the normalized app ID.
+.OUTPUTS
+    Absolute per-app coverage output directory.
+#>
 function Get-CodeCoverageRunOutputPath {
     Param(
         [hashtable] $session,
@@ -185,6 +229,17 @@ function Get-CodeCoverageRunOutputPath {
     return [System.IO.Path]::GetFullPath((Join-Path $session.RootPath "$($run.AppId)"))
 }
 
+<#
+.SYNOPSIS
+    Atomically writes the final AL-Go coverage status manifest.
+.DESCRIPTION
+    Serializes final run states, source-root metadata, and the optional validated aggregate
+    descriptor to a temporary file before moving it to coverage-status.json.
+.PARAMETER session
+    Finalized AL-Go-owned code coverage session.
+.PARAMETER aggregate
+    Optional validated aggregate descriptor returned by the background compactor.
+#>
 function Write-CodeCoverageStatusInternal {
     Param(
         [hashtable] $session,
@@ -235,6 +290,15 @@ function Write-CodeCoverageStatusInternal {
     }
 }
 
+<#
+.SYNOPSIS
+    Drains and logs available per-report compactor telemetry.
+.DESCRIPTION
+    Moves report events from the worker's concurrent event queue into session telemetry for
+    final overlap calculation while writing concise GitHub action log output.
+.PARAMETER session
+    AL-Go-owned code coverage session containing the active compactor.
+#>
 function Write-CodeCoverageCompactorEvents {
     Param([hashtable] $session)
 
@@ -263,6 +327,14 @@ function Write-CodeCoverageCompactorEvents {
     }
 }
 
+<#
+.SYNOPSIS
+    Deletes raw per-app BC JSON reports after durable aggregate publication.
+.PARAMETER session
+    Finalized AL-Go-owned code coverage session.
+.OUTPUTS
+    Total number of raw report bytes removed.
+#>
 function Remove-CodeCoverageRawReports {
     Param([hashtable] $session)
 
@@ -278,6 +350,17 @@ function Remove-CodeCoverageRawReports {
     return $removedBytes
 }
 
+<#
+.SYNOPSIS
+    Validates and reads required metadata from one BC JSON coverage report.
+.DESCRIPTION
+    Uses the shared metadata-only reader and translates parser failure details into
+    coordinator-facing validation errors.
+.PARAMETER path
+    Path to coverage.bc.json.
+.OUTPUTS
+    Hashtable containing schema version, coverage mode, completeness, and reader name.
+#>
 function Read-CodeCoverageReportMetadata {
     Param([string] $path)
 
@@ -302,6 +385,20 @@ function Read-CodeCoverageReportMetadata {
         Reader = "$($result.Reader)"
     }
 }
+
+<#
+.SYNOPSIS
+    Validates the requested coverage artifacts for one completed app run.
+.DESCRIPTION
+    Requires every requested fixed artifact and, for BC JSON, verifies the supported schema,
+    line mode, complete document, and agreement with the runner's completeness result.
+.PARAMETER session
+    AL-Go-owned code coverage session.
+.PARAMETER run
+    AL-Go-owned run record for the completed test app.
+.PARAMETER rawComplete
+    Completeness value returned by the built-in runner or custom override.
+#>
 function Test-CodeCoverageArtifacts {
     Param(
         [hashtable] $session,
@@ -356,6 +453,8 @@ function Test-CodeCoverageArtifacts {
     Actual build container platform version exported by RunPipeline.
 .PARAMETER platformVersionReason
     Non-sensitive reason supplied when the platform version could not be determined.
+.OUTPUTS
+    Hashtable containing Supported and Reason.
 #>
 function Get-AlGoCodeCoverageCapability {
     Param(
@@ -421,6 +520,8 @@ function Get-AlGoCodeCoverageCapability {
     Callback used to analyze source roots from projectsToTest.
 .PARAMETER capability
     Capability result computed once by Get-AlGoCodeCoverageCapability.
+.OUTPUTS
+    AL-Go-owned session hashtable used for per-app completion and finalization.
 #>
 function New-AlGoCodeCoverageSession {
     Param(
@@ -509,50 +610,15 @@ function New-AlGoCodeCoverageSession {
 
 <#
 .SYNOPSIS
-    Creates the transient version 2 override context for one test app invocation.
+    Starts the single background aggregate worker for a supported session.
 .DESCRIPTION
-    Projects session-wide coverage values and the app-specific output path into the public
-    override contract without retaining the context in the run model.
+    Builds immutable aggregate metadata from the session, derives temporary and published
+    paths, and starts the PowerShell 7 worker that consumes validated report descriptors.
 .PARAMETER session
-    AL-Go-owned session returned by New-AlGoCodeCoverageSession.
-.PARAMETER run
-    AL-Go-owned run record for the current test app.
-.PARAMETER reason
-    Capability reason returned by Get-AlGoCodeCoverageCapability.
-.PARAMETER alToolPath
-    Resolved AlTool executable path when coverage is supported.
+    Supported AL-Go-owned code coverage session requesting BC JSON.
+.OUTPUTS
+    Worker handle returned by Start-CodeCoverageAggregateWorker.
 #>
-function New-AlGoCodeCoverageInvocationContext {
-    Param(
-        [hashtable] $session,
-        [hashtable] $run,
-        [AllowEmptyString()][string] $reason,
-        [AllowEmptyString()][string] $alToolPath = ""
-    )
-
-    if (-not $session -or -not $session.ContainsKey("Runs") -or -not $run) {
-        throw "The code coverage session is invalid or uses an unsupported coordinator contract."
-    }
-
-    return @{
-        contractVersion = 2
-        supported = [bool]$session.Supported
-        reason = $reason
-        mode = $script:CodeCoverageMode
-        formats = @($session.Formats)
-        sourceRoots = if ($session.Supported) {
-            @($session.SourceRootRecords | ForEach-Object { "$($_.Path)" })
-        }
-        else {
-            @()
-        }
-        coverageOutputPath = Get-CodeCoverageRunOutputPath -session $session -run $run
-        alToolModulePath = Join-Path $PSScriptRoot "AlToolTestRunner.psm1"
-        alToolPath = if ($session.Supported) { $alToolPath } else { "" }
-        coverageIsComplete = $null
-    }
-}
-
 function Start-CodeCoverageCompactorInternal {
     Param([hashtable] $session)
 
@@ -776,6 +842,5 @@ function Complete-AlGoCodeCoverageSession {
 Export-ModuleMember -Function `
     Get-AlGoCodeCoverageCapability, `
     New-AlGoCodeCoverageSession, `
-    New-AlGoCodeCoverageInvocationContext, `
     Complete-AlGoCodeCoverageRun, `
     Complete-AlGoCodeCoverageSession

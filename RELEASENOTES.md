@@ -20,7 +20,7 @@ The built-in runner uses AlTool, honors `disabledTests.json`, and supports the o
 
 Set `codeCoverageEnabled` to `true` to collect executable-line coverage. Coverage requires Business Central container platform 30.0.56026.0 or later. Older or unconfirmed versions produce a warning and continue running tests without coverage. `codeCoverageFormats` supports `bc-json`, `cobertura`, or both. `codeCoverageSummary` controls project and repository job summaries with `none`, `project`, `repository`, or `both`. Summaries require `bc-json`; use `none` for Cobertura-only collection. Coverage files are published in the CodeCoverage artifact.
 
-Projects with a custom `.AL-Go/RunTestsInBcContainer.ps1` can continue using it. Before enabling coverage, update the override to accept the additional `[hashtable] $codeCoverageContext` parameter and use the supplied coverage values. Coverage disabled behavior is unchanged. See the [RunTests action documentation](Actions/RunTests/README.md) for the override example and supported fields.
+Projects with a custom `.AL-Go/RunTestsInBcContainer.ps1` can continue using its existing single-parameter signature. Before enabling coverage, update the override to use the coverage values AL-Go adds to the existing `$parameters` hashtable on supported containers. Coverage disabled and unsupported behavior is unchanged. See the [RunTests action documentation](Actions/RunTests/README.md) for the override example and supported fields.
 
 > [!NOTE]
 > The built-in AlTool runner does not support `Legacy` test-type codeunits or tests that require UI or client-callback interaction. Projects that need those scenarios can retain their custom `RunTestsInBcContainer.ps1` implementation.

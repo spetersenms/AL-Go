@@ -1549,7 +1549,7 @@ Describe 'RunTests.psm1 Tests' {
     }
 
     Context 'Invoke-AlGoTestRun coverage-aware original override' {
-        It 'Always passes coverage context and lets binding reject an outdated override' {
+        It 'Fails closed when an override ignores supported coverage parameters' {
             Mock -ModuleName RunTests OutputWarning {}
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
             $script:outdatedOverrideCalls = 0
@@ -1579,9 +1579,9 @@ Describe 'RunTests.psm1 Tests' {
                     -containerName 'test' -credential $testCredential -runTestsOverride $override `
                     -alToolPath 'C:\dotnet-tools\al.exe' `
                     -containerPlatformVersion '30.0.56026.0'
-            } | Should -Throw '*codeCoverageContext*'
+            } | Should -Throw '*did not report whether coverage is complete*'
 
-            $script:outdatedOverrideCalls | Should -Be 0
+            $script:outdatedOverrideCalls | Should -Be 1
             $status = Get-Content -LiteralPath (
                 Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
                     'coverage-status.json'
@@ -1590,7 +1590,7 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
-        It 'Does not pass or create coverage context when coverage is disabled' {
+        It 'Does not add coverage parameters when coverage is disabled' {
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
             $existingCoveragePath = Join-Path (
                 Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage'
@@ -1601,8 +1601,9 @@ Describe 'RunTests.psm1 Tests' {
             $script:disabledCoverageCalls = 0
             $override = {
                 param([hashtable] $parameters)
-                $null = $parameters
                 $args | Should -BeNullOrEmpty
+                @($parameters.Keys | Where-Object { $_ -like 'codeCoverage*' }).Count |
+                    Should -Be 0
                 $script:disabledCoverageCalls++
                 return $true
             }
@@ -1630,7 +1631,7 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
-        It 'Invokes the thin override once per app with authoritative app-specific context' {
+        It 'Invokes the thin override once per app with authoritative coverage parameters' {
             $firstAppId = [Guid]::NewGuid().ToString()
             $secondAppId = [Guid]::NewGuid().ToString()
             $projectPath = New-TestProject -CompiledTestApps @(
@@ -1680,7 +1681,7 @@ Describe 'RunTests.psm1 Tests' {
                 }
             }
             $script:coverageOverrideCalls = 0
-            $script:coverageOverrideContexts = @()
+            $script:coverageOverrideParameters = @()
             $script:coverageAnalyzeRepoCalls = 0
             $analyzeRepo = {
                 param($settings, $baseFolder, $project)
@@ -1690,15 +1691,17 @@ Describe 'RunTests.psm1 Tests' {
                 return $settings
             }
             $override = {
-                param(
-                    [hashtable] $parameters,
-                    [hashtable] $codeCoverageContext
-                )
+                param([hashtable] $parameters)
                 $script:coverageOverrideCalls++
-                $script:coverageOverrideContexts += $codeCoverageContext
                 $parameters.credential | Should -Be $testCredential
-                $codeCoverageContext.ContainsKey('credential') | Should -BeFalse
-                New-Item -Path $codeCoverageContext.coverageOutputPath `
+                $script:coverageOverrideParameters += @{
+                    CoverageKeys = @($parameters.Keys | Where-Object { $_ -like 'codeCoverage*' })
+                    OutputPath = $parameters.codeCoverageOutputPath
+                    SourceRoots = @($parameters.codeCoverageSourceRoots)
+                    AlToolModulePath = $parameters.codeCoverageAlToolModulePath
+                    AlToolPath = $parameters.codeCoverageAlToolPath
+                }
+                New-Item -Path $parameters.codeCoverageOutputPath `
                     -ItemType Directory -Force | Out-Null
                 @{
                     schemaVersion = '1.0'
@@ -1711,12 +1714,12 @@ Describe 'RunTests.psm1 Tests' {
                     methods = @()
                     lines = @()
                 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
-                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.bc.json'
+                    Join-Path $parameters.codeCoverageOutputPath 'coverage.bc.json'
                 ) -Encoding UTF8
                 Set-Content -LiteralPath (
-                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.cobertura.xml'
+                    Join-Path $parameters.codeCoverageOutputPath 'coverage.cobertura.xml'
                 ) -Value '<coverage />' -Encoding UTF8
-                $codeCoverageContext.coverageIsComplete = $true
+                $parameters.codeCoverageIsComplete = $true
                 return $true
             }
 
@@ -1729,26 +1732,22 @@ Describe 'RunTests.psm1 Tests' {
 
             $script:coverageOverrideCalls | Should -Be 2
             $script:coverageAnalyzeRepoCalls | Should -Be 1
-            @($script:coverageOverrideContexts.coverageOutputPath | Select-Object -Unique).Count |
+            @($script:coverageOverrideParameters.OutputPath | Select-Object -Unique).Count |
                 Should -Be 2
-            foreach ($context in $script:coverageOverrideContexts) {
-                @($context.Keys | Sort-Object) | Should -Be @(
-                    'alToolModulePath',
-                    'alToolPath',
-                    'contractVersion',
-                    'coverageIsComplete',
-                    'coverageOutputPath',
-                    'formats',
-                    'mode',
-                    'reason',
-                    'sourceRoots',
-                    'supported'
+            foreach ($coverageParameters in $script:coverageOverrideParameters) {
+                @($coverageParameters.CoverageKeys | Sort-Object) | Should -Be @(
+                    'codeCoverageAlToolModulePath',
+                    'codeCoverageAlToolPath',
+                    'codeCoverageFormats',
+                    'codeCoverageIsComplete',
+                    'codeCoverageMode',
+                    'codeCoverageOutputPath',
+                    'codeCoverageSourceRoots'
                 )
-                $context.contractVersion | Should -Be 2
-                $context.alToolPath | Should -Be 'C:\dotnet-tools\al.exe'
-                $context.alToolModulePath | Should -Match 'AlToolTestRunner\.psm1$'
-                $context.sourceRoots | Should -Contain $appFolder
-                $context.sourceRoots | Should -Contain $targetAppPath
+                $coverageParameters.AlToolPath | Should -Be 'C:\dotnet-tools\al.exe'
+                $coverageParameters.AlToolModulePath | Should -Match 'AlToolTestRunner\.psm1$'
+                $coverageParameters.SourceRoots | Should -Contain $appFolder
+                $coverageParameters.SourceRoots | Should -Contain $targetAppPath
             }
             $status = Get-Content -LiteralPath (
                 Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `
@@ -1776,12 +1775,8 @@ Describe 'RunTests.psm1 Tests' {
                 }
             }
             $override = {
-                param(
-                    [hashtable] $parameters,
-                    [hashtable] $codeCoverageContext
-                )
-                $null = $parameters
-                $codeCoverageContext.coverageIsComplete = $true
+                param([hashtable] $parameters)
+                $parameters.codeCoverageIsComplete = $true
                 return $true
             }
 
@@ -1800,7 +1795,7 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
-        It 'Passes unsupported context per app without resolving AlTool' {
+        It 'Uses historical override parameters when coverage is unsupported' {
             Mock -ModuleName RunTests OutputWarning {}
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
             $settings = @{
@@ -1818,13 +1813,10 @@ Describe 'RunTests.psm1 Tests' {
             }
             $script:unsupportedCoverageCalls = 0
             $override = {
-                param(
-                    [hashtable] $parameters,
-                    [hashtable] $codeCoverageContext
-                )
-                $null = $parameters
-                $codeCoverageContext.supported | Should -BeFalse
-                $codeCoverageContext.alToolPath | Should -BeNullOrEmpty
+                param([hashtable] $parameters)
+                @($parameters.Keys | Where-Object { $_ -like 'codeCoverage*' }).Count |
+                    Should -Be 0
+                $args | Should -BeNullOrEmpty
                 $script:unsupportedCoverageCalls++
                 return $true
             }
@@ -1849,40 +1841,6 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
-        It 'Fails closed when a non-advanced outdated override ignores the passed context' {
-            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
-            $settings = @{
-                doNotRunTests = $false
-                runTestsInAllInstalledTestApps = $false
-                companyName = ''
-                treatTestFailuresAsWarnings = $false
-                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
-                useSeparateTestAction = @{
-                    enabled = $true
-                    testType = ''
-                    codeCoverageEnabled = $true
-                    codeCoverageFormats = @('bc-json')
-                }
-            }
-            $override = {
-                param([hashtable] $parameters)
-                $parameters.ContainsKey('testType') | Should -BeTrue
-                $parameters.testType | Should -Be ''
-                $args.Count | Should -Be 2
-                $args[0] | Should -Be '-codeCoverageContext'
-                $args[1] | Should -BeOfType System.Collections.Hashtable
-                return $true
-            }
-
-            {
-                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath `
-                    -containerName 'test' -credential $testCredential `
-                    -runTestsOverride $override -alToolPath 'C:\dotnet-tools\al.exe' `
-                    -containerPlatformVersion '30.0.56026.0'
-            } | Should -Throw '*did not report whether coverage is complete*'
-            Remove-Item -Path $projectPath -Recurse -Force
-        }
-
         It 'Retains valid coverage when the override reports failed tests' {
             $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app')
             $settings = @{
@@ -1899,12 +1857,8 @@ Describe 'RunTests.psm1 Tests' {
                 }
             }
             $override = {
-                param(
-                    [hashtable] $parameters,
-                    [hashtable] $codeCoverageContext
-                )
-                $null = $parameters
-                New-Item -Path $codeCoverageContext.coverageOutputPath `
+                param([hashtable] $parameters)
+                New-Item -Path $parameters.codeCoverageOutputPath `
                     -ItemType Directory -Force | Out-Null
                 @{
                     schemaVersion = '1.0'
@@ -1917,9 +1871,9 @@ Describe 'RunTests.psm1 Tests' {
                     methods = @()
                     lines = @()
                 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
-                    Join-Path $codeCoverageContext.coverageOutputPath 'coverage.bc.json'
+                    Join-Path $parameters.codeCoverageOutputPath 'coverage.bc.json'
                 ) -Encoding UTF8
-                $codeCoverageContext.coverageIsComplete = $true
+                $parameters.codeCoverageIsComplete = $true
                 return $false
             }
 

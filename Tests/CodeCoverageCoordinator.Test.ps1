@@ -83,14 +83,20 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
             return @($session.Runs | Where-Object { $_.AppId -eq $normalizedAppId })[0]
         }
 
-        function New-CoordinatorContext {
+        function New-CoordinatorArtifactFixture {
             Param(
                 [hashtable] $session,
                 [hashtable] $run
             )
 
-            return New-AlGoCodeCoverageInvocationContext -session $session -run $run `
-                -reason "Test capability reason." -alToolPath "C:\tools\al.exe"
+            return @{
+                coverageOutputPath = [System.IO.Path]::GetFullPath((
+                        Join-Path $session.RootPath "$($run.AppId)"
+                    ))
+                formats = @($session.Formats)
+                mode = "line"
+                coverageIsComplete = $null
+            }
         }
 
         function Get-CoordinatorStatusPath {
@@ -162,8 +168,8 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $first = Get-CoordinatorRun -session $session -appId $testApps[0].Id
         $second = Get-CoordinatorRun -session $session -appId $testApps[1].Id
 
-        $firstContext = New-CoordinatorContext -session $session -run $first
-        $secondContext = New-CoordinatorContext -session $session -run $second
+        $firstContext = New-CoordinatorArtifactFixture -session $session -run $first
+        $secondContext = New-CoordinatorArtifactFixture -session $session -run $second
         $firstContext.coverageOutputPath | Should -Not -Be $secondContext.coverageOutputPath
         @($session.Keys | Sort-Object) | Should -Be @(
             "BuildMode",
@@ -186,42 +192,13 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         Test-Path -LiteralPath (Get-CoordinatorStatusPath $session) | Should -BeFalse
     }
 
-    It 'Returns a minimal non-secret version 2 override context with authoritative roots' {
-        $projectPath = New-CoordinatorProject
-        $session = New-CoordinatorSession -projectPath $projectPath
-        $run = Get-CoordinatorRun -session $session `
-            -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
-
-        @($context.Keys | Sort-Object) | Should -Be @(
-            "alToolModulePath",
-            "alToolPath",
-            "contractVersion",
-            "coverageIsComplete",
-            "coverageOutputPath",
-            "formats",
-            "mode",
-            "reason",
-            "sourceRoots",
-            "supported"
-        )
-        $context.contractVersion | Should -Be 2
-        $context.mode | Should -Be "line"
-        $context.formats | Should -Be @("bc-json")
-        $context.alToolModulePath | Should -Match "AlToolTestRunner\.psm1$"
-        $context.alToolPath | Should -Be "C:\tools\al.exe"
-        $context.Contains("credential") | Should -BeFalse
-        $context.sourceRoots | Should -Contain (Join-Path $projectPath "App")
-        $context.sourceRoots | Should -Contain (Join-Path $projectPath "Test")
-    }
-
     It 'Validates both formats and finalizes complete coverage' {
         $projectPath = New-CoordinatorProject
         $session = New-CoordinatorSession -projectPath $projectPath `
             -formats @("bc-json", "cobertura")
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context
 
         Complete-AlGoCodeCoverageRun -session $session -run $run `
@@ -404,7 +381,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
 
         $emptyRun = Get-CoordinatorRun -session $session -appId $testApps[0].Id
-        $emptyContext = New-CoordinatorContext -session $session -run $emptyRun
+        $emptyContext = New-CoordinatorArtifactFixture -session $session -run $emptyRun
         InModuleScope AlToolTestRunner -Parameters @{
             CoverageMode = $emptyContext.mode
             CoverageOutputPath = $emptyContext.coverageOutputPath
@@ -420,7 +397,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $sourcePath = Join-Path $projectPath "App\Coverage.al"
         Set-Content -LiteralPath $sourcePath -Value "codeunit 70000 Coverage { }" -Encoding UTF8
         $coveredRun = Get-CoordinatorRun -session $session -appId $testApps[1].Id
-        $coveredContext = New-CoordinatorContext -session $session -run $coveredRun
+        $coveredContext = New-CoordinatorArtifactFixture -session $session -run $coveredRun
         New-Item -Path $coveredContext.coverageOutputPath -ItemType Directory -Force | Out-Null
         @{
             schemaVersion = "1.0"
@@ -468,7 +445,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath -formats @("cobertura")
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -complete $false
 
         Complete-AlGoCodeCoverageRun -session $session -run $run `
@@ -485,7 +462,6 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
 
         {
             Complete-AlGoCodeCoverageRun -session $session -run $run `
@@ -500,7 +476,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -complete $false
 
         {
@@ -514,7 +490,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath
         $knownAppId = "22222222-2222-2222-2222-222222222222"
         $run = Get-CoordinatorRun -session $session -appId $knownAppId
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context
         Complete-AlGoCodeCoverageRun -session $session -run $run `
             -coverageIsComplete $context.coverageIsComplete
@@ -535,7 +511,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         $session = New-CoordinatorSession -projectPath $projectPath
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
         Write-CoordinatorCoverageArtifacts -context $context -schemaVersion $SchemaVersion `
             -coverageMode $CoverageMode
 
@@ -551,7 +527,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
             -platformVersion "30.0.56025.999"
         $run = Get-CoordinatorRun -session $session `
             -appId "22222222-2222-2222-2222-222222222222"
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
 
         $context.supported | Should -BeFalse
         $context.sourceRoots.Count | Should -Be 0
@@ -606,7 +582,7 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
 
         $session = New-CoordinatorSession -projectPath $projectPath -testApps $testApps
         $run = Get-CoordinatorRun -session $session -appId $testApps[0].Id
-        $context = New-CoordinatorContext -session $session -run $run
+        $context = New-CoordinatorArtifactFixture -session $session -run $run
 
         $run.AppId | Should -Be "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         Split-Path -Path $context.coverageOutputPath -Leaf |

@@ -14,47 +14,42 @@ Compiled apps are selected by matching their app IDs to `testFolders`, which exc
 
 By default, AlTool runs enabled normal tests for each app through one batch and connection while BcContainerHelper provides app metadata, container configuration, company discovery, and server-side test enumeration. The optional `useSeparateTestAction.testType` value limits enumeration to `UnitTest`, `IntegrationTest`, or `Uncategorized`; blank runs all test types. The action writes JUnit output compatible with AL-Go AnalyzeTests and downstream processing.
 
-To use another test runner, add `RunTestsInBcContainer.ps1` under the project's `.AL-Go` folder. When coverage is disabled, the historical signature accepts only `[hashtable] $parameters`, runs once per test app, receives the standard BcContainerHelper test parameters including `testType`, and returns a Boolean test result. Custom overrides may interpret additional test types such as `Legacy`.
-
-Before enabling coverage, the repository owner must update the override to accept the contract-version 2 context parameter:
+To use another test runner, add `RunTestsInBcContainer.ps1` under the project's `.AL-Go` folder. The override keeps the historical signature, runs once per test app, receives the standard BcContainerHelper test parameters including `testType`, and returns a Boolean test result. Custom overrides may interpret additional test types such as `Legacy`.
 
 ```powershell
-param(
-    [hashtable] $parameters,
-    [hashtable] $codeCoverageContext
-)
+param([hashtable] $parameters)
 ```
 
-When coverage is disabled, AL-Go does not pass `codeCoverageContext`, does not create a coverage session or manifest, and retains the historical per-app invocation behavior. When coverage is requested and an override exists, AL-Go keeps the same per-app invocation and always adds the context parameter. AL-Go does not inspect the override signature or downgrade to noncoverage execution. An override that does not accept the parameter fails rather than running without the requested coverage.
+When coverage is disabled or the container does not support coverage, AL-Go does not add coverage parameters or request coverage output and retains the historical per-app invocation behavior. When coverage is supported, AL-Go adds `codeCoverageMode`, ordered `codeCoverageFormats`, absolute ordered `codeCoverageSourceRoots`, the allocated `codeCoverageOutputPath`, `codeCoverageAlToolModulePath`, `codeCoverageAlToolPath`, and a mutable `codeCoverageIsComplete` output to the existing `$parameters` hashtable. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in the historical parameter fields and must not be serialized into artifacts or diagnostics.
 
-The non-secret context contains `contractVersion`, `supported`, `reason`, line `mode`, ordered `formats`, absolute ordered `sourceRoots`, the allocated `coverageOutputPath`, the action-owned `alToolModulePath`, the resolved `alToolPath` when coverage is supported, and a mutable `coverageIsComplete` output. App identity, test type, and disabled tests already exist in the historical `$parameters` hashtable and are not duplicated in the coverage context. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in `$parameters` and must not be serialized into artifacts or diagnostics.
-
-For supported coverage, the override imports `alToolModulePath`, invokes `Invoke-AlToolTestRun` once for the current app with the supplied coverage values, and copies the runner's completeness output into the context:
+For supported coverage, indicated by the presence of `codeCoverageOutputPath`, the override imports `codeCoverageAlToolModulePath`, invokes `Invoke-AlToolTestRun` once for the current app with the supplied coverage values, and copies the runner's completeness output into `codeCoverageIsComplete`:
 
 ```powershell
-Import-Module $codeCoverageContext.alToolModulePath -Force -DisableNameChecking
-$coverageIsComplete = $null
-$passed = Invoke-AlToolTestRun `
-    -ContainerName $parameters.containerName `
-    -Credential $parameters.credential `
-    -ExtensionId $parameters.extensionId `
-    -AppName $parameters.appName `
-    -CompanyName $parameters.companyName `
-    -Tenant 'default' `
-    -TestType $parameters.testType `
-    -DisabledTests $parameters.disabledTests `
-    -AlToolPath $codeCoverageContext.alToolPath `
-    -JUnitResultFileName $parameters.JUnitResultFileName `
-    -CoverageMode $codeCoverageContext.mode `
-    -CoverageOutputPath $codeCoverageContext.coverageOutputPath `
-    -CoverageFormats $codeCoverageContext.formats `
-    -CoverageSourceRoots $codeCoverageContext.sourceRoots `
-    -CoverageIsComplete ([ref] $coverageIsComplete)
-$codeCoverageContext.coverageIsComplete = $coverageIsComplete
-return [bool]$passed
+if ($parameters.ContainsKey('codeCoverageOutputPath')) {
+    Import-Module $parameters.codeCoverageAlToolModulePath -Force -DisableNameChecking
+    $coverageIsComplete = $null
+    $passed = Invoke-AlToolTestRun `
+        -ContainerName $parameters.containerName `
+        -Credential $parameters.credential `
+        -ExtensionId $parameters.extensionId `
+        -AppName $parameters.appName `
+        -CompanyName $parameters.companyName `
+        -Tenant 'default' `
+        -TestType $parameters.testType `
+        -DisabledTests $parameters.disabledTests `
+        -AlToolPath $parameters.codeCoverageAlToolPath `
+        -JUnitResultFileName $parameters.JUnitResultFileName `
+        -CoverageMode $parameters.codeCoverageMode `
+        -CoverageOutputPath $parameters.codeCoverageOutputPath `
+        -CoverageFormats $parameters.codeCoverageFormats `
+        -CoverageSourceRoots $parameters.codeCoverageSourceRoots `
+        -CoverageIsComplete ([ref] $coverageIsComplete)
+    $parameters.codeCoverageIsComplete = $coverageIsComplete
+    return [bool]$passed
+}
 ```
 
-When capability is unavailable, the context has `supported = false`; the override must run the current app normally without requesting coverage. After every supported invocation, AL-Go validates completeness, path containment, fixed artifacts, and BC JSON schema/mode data. Missing or invalid output fails closed. AL-Go alone updates and finalizes `coverage-status.json`. The override continues to return the historical Boolean test result, and failed tests may retain valid coverage.
+The override should use its existing noncoverage implementation when `codeCoverageOutputPath` is absent. After every supported invocation, AL-Go validates completeness, path containment, fixed artifacts, and BC JSON schema/mode data. Missing or invalid output fails closed. AL-Go alone updates and finalizes `coverage-status.json`. The override continues to return the historical Boolean test result, and failed tests may retain valid coverage.
 
 ## Code coverage
 
@@ -62,7 +57,7 @@ Set `useSeparateTestAction.codeCoverageEnabled` to `true` to collect coverage wi
 
 AL-Go collects executable-line coverage. Procedure coverage is not currently exposed because AlTool source enrichment cannot reliably construct a local method inventory in the separate-test environment. `codeCoverageFormats` accepts `bc-json` and `cobertura` and defaults to both. `codeCoverageSummary` accepts `none`, `project`, `repository`, or `both` and defaults to `both`; `none` disables visualization without disabling raw collection. Project and repository summaries require `bc-json`, so use `codeCoverageSummary: none` for Cobertura-only collection. Existing app and test folders in the current AL-Go project are passed automatically as source roots to improve source mapping. Test projects also use the analyzed app and test folders from their direct `projectsToTest` targets.
 
-RunTests writes one final `coverage-status.json` after every selected app has reached a final state and aggregate publication has either succeeded or safely fallen back to raw reports. Repository-relative source-root identities let repository summaries map raw report paths consistently across build jobs. Ordered source-root details classify each root as an app or test folder and include available app identity from `app.json`. These details are action-level attribution data and are not repeated per test-app run or in the override context.
+RunTests writes one final `coverage-status.json` after every selected app has reached a final state and aggregate publication has either succeeded or safely fallen back to raw reports. Repository-relative source-root identities let repository summaries map raw report paths consistently across build jobs. Ordered source-root details classify each root as an app or test folder and include available app identity from `app.json`. These details are action-level attribution data and are not repeated per test-app run or in the override parameters.
 
 Each built-in or override test-app run initially writes to `.buildartifacts/CodeCoverage/<app-id>/` with the fixed `coverage.bc.json` and `coverage.cobertura.xml` names. On PowerShell 7, one background worker per coverage session streams validated BC JSON reports while later test apps run, preserving the semantic executable-line union and per-run diagnostic assessment needed by AL-Go summaries. After all queued reports have been parsed, AL-Go atomically publishes the versioned `coverage-aggregate.bin.gz`, references it from `coverage-status.json`, and deletes the raw per-app BC JSON files. Per-app Cobertura files remain available for external tooling.
 
