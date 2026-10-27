@@ -46,6 +46,8 @@ Describe 'RunTests.psm1 Tests' {
                 New-Item -Path $testFolderPath -ItemType Directory -Force | Out-Null
                 @{ id = $appId; name = $appName } | ConvertTo-Json |
                     Set-Content -Path (Join-Path $testFolderPath "app.json") -Encoding UTF8
+                Set-Content -LiteralPath (Join-Path $testFolderPath "$appName.al") `
+                    -Value "codeunit 50100 TestSource { Subtype = Test; }" -Encoding UTF8
                 $testFolders += $testFolder
             }
             $script:testFoldersByProject[$projectPath] = @($testFolders)
@@ -322,7 +324,10 @@ Describe 'RunTests.psm1 Tests' {
         It 'Returns canonical existing project roots with deterministic deduplication' {
             $projectPath = Join-Path $TestDrive 'Project'
             foreach ($folder in @('App', 'Test')) {
-                New-Item -Path (Join-Path $projectPath $folder) -ItemType Directory -Force | Out-Null
+                $folderPath = Join-Path $projectPath $folder
+                New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $folderPath "$folder.al") `
+                    -Value "codeunit 50100 $folder { }" -Encoding UTF8
             }
             $settings = @{
                 appFolders  = @('App', '.\App', 'Missing')
@@ -346,7 +351,10 @@ Describe 'RunTests.psm1 Tests' {
             $projectPath = Join-Path $TestDrive 'Project'
             $umlautFolder = "Project$([char]0x00E4)"
             foreach ($folder in @('Projectz', $umlautFolder)) {
-                New-Item -Path (Join-Path $projectPath $folder) -ItemType Directory -Force | Out-Null
+                $folderPath = Join-Path $projectPath $folder
+                New-Item -Path $folderPath -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $folderPath "Source.al") `
+                    -Value "codeunit 50100 Source { }" -Encoding UTF8
             }
             $settings = @{
                 appFolders  = @($umlautFolder, 'Projectz')
@@ -382,6 +390,8 @@ Describe 'RunTests.psm1 Tests' {
             $secondRoot = Join-Path $baseFolder 'Second'
             foreach ($folder in @($firstRoot, $secondRoot)) {
                 New-Item -Path $folder -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $folder "Source.al") `
+                    -Value "codeunit 50100 Source { }" -Encoding UTF8
             }
 
             InModuleScope CodeCoverageCoordinator -Parameters @{
@@ -461,6 +471,10 @@ Describe 'RunTests.psm1 Tests' {
             foreach ($folder in @($projectPath, $targetProjectPath, $appRoot, $testRoot, $undeclaredRoot)) {
                 New-Item -Path $folder -ItemType Directory -Force | Out-Null
             }
+            Set-Content -LiteralPath (Join-Path $appRoot "App.al") `
+                -Value "codeunit 50100 App { }" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $testRoot "Test.al") `
+                -Value "codeunit 50101 Test { Subtype = Test; }" -Encoding UTF8
             $settings = @{
                 appFolders    = @()
                 testFolders   = @()
@@ -554,6 +568,12 @@ Describe 'RunTests.psm1 Tests' {
                 -Value '{"id":"11111111-1111-1111-1111-111111111111"}' -Encoding UTF8
             Set-Content -Path (Join-Path $baseFolder 'src\Localized\app.json') `
                 -Value '{"id":"11111111-1111-1111-1111-111111111111"}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $baseFolder 'src\App\App.al') `
+                -Value "codeunit 50100 App { }" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $baseFolder 'src\App\Nested\Nested.al') `
+                -Value "codeunit 50101 Nested { }" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $baseFolder 'src\Localized\Localized.al') `
+                -Value "codeunit 50102 Localized { }" -Encoding UTF8
             $settings = @{
                 appFolders     = @()
                 testFolders    = @()
@@ -604,6 +624,38 @@ Describe 'RunTests.psm1 Tests' {
                 $roots | Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $BaseFolder 'src\Localized')))
                 Should -Invoke ReadSettings -Times 2 -Exactly
                 $script:analyzeRepoCalls | Should -Be 2
+            }
+        }
+
+        It 'Skips configured roots that contain no recursive AL source files' {
+            $projectPath = Join-Path $TestDrive 'Project'
+            $emptyRoot = Join-Path $projectPath 'Empty'
+            $sourceRoot = Join-Path $projectPath 'Source'
+            New-Item -Path $emptyRoot -ItemType Directory -Force | Out-Null
+            New-Item -Path (Join-Path $sourceRoot 'Nested') -ItemType Directory -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $emptyRoot 'app.json') `
+                -Value '{"id":"11111111-1111-1111-1111-111111111111"}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $sourceRoot 'app.json') `
+                -Value '{"id":"22222222-2222-2222-2222-222222222222"}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $sourceRoot 'Nested\Source.al') `
+                -Value "codeunit 50100 Source { }" -Encoding UTF8
+            $settings = @{
+                appFolders = @('Empty', 'Source')
+                testFolders = @()
+            }
+
+            InModuleScope CodeCoverageCoordinator -Parameters @{
+                Settings = $settings
+                ProjectPath = $projectPath
+            } {
+                $rootData = @(Resolve-CodeCoverageSourceRootData -settings $Settings `
+                        -projectPath $ProjectPath)
+
+                @($rootData.Path) | Should -Be @(
+                    [System.IO.Path]::GetFullPath((Join-Path $ProjectPath 'Source'))
+                )
+                @($rootData.RelativePath) | Should -Be @('Source')
+                @($rootData.AppId) | Should -Be @('22222222-2222-2222-2222-222222222222')
             }
         }
 
@@ -1206,6 +1258,8 @@ Describe 'RunTests.psm1 Tests' {
                 id = '11111111-1111-1111-1111-111111111111'
                 name = 'Coverage App'
             } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $projectPath 'App\app.json') -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $projectPath 'App\CoverageApp.al') `
+                -Value "codeunit 50100 CoverageApp { }" -Encoding UTF8
             $testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
             $settings = @{
                 doNotRunTests                  = $false
@@ -1647,6 +1701,8 @@ Describe 'RunTests.psm1 Tests' {
                 id = '11111111-1111-1111-1111-111111111111'
                 name = 'Regular App'
             } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $appFolder 'app.json') -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $appFolder 'RegularApp.al') `
+                -Value "codeunit 50100 RegularApp { }" -Encoding UTF8
             $targetProject = 'TargetProject'
             $targetProjectPath = Join-Path $projectPath $targetProject
             $targetAppPath = Join-Path $targetProjectPath 'TargetApp'
@@ -1657,6 +1713,8 @@ Describe 'RunTests.psm1 Tests' {
             } | ConvertTo-Json | Set-Content -LiteralPath (
                 Join-Path $targetAppPath 'app.json'
             ) -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $targetAppPath 'TargetApp.al') `
+                -Value "codeunit 50101 TargetApp { }" -Encoding UTF8
             $targetSettingsPath = Join-Path $targetProjectPath '.AL-Go'
             New-Item -Path $targetSettingsPath -ItemType Directory -Force | Out-Null
             @{

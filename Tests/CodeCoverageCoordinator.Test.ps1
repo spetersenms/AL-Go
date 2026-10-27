@@ -33,6 +33,10 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
                 id = "22222222-2222-2222-2222-222222222222"
                 name = "Test App"
             } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $testPath "app.json") -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $appPath "App.al") `
+                -Value "codeunit 50100 App { }" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $testPath "Test.al") `
+                -Value "codeunit 50101 Test { Subtype = Test; }" -Encoding UTF8
             return $projectPath
         }
 
@@ -625,6 +629,10 @@ Describe 'CodeCoverageCoordinator.psm1 Tests' {
         } | ConvertTo-Json | Set-Content -LiteralPath (
             Join-Path $targetPath ".AL-Go\settings.json"
         ) -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $targetAppPath "TargetApp.al") `
+            -Value "codeunit 50102 TargetApp { }" -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $targetTestPath "TargetTest.al") `
+            -Value "codeunit 50103 TargetTest { Subtype = Test; }" -Encoding UTF8
         $settings = @{
             appFolders = @("App")
             testFolders = @("Test")

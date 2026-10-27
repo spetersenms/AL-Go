@@ -124,6 +124,57 @@ sequenceDiagram
 
 This design overlaps CPU and I/O-heavy report parsing with the next AlTool test run while avoiding locks around the aggregate model.
 
+## Why RunTests compacts reports in parallel
+
+### The repeated-data problem
+
+Each selected test app is a separate AlTool invocation. AL-Go passes the same ordered source-root set to every invocation:
+
+- App and test folders that contain AL source files from the current project.
+- App and test folders that contain AL source files from direct `projectsToTest` projects.
+
+The source roots let AlTool map runtime coverage facts back to repository files. They are intentionally project-scoped rather than test-app-scoped because a test can execute code across multiple applications and transitive platform dependencies.
+
+This means per-app BC JSON reports can contain large, overlapping executable-line inventories. A commonly used application can appear in many reports even though each invocation ran a different test app. In a repository such as BCApps, shared dependencies such as Base Application are exercised by many test apps, so the same semantic lines can be repeated across several very large reports.
+
+Keeping every report until artifact upload and then parsing them in AnalyzeCodeCoverage has three costs:
+
+1. The artifact contains repeated line data.
+1. The analyzer must parse every large report after the tests have already finished.
+1. The runner pays the full parsing latency at the end instead of overlapping it with useful test execution.
+
+### Chosen design
+
+RunTests starts one long-lived PowerShell 7 worker after the first report has passed metadata validation. Each completed app contributes an immutable descriptor to a `BlockingCollection`. The worker consumes descriptors in order and streams one report at a time while the parent starts the next test app.
+
+The worker keeps one canonical executable-line union. Line identity is based on the resolved source and executable line identity, and duplicate facts use OR semantics: a line is covered if any run reports a positive hit count. Per-run completeness and diagnostic assessments remain separate so merging repeated lines does not erase whether an individual report was incomplete or unsafe.
+
+After the producer closes the queue, the worker drains remaining reports and atomically publishes the aggregate. Raw BC JSON reports are deleted only after the aggregate has been written, validated, and referenced by the final status. If compaction fails, raw reports remain available to the historical analyzer path.
+
+This design provides the following benefits:
+
+- Each successful raw report receives one full semantic parse.
+- Parsing can overlap the next app's AlTool execution.
+- Repeated line data is collapsed before artifact upload.
+- AnalyzeCodeCoverage reads the compact aggregate instead of reparsing all raw reports.
+- One worker owns the union, so no parser pool, merge locks, or concurrent aggregate mutation are required.
+
+The first implementation does not reduce peak runner disk usage because raw reports remain until durable aggregate publication. It reduces final waiting time and published artifact size while preserving a safe fallback.
+
+### Alternative considered: test-app-specific source roots
+
+An alternative was to determine which applications each test app can exercise and pass only those source roots to AlTool. That could reduce duplication when test apps have small, disjoint dependency graphs.
+
+AL-Go does not use that approach because computing the exact runtime coverage boundary is difficult and error-prone:
+
+- Dependencies are transitive and can differ from the directly declared test-app dependencies.
+- Tests can call shared libraries, platform applications, and code reached through events or other indirect paths.
+- Repository project relationships do not necessarily describe every application loaded in the test environment.
+- An incomplete dependency calculation could omit valid coverage facts and create false confidence in the summary.
+- In BCApps, many test apps depend directly or indirectly on Base Application and other common applications, so dependency-scoped roots would still include much of the same large source set and provide limited reduction.
+
+Project-scoped roots plus semantic compaction favor correctness and deterministic source mapping. The compactor removes the resulting duplication without requiring AL-Go to predict the full runtime dependency graph or changing AlTool and platform behavior.
+
 ### Across workflow jobs
 
 Build matrix jobs can run in parallel. Each project and build-mode job owns its own coverage directory, session, queue, and worker. No compactor is shared across jobs.
@@ -139,7 +190,7 @@ The repository AnalyzeCodeCoverage job starts after the build jobs. It downloads
 | `Get-TestAppsToRun` | `Invoke-AlGoTestRun` | Before session creation | Selects compiled test apps and optionally installed test apps. |
 | `Get-AlGoCodeCoverageCapability` | `Invoke-AlGoTestRun` | Once when coverage is requested | Accepts coverage only for container platform 30.0.56026.0 or later. |
 | `New-AlGoCodeCoverageSession` | `Invoke-AlGoTestRun` | Once before the app loop | Resolves ordered source roots and creates minimal ordered per-app run records. |
-| `Resolve-CodeCoverageSourceRootData` | Session creation | Once for a supported session | Collects existing app and test roots from the project and direct `projectsToTest`, rejects unsafe paths, deduplicates, and sorts roots. |
+| `Resolve-CodeCoverageSourceRootData` | Session creation | Once for a supported session | Collects app and test roots containing AL source files from the project and direct `projectsToTest`, rejects unsafe paths, deduplicates, and sorts roots. |
 | `Invoke-AlToolTestRun` | App loop or opted-in override | Once per selected test app | Enumerates tests, invokes AlTool, appends JUnit, surfaces diagnostics, and returns test success plus coverage completeness. |
 | `Invoke-AlRunTestsBatch` | `Invoke-AlToolTestRun` | Once per app with test codeunits | Builds the `al runtests` arguments, invokes the native process, and parses its structured output. |
 | `Complete-AlGoCodeCoverageRun` | App loop | Immediately after one supported invocation | Validates fixed artifacts and metadata, assigns the final run state, starts the worker if needed, and enqueues the report. |
@@ -219,7 +270,7 @@ The session contains:
 
 Source-root order is deterministic. It is part of the report mapping contract and the aggregate fingerprint.
 
-The public override context is not retained in the run record. RunTests creates a fresh context immediately before each invocation, reads `coverageIsComplete` afterward, and passes that value explicitly to run completion. Session-wide AlTool paths, formats, mode, and source roots are therefore not duplicated for every app.
+RunTests derives each app's output path from the session root and app ID. Built-in execution reads session-wide formats and source roots directly. A custom override receives the same values as temporary `codeCoverage*` entries in its existing parameter hashtable and reports completeness through `codeCoverageIsComplete`. These invocation values are not retained in the per-app run record.
 
 ### 3. Per-app completion
 
@@ -246,6 +297,7 @@ For every queued report, the worker:
 1. Merges lines by canonical semantic identity.
 
 Duplicate line facts use OR semantics: a semantic line is covered when any duplicate has a positive hit count.
+For line-mode assessment, duplicate-object and method-identity enrichment diagnostics are notices because they do not remove an otherwise exported executable line. A server missing-line summary remains globally unsafe because its omitted lines have no structured source identities that AL-Go can validate. Procedure-capable modes retain strict duplicate-object and method-identity handling.
 
 The worker retains only:
 

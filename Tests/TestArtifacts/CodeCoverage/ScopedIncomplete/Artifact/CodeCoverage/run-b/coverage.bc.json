@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "coverageMode": "all",
+  "coverageMode": "line",
   "complete": false,
   "diagnostics": [
     "No source file was found for AL object 5:32.",

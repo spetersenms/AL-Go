@@ -875,14 +875,34 @@ function Get-CoverageDiagnosticAssessment {
     $lineAffectedSources = @{}
     $ignoredDiagnostics = 0
     $diagnostics = @(Get-CoverageArray $Report.diagnostics | ForEach-Object { "$_" })
+    $coverageMode = "$($Report.coverageMode)".ToLowerInvariant()
 
     if (-not [bool]$Report.complete) {
         $notices += "The BC JSON report declares global enrichment incomplete."
     }
 
     foreach ($diagnostic in $diagnostics) {
+        if ($diagnostic -match "^Coverage source root '.+' contains no AL source files\.$") {
+            $ignoredDiagnostics++
+            continue
+        }
+
+        if ($diagnostic -match '^AL object ([0-9]+):([0-9]+) is defined by multiple source files and was not enriched\.$') {
+            if ($coverageMode -eq "line") {
+                $ignoredDiagnostics++
+            }
+            else {
+                $lineReasons += "A duplicate AL object could not be uniquely enriched."
+                $lineGlobalUnsafe = $true
+            }
+            continue
+        }
+
+        $objectKey = ""
         if ($diagnostic -match '^No source file was found for AL object ([0-9]+):([0-9]+)\.$') {
             $objectKey = "$($matches[1])|$($matches[2])"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($objectKey)) {
             $hasIncludedLine = $Scope.IncludedLineObjects.ContainsKey($objectKey)
             $hasExcludedFact = $Scope.ExcludedLineObjects.ContainsKey($objectKey)
             if (-not $hasIncludedLine -and $hasExcludedFact) {
@@ -906,9 +926,21 @@ function Get-CoverageDiagnosticAssessment {
             continue
         }
 
+        if ($diagnostic -match '^[0-9]+ server coverage lines were not found in the supplied source\.$') {
+            $lineReasons += "Server coverage lines could not be mapped to the supplied source."
+            $lineGlobalUnsafe = $true
+            continue
+        }
+
         if ($diagnostic.StartsWith("Coverage method identity resolution failed for '",
                 [System.StringComparison]::Ordinal)) {
-            $ignoredDiagnostics++
+            if ($coverageMode -eq "line") {
+                $ignoredDiagnostics++
+            }
+            else {
+                $lineReasons += "Coverage method identity could not be resolved."
+                $lineGlobalUnsafe = $true
+            }
             continue
         }
 
@@ -917,7 +949,7 @@ function Get-CoverageDiagnosticAssessment {
     }
 
     if ($ignoredDiagnostics -gt 0) {
-        $notices += "Ignored $ignoredDiagnostics diagnostics that affect only excluded external or unmapped facts."
+        $notices += "Ignored $ignoredDiagnostics diagnostics that do not affect repository-scoped line coverage."
     }
 
     return @{

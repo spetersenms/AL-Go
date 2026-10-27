@@ -914,6 +914,115 @@ Describe "AnalyzeCodeCoverage" {
         $resolved.LocalMappingFailed | Should -BeTrue
     }
 
+    It "keeps missing server line summaries unsafe in line mode" {
+        $scope = @{
+            IncludedLineObjects = @{}
+            IncludedLineSources = @{}
+            ExcludedLineObjects = @{ "1|308" = $true }
+            ApplicationLines = @{}
+            LineReasons = @()
+            ExcludedLineFacts = 8
+        }
+        $report = @{
+            coverageMode = "line"
+            complete = $false
+            diagnostics = @(
+                "Coverage source root 'C:\repo\Empty' contains no AL source files.",
+                "AL object 1:308 is defined by multiple source files and was not enriched.",
+                "51 server coverage lines were not found in the supplied source.",
+                "Coverage method identity resolution failed for 'C:\repo\App': compiler error"
+            )
+        }
+
+        $assessment = Get-CoverageDiagnosticAssessment -Report $report -Scope $scope
+
+        $assessment.LineGlobalUnsafe | Should -BeTrue
+        @($assessment.LineReasons) | Should -Be @(
+            "Server coverage lines could not be mapped to the supplied source."
+        )
+        @($assessment.LineAffectedSources).Count | Should -Be 0
+        $assessment.Notices -join " " | Should -Match "global enrichment incomplete"
+        $assessment.Notices -join " " | Should -Match "Ignored 3 diagnostics"
+    }
+
+    It "treats duplicate-object and method diagnostics as line-neutral in line mode" {
+        $scope = @{
+            IncludedLineObjects = @{ "1|308" = $true }
+            IncludedLineSources = @{ "1|308" = @{ "src/app/source.al" = $true } }
+            ExcludedLineObjects = @{}
+            ApplicationLines = @{}
+            LineReasons = @()
+            ExcludedLineFacts = 0
+        }
+        $report = @{
+            coverageMode = "line"
+            complete = $false
+            diagnostics = @(
+                "AL object 1:308 is defined by multiple source files and was not enriched.",
+                "Coverage method identity resolution failed for 'C:\repo\App': compiler error"
+            )
+        }
+
+        $assessment = Get-CoverageDiagnosticAssessment -Report $report -Scope $scope
+
+        $assessment.LineGlobalUnsafe | Should -BeFalse
+        @($assessment.LineReasons).Count | Should -Be 0
+        @($assessment.LineAffectedSources).Count | Should -Be 0
+        $assessment.Notices -join " " | Should -Match "Ignored 2 diagnostics"
+    }
+
+    It "keeps duplicate-object and method diagnostics unsafe outside line mode" {
+        $scope = @{
+            IncludedLineObjects = @{}
+            IncludedLineSources = @{}
+            ExcludedLineObjects = @{ "1|308" = $true }
+            ApplicationLines = @{}
+            LineReasons = @()
+            ExcludedLineFacts = 8
+        }
+        $report = @{
+            coverageMode = "all"
+            complete = $false
+            diagnostics = @(
+                "AL object 1:308 is defined by multiple source files and was not enriched.",
+                "Coverage method identity resolution failed for 'C:\repo\App': compiler error"
+            )
+        }
+
+        $assessment = Get-CoverageDiagnosticAssessment -Report $report -Scope $scope
+
+        $assessment.LineGlobalUnsafe | Should -BeTrue
+        @($assessment.LineReasons) | Should -Be @(
+            "A duplicate AL object could not be uniquely enriched.",
+            "Coverage method identity could not be resolved."
+        )
+    }
+
+    It "keeps missing server lines globally unsafe without excluded facts" {
+        $scope = @{
+            IncludedLineObjects = @{}
+            IncludedLineSources = @{}
+            ExcludedLineObjects = @{}
+            ApplicationLines = @{}
+            LineReasons = @()
+            ExcludedLineFacts = 0
+        }
+        $report = @{
+            coverageMode = "line"
+            complete = $false
+            diagnostics = @(
+                "4 server coverage lines were not found in the supplied source."
+            )
+        }
+
+        $assessment = Get-CoverageDiagnosticAssessment -Report $report -Scope $scope
+
+        $assessment.LineGlobalUnsafe | Should -BeTrue
+        @($assessment.LineReasons) | Should -Be @(
+            "Server coverage lines could not be mapped to the supplied source."
+        )
+    }
+
     It "admits repository-scoped lines from globally incomplete live-shaped reports" {
         $fixtureRoot = Join-Path $fixtures "ScopedIncomplete"
         $coveragePath = Join-Path $fixtureRoot "Artifact"
@@ -1091,7 +1200,7 @@ Describe "AnalyzeCodeCoverage" {
 
         $buildOrder = @(@{
                 buildDimensions = @(
-                    (New-ExpectedDimension -Project "Project1" -ProjectName "Project 1")
+                    (New-ExpectedDimension -Project "Project1" -ProjectName "Project 1" -Mode "line")
                 )
             }) | ConvertTo-Json -Depth 10
         $repositoryModel = Get-RepositoryCoverageModel -CoveragePath $coveragePath `
@@ -1166,7 +1275,7 @@ Describe "AnalyzeCodeCoverage" {
         $fixtureRoot = Join-Path $fixtures "ScopedIncomplete"
         $buildOrder = @(@{
                 buildDimensions = @(
-                    (New-ExpectedDimension -Project "Project1" -ProjectName "Project 1")
+                    (New-ExpectedDimension -Project "Project1" -ProjectName "Project 1" -Mode "line")
                 )
             }) | ConvertTo-Json -Depth 10
 

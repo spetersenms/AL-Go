@@ -13,9 +13,9 @@ $script:CodeCoverageMode = "line"
 .SYNOPSIS
     Resolves the ordered source roots used for coverage collection and analysis.
 .DESCRIPTION
-    Collects existing appFolders and testFolders from the current project and direct
-    projectsToTest targets. Rejects roots outside the repository or behind reparse points,
-    deduplicates paths, reads available app identity, and returns deterministic records.
+    Collects appFolders and testFolders that contain AL source files from the current project
+    and direct projectsToTest targets. Rejects roots outside the repository or behind reparse
+    points, deduplicates paths, reads available app identity, and returns deterministic records.
 .PARAMETER settings
     Analyzed settings for the current AL-Go project.
 .PARAMETER projectPath
@@ -74,6 +74,11 @@ function Resolve-CodeCoverageSourceRootData {
                 $resolvedFullPath = [System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)
                 if (-not (Test-CoveragePathWithoutReparsePoint -Path $resolvedFullPath -Root $repositoryRoot)) {
                     throw "Code coverage source root '$resolvedFullPath' contains a reparse point or is outside the repository."
+                }
+                $alSourceFile = Get-ChildItem -LiteralPath $resolvedFullPath -Filter "*.al" `
+                    -File -Recurse -ErrorAction Stop | Select-Object -First 1
+                if (-not $alSourceFile) {
+                    continue
                 }
                 if (-not $sourceRoots.ContainsKey($resolvedFullPath)) {
                     $relativePath = if ($resolvedFullPath.Equals($repositoryRoot, $comparison)) {
