@@ -1794,6 +1794,7 @@ Describe 'RunTests.psm1 Tests' {
                     CoverageKeys = @($parameters.Keys | Where-Object { $_ -like 'codeCoverage*' })
                     OutputPath = $parameters.codeCoverageOutputPath
                     SourceRoots = @($parameters.codeCoverageSourceRoots)
+                    ApplicationIds = @($parameters.codeCoverageApplicationIds)
                     AlToolModulePath = $parameters.codeCoverageAlToolModulePath
                     AlToolPath = $parameters.codeCoverageAlToolPath
                 }
@@ -1834,6 +1835,7 @@ Describe 'RunTests.psm1 Tests' {
                 @($coverageParameters.CoverageKeys | Sort-Object) | Should -Be @(
                     'codeCoverageAlToolModulePath',
                     'codeCoverageAlToolPath',
+                    'codeCoverageApplicationIds',
                     'codeCoverageFormats',
                     'codeCoverageIsComplete',
                     'codeCoverageMode',
@@ -1844,6 +1846,10 @@ Describe 'RunTests.psm1 Tests' {
                 $coverageParameters.AlToolModulePath | Should -Match 'AlToolTestRunner\.psm1$'
                 $coverageParameters.SourceRoots | Should -Contain $appFolder
                 $coverageParameters.SourceRoots | Should -Contain $targetAppPath
+                $coverageParameters.ApplicationIds | Should -Be @(
+                    '11111111-1111-1111-1111-111111111111',
+                    '33333333-3333-3333-3333-333333333333'
+                )
             }
             $status = Get-Content -LiteralPath (
                 Join-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'CodeCoverage') `

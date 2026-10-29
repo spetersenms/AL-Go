@@ -22,7 +22,7 @@ To use another test runner, add `RunTestsInBcContainer.ps1` under the project's 
 param([hashtable] $parameters)
 ```
 
-When coverage is disabled or the container does not support coverage, AL-Go does not add coverage parameters or request coverage output and retains the historical per-app invocation behavior. When coverage is supported, AL-Go adds `codeCoverageMode`, ordered `codeCoverageFormats`, absolute ordered `codeCoverageSourceRoots`, the allocated `codeCoverageOutputPath`, `codeCoverageAlToolModulePath`, `codeCoverageAlToolPath`, and a mutable `codeCoverageIsComplete` output to the existing `$parameters` hashtable. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in the historical parameter fields and must not be serialized into artifacts or diagnostics.
+When coverage is disabled or the container does not support coverage, AL-Go does not add coverage parameters or request coverage output and retains the historical per-app invocation behavior. When coverage is supported, AL-Go adds `codeCoverageMode`, ordered `codeCoverageFormats`, absolute ordered `codeCoverageSourceRoots`, sorted `codeCoverageApplicationIds` for regular app roots, the allocated `codeCoverageOutputPath`, `codeCoverageAlToolModulePath`, `codeCoverageAlToolPath`, and a mutable `codeCoverageIsComplete` output to the existing `$parameters` hashtable. AL-Go resolves current-project and direct `projectsToTest` roots centrally while its `AnalyzeRepo` callback is in scope. Repository overrides must not reconstruct or receive that callback. Credentials remain only in the historical parameter fields and must not be serialized into artifacts or diagnostics.
 
 For supported coverage, indicated by the presence of `codeCoverageOutputPath`, the override imports `codeCoverageAlToolModulePath`, invokes `Invoke-AlToolTestRun` once for the current app with the supplied coverage values, and copies the runner's completeness output into `codeCoverageIsComplete`:
 
@@ -52,6 +52,8 @@ if ($parameters.ContainsKey('codeCoverageOutputPath')) {
 ```
 
 The override should use its existing noncoverage implementation when `codeCoverageOutputPath` is absent. After every supported invocation, AL-Go validates completeness, path containment, fixed artifacts, and BC JSON schema/mode data. Missing or invalid output fails closed. AL-Go alone updates and finalizes `coverage-status.json`. The override continues to return the historical Boolean test result, and failed tests may retain valid coverage.
+
+`Invoke-AlToolTestRun` also accepts optional `CoverageAppPaths` for compatible AlTool builds that use compiler-instrumented app packages as their executable-line inventory. AL-Go does not populate this parameter for the pinned preview tool. An override opting into package mode must map `codeCoverageApplicationIds` to exactly one package from the same build and server revision for each regular source-root app, then pass those paths explicitly. Omitting `CoverageAppPaths` preserves source enrichment behavior.
 
 ## Code coverage
 

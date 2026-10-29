@@ -525,12 +525,16 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 0 -Exactly
         }
 
-        It 'Passes both coverage formats and repeatable existing source roots to one isolated output folder' {
+        It 'Passes coverage formats, source roots, and app packages to one isolated output folder' {
             $script:coverageOutputPath = Join-Path $TestDrive 'coverage-app-one'
             $script:coverageSourceRootOne = Join-Path $TestDrive 'App'
             $script:coverageSourceRootTwo = Join-Path $TestDrive 'Test'
+            $script:coverageAppOne = Join-Path $TestDrive 'AppOne.app'
+            $script:coverageAppTwo = Join-Path $TestDrive 'AppTwo.app'
             New-Item -Path $script:coverageSourceRootOne -ItemType Directory -Force | Out-Null
             New-Item -Path $script:coverageSourceRootTwo -ItemType Directory -Force | Out-Null
+            Set-Content -LiteralPath $script:coverageAppOne -Value 'app-one' -Encoding UTF8
+            Set-Content -LiteralPath $script:coverageAppTwo -Value 'app-two' -Encoding UTF8
             Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
                 $script:capturedBatchArguments = @($ArgumentList)
                 New-Item -Path $script:coverageOutputPath -ItemType Directory -Force | Out-Null
@@ -569,11 +573,14 @@ Describe 'AlToolTestRunner.psm1 Tests' {
                 OutputPath    = $script:coverageOutputPath
                 SourceRootOne = $script:coverageSourceRootOne
                 SourceRootTwo = $script:coverageSourceRootTwo
+                CoverageAppOne = $script:coverageAppOne
+                CoverageAppTwo = $script:coverageAppTwo
             } {
                 $result = Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits `
                     -Company 'CRONUS' -Tenant 'default' -Connection $Connection -CoverageMode 'all' `
                     -CoverageOutputPath $OutputPath -CoverageFormats @('bc-json', 'cobertura') `
-                    -CoverageSourceRoots @($SourceRootOne, $SourceRootTwo)
+                    -CoverageSourceRoots @($SourceRootOne, $SourceRootTwo) `
+                    -CoverageAppPaths @($CoverageAppOne, $CoverageAppTwo, $CoverageAppOne)
                 $result.Coverage.IsComplete | Should -BeTrue
             }
 
@@ -583,8 +590,30 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             $script:capturedBatchArguments[$coverageOutputIndex + 1] | Should -Be $script:coverageOutputPath
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-format' }).Count | Should -Be 2
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-source-root' }).Count | Should -Be 2
+            @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-app' }).Count | Should -Be 2
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootOne))
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootTwo))
+            $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageAppOne))
+            $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageAppTwo))
+        }
+
+        It 'Rejects a missing coverage app package before invoking AlTool' {
+            $script:coverageOutputPath = Join-Path $TestDrive 'coverage-missing-app'
+            $missingCoverageApp = Join-Path $TestDrive 'Missing.app'
+
+            InModuleScope AlToolTestRunner -Parameters @{
+                Codeunits = $script:batchCodeunits
+                Connection = $script:batchConnection
+                OutputPath = $script:coverageOutputPath
+                MissingCoverageApp = $missingCoverageApp
+            } {
+                {
+                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits `
+                        -Company 'CRONUS' -Tenant 'default' -Connection $Connection -CoverageMode 'line' `
+                        -CoverageOutputPath $OutputPath -CoverageFormats @('bc-json') `
+                        -CoverageAppPaths @($MissingCoverageApp)
+                } | Should -Throw "*Code coverage app package*does not exist*"
+            }
         }
 
         It 'Retains coverage artifacts when tests fail with exit code one' {
@@ -960,6 +989,7 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             $command.Parameters.CoverageOutputPath.ParameterType | Should -Be ([string])
             $command.Parameters.CoverageFormats.ParameterType | Should -Be ([string[]])
             $command.Parameters.CoverageSourceRoots.ParameterType | Should -Be ([string[]])
+            $command.Parameters.CoverageAppPaths.ParameterType | Should -Be ([string[]])
             $command.Parameters.CoverageIsComplete.ParameterType | Should -Be ([ref])
         }
 
@@ -1180,10 +1210,13 @@ Invoke-AlToolTestRun $($parameterExpressions.Values -join ' ')
 
         It 'Returns incomplete coverage state and logs structured diagnostics' {
             $coverageOutputPath = Join-Path (Join-Path $TestDrive 'CodeCoverage') 'test-run'
+            $script:coverageAppPath = Join-Path $TestDrive 'Coverage.app'
+            Set-Content -LiteralPath $script:coverageAppPath -Value 'coverage-app' -Encoding UTF8
             $script:testRunParameters.CoverageMode = 'all'
             $script:testRunParameters.CoverageOutputPath = $coverageOutputPath
             $script:testRunParameters.CoverageFormats = @('bc-json')
             $script:testRunParameters.CoverageSourceRoots = @((Join-Path $TestDrive 'App'))
+            $script:testRunParameters.CoverageAppPaths = @($script:coverageAppPath)
             $coverageIsComplete = $null
             $script:testRunParameters.CoverageIsComplete = [ref] $coverageIsComplete
             Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
@@ -1205,6 +1238,9 @@ Invoke-AlToolTestRun $($parameterExpressions.Values -join ' ')
 
             $coverageIsComplete | Should -BeFalse
             Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 2 -Exactly
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly -ParameterFilter {
+                @($CoverageAppPaths).Count -eq 1 -and $CoverageAppPaths[0] -eq $script:coverageAppPath
+            }
         }
 
         It 'Returns complete coverage state independently of failed tests' {

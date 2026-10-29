@@ -518,7 +518,8 @@ function Invoke-AlRunTestsBatch {
         [ValidateSet("procedure", "line", "all")][string] $CoverageMode = "",
         [string] $CoverageOutputPath = "",
         [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats = @(),
-        [string[]] $CoverageSourceRoots = @()
+        [string[]] $CoverageSourceRoots = @(),
+        [string[]] $CoverageAppPaths = @()
     )
 
     $testGroupsFile = New-AlTestGroupsFile -Codeunits $Codeunits
@@ -544,6 +545,21 @@ function Invoke-AlRunTestsBatch {
             }
             foreach ($sourceRoot in $CoverageSourceRoots) {
                 $alArgs += @('--coverage-source-root', $sourceRoot)
+            }
+            $coverageAppPathsSeen = [System.Collections.Generic.HashSet[string]]::new(
+                [System.StringComparer]::OrdinalIgnoreCase
+            )
+            foreach ($coverageAppPath in $CoverageAppPaths) {
+                if ([string]::IsNullOrWhiteSpace($coverageAppPath)) {
+                    continue
+                }
+                $fullCoverageAppPath = [System.IO.Path]::GetFullPath($coverageAppPath)
+                if (-not (Test-Path -LiteralPath $fullCoverageAppPath -PathType Leaf)) {
+                    throw "Code coverage app package '$fullCoverageAppPath' does not exist."
+                }
+                if ($coverageAppPathsSeen.Add($fullCoverageAppPath)) {
+                    $alArgs += @('--coverage-app', $fullCoverageAppPath)
+                }
             }
         }
 
@@ -803,6 +819,8 @@ function Add-JUnitTestSuite {
     Coverage artifact formats requested from AlTool.
 .PARAMETER CoverageSourceRoots
     Existing app and test directories used to resolve source paths in coverage artifacts.
+.PARAMETER CoverageAppPaths
+    Optional compiled app packages used by AlTool as the executable-line inventory.
 .PARAMETER CoverageIsComplete
     Optional reference receiving null when coverage was not evaluated, true when complete, or false
     when incomplete.
@@ -825,6 +843,7 @@ function Invoke-AlToolTestRun {
         [string] $CoverageOutputPath = "",
         [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats = @(),
         [string[]] $CoverageSourceRoots = @(),
+        [string[]] $CoverageAppPaths = @(),
         [ref] $CoverageIsComplete = ([ref] $null)
     )
 
@@ -910,6 +929,7 @@ function Invoke-AlToolTestRun {
             $batchParameters.CoverageOutputPath = $CoverageOutputPath
             $batchParameters.CoverageFormats = @($CoverageFormats)
             $batchParameters.CoverageSourceRoots = @($CoverageSourceRoots)
+            $batchParameters.CoverageAppPaths = @($CoverageAppPaths)
         }
         $batch = Invoke-AlRunTestsBatch @batchParameters
         $batchResults = $batch.Results

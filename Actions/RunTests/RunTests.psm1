@@ -400,6 +400,18 @@ function Invoke-AlGoTestRun {
                 else {
                     @()
                 }
+                $coverageApplicationIds = if ($coverageInvocationActive) {
+                    @($coverageSession.SourceRootRecords |
+                        Where-Object {
+                            "$($_.Kind)" -eq "app" -and
+                            -not [string]::IsNullOrWhiteSpace("$($_.AppId)")
+                        } |
+                        ForEach-Object { "$($_.AppId)".ToLowerInvariant() } |
+                        Sort-Object -Unique)
+                }
+                else {
+                    @()
+                }
                 if ($coverageInvocationActive) {
                     $currentCoverageRun.StartedAtUtc = [DateTime]::UtcNow
                 }
@@ -425,6 +437,7 @@ function Invoke-AlGoTestRun {
                         $runTestsParams["codeCoverageMode"] = "line"
                         $runTestsParams["codeCoverageFormats"] = @($coverageSession.Formats)
                         $runTestsParams["codeCoverageSourceRoots"] = @($coverageSourceRoots)
+                        $runTestsParams["codeCoverageApplicationIds"] = @($coverageApplicationIds)
                         $runTestsParams["codeCoverageOutputPath"] = $coverageOutputPath
                         $runTestsParams["codeCoverageAlToolModulePath"] = (
                             Join-Path $PSScriptRoot "AlToolTestRunner.psm1"
