@@ -315,10 +315,12 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         env:
           ACTIONS_RUNNER_DISABLE_NODE_MAGLEV: 1
-        if: (success() || failure()) && (hashFiles(format('{0}/.buildartifacts/TestResults.xml',inputs.project)) != '')
+        if: (success() || failure()) && (hashFiles(format('{0}/.buildartifacts/TestResults.xml',inputs.project), format('{0}/.buildartifacts/AlToolTestResults/**/*',inputs.project)) != '')
         with:
           name: ${{ steps.calculateArtifactsNames.outputs.TestResultsArtifactsName }}
-          path: '${{ inputs.project }}/.buildartifacts/TestResults.xml'
+          path: |
+            ${{ inputs.project }}/.buildartifacts/TestResults.xml
+            ${{ inputs.project }}/.buildartifacts/AlToolTestResults/
           if-no-files-found: ignore
 
       - name: Publish artifacts - bcpt test results

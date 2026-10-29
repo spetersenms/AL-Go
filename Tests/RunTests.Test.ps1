@@ -854,6 +854,122 @@ Describe 'RunTests.psm1 Tests' {
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
+        It 'Copies all native app results for <Outcome> without creating JUnit' -TestCases @(
+            @{ Outcome = 'passing tests'; Pass = $true; Warn = $false; RunnerError = $false }
+            @{ Outcome = 'failing tests'; Pass = $false; Warn = $false; RunnerError = $false }
+            @{ Outcome = 'warning-only tests'; Pass = $false; Warn = $true; RunnerError = $false }
+            @{ Outcome = 'a later native runner error'; Pass = $true; Warn = $false; RunnerError = $true }
+        ) {
+            param($Outcome, $Pass, $Warn, $RunnerError)
+
+            $projectPath = New-TestProject -CompiledTestApps @('App1.Test.app', 'App2.Test.app')
+            $script:nativeRunnerCalls = 0
+            $script:nativePassed = $Pass
+            $script:nativeRunnerError = $RunnerError
+            Mock -ModuleName RunTests Invoke-AlToolTestRun {
+                param($ExtensionId, $TestResultsPath)
+                $script:nativeRunnerCalls++
+                if ($script:nativeRunnerError -and $script:nativeRunnerCalls -eq 2) {
+                    throw 'second native app failed'
+                }
+                $appFolder = Join-Path $TestResultsPath $ExtensionId
+                New-Item -Path $appFolder -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $appFolder 'response.json') -Value '{"succeeded":true,"data":{"results":[]}}' -Encoding UTF8
+                @{ appId = $ExtensionId } | ConvertTo-Json |
+                    Set-Content -LiteralPath (Join-Path $appFolder 'metadata.json') -Encoding UTF8
+                return $script:nativePassed
+            }
+            Mock -ModuleName RunTests OutputWarning {}
+            $settings = @{
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $Warn
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+            }
+            $run = {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' `
+                    -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe'
+            }
+            if ($RunnerError) {
+                $run | Should -Throw '*second native app failed*'
+            }
+            elseif (-not $Pass -and -not $Warn) {
+                $run | Should -Throw '*There are test failures*'
+            }
+            else {
+                $run | Should -Not -Throw
+            }
+
+            $expectedApps = if ($RunnerError) { 1 } else { 2 }
+            $root = Join-Path $projectPath 'AlToolTestResults'
+            $artifact = Join-Path (Join-Path $projectPath '.buildartifacts') 'AlToolTestResults'
+            @(Get-ChildItem -LiteralPath $artifact -Filter 'response.json' -Recurse).Count | Should -Be $expectedApps
+            foreach ($file in @(Get-ChildItem -LiteralPath $root -File -Recurse)) {
+                $relativePath = $file.FullName.Substring($root.Length + 1)
+                Get-Content -LiteralPath (Join-Path $artifact $relativePath) -Raw -Encoding UTF8 |
+                    Should -BeExactly (Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8)
+            }
+            Test-Path (Join-Path $projectPath 'TestResults.xml') | Should -BeFalse
+            Test-Path (Join-Path (Join-Path $projectPath '.buildartifacts') 'TestResults.xml') | Should -BeFalse
+            if ($Warn) {
+                Should -Invoke -ModuleName RunTests OutputWarning -Times 1 -Exactly -ParameterFilter {
+                    $message -like '*treated as warnings*'
+                }
+            }
+            Remove-Item -LiteralPath $projectPath -Recurse -Force
+        }
+
+        It 'Removes stale native and XML results before <NextRun>' -TestCases @(
+            @{ NextRun = 'a legacy override'; HasApps = $true }
+            @{ NextRun = 'a run with no selected apps'; HasApps = $false }
+        ) {
+            param($NextRun, $HasApps)
+
+            $apps = if ($HasApps) { @('App1.Test.app') } else { @() }
+            $projectPath = New-TestProject -CompiledTestApps $apps
+            foreach ($base in @($projectPath, (Join-Path $projectPath '.buildartifacts'))) {
+                $nativePath = Join-Path $base 'AlToolTestResults'
+                New-Item -Path $nativePath -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $nativePath 'stale.json') -Value '{}' -Encoding UTF8
+                Set-Content -LiteralPath (Join-Path $base 'TestResults.xml') -Value '<testsuites />' -Encoding UTF8
+            }
+            $settings = @{
+                runTestsInAllInstalledTestApps = $false
+                companyName = ''
+                treatTestFailuresAsWarnings = $false
+                testFolders = @(Get-TestFoldersForProject -ProjectPath $projectPath)
+            }
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' `
+                -credential $testCredential -runTestsOverride { return $true }
+
+            foreach ($base in @($projectPath, (Join-Path $projectPath '.buildartifacts'))) {
+                Test-Path (Join-Path $base 'AlToolTestResults') | Should -BeFalse
+                Test-Path (Join-Path $base 'TestResults.xml') | Should -BeFalse
+            }
+            Remove-Item -LiteralPath $projectPath -Recurse -Force
+        }
+
+        It 'Rejects duplicate native app identities before they can overwrite results' {
+            $projectPath = New-TestProject
+            $appId = [guid]::NewGuid().ToString()
+            $script:duplicateAppId = $appId
+            Mock -ModuleName RunTests Get-TestAppsToRun {
+                @(
+                    [pscustomobject]@{ Id = $script:duplicateAppId; Name = 'First' },
+                    [pscustomobject]@{ Id = $script:duplicateAppId.ToUpperInvariant(); Name = 'Second' }
+                )
+            }
+            Mock -ModuleName RunTests Invoke-AlToolTestRun { throw 'Should not execute' }
+            $settings = @{ restoreDatabases = @() }
+
+            {
+                Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'test' `
+                    -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe'
+            } | Should -Throw '*test app ID*duplicated*'
+            Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 0 -Exactly
+            Remove-Item -LiteralPath $projectPath -Recurse -Force
+        }
+
         It 'Maps useSeparateTestAction.testType and other built-in runner parameters' {
             $appId = [Guid]::NewGuid().ToString()
             $script:capturedAlToolParams = $null
@@ -868,7 +984,7 @@ Describe 'RunTests.psm1 Tests' {
                     $TestType,
                     [hashtable[]] $DisabledTests,
                     $AlToolPath,
-                    $JUnitResultFileName
+                    $TestResultsPath
                 )
                 $script:capturedAlToolParams = @{
                     Keys                = @($PSBoundParameters.Keys)
@@ -881,7 +997,7 @@ Describe 'RunTests.psm1 Tests' {
                     TestType            = $TestType
                     DisabledTests       = @($DisabledTests)
                     AlToolPath          = $AlToolPath
-                    JUnitResultFileName = $JUnitResultFileName
+                    TestResultsPath     = $TestResultsPath
                 }
                 return $true
             }
@@ -909,8 +1025,8 @@ Describe 'RunTests.psm1 Tests' {
                 'Credential',
                 'DisabledTests',
                 'ExtensionId',
-                'JUnitResultFileName',
                 'Tenant',
+                'TestResultsPath',
                 'TestType'
             )
             $script:capturedAlToolParams.ContainerName | Should -Be 'mycontainer'
@@ -922,7 +1038,7 @@ Describe 'RunTests.psm1 Tests' {
             $script:capturedAlToolParams.Tenant | Should -Be 'default'
             $script:capturedAlToolParams.TestType | Should -Be 'IntegrationTest'
             $script:capturedAlToolParams.DisabledTests.Count | Should -Be 0
-            $script:capturedAlToolParams.JUnitResultFileName | Should -Be (Join-Path $projectPath 'TestResults.xml')
+            $script:capturedAlToolParams.TestResultsPath | Should -Be (Join-Path $projectPath 'AlToolTestResults')
             Remove-Item -Path $projectPath -Recurse -Force
         }
 

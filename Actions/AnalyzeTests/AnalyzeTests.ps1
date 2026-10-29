@@ -15,8 +15,15 @@ $testResultsFailuresSummaryMD = ''
 
 switch ($testType) {
     'normal' {
-        $testResultsFile = Join-Path $ENV:GITHUB_WORKSPACE "$project\TestResults.xml"
-        $testResultsSummaryMD, $testResultsfailuresMD, $testResultsFailuresSummaryMD = GetTestResultSummaryMD -testResultsFile $testResultsFile
+        $nativeResultsPath = Join-Path $ENV:GITHUB_WORKSPACE "$project\AlToolTestResults"
+        if (Test-Path -LiteralPath $nativeResultsPath) {
+            . (Join-Path $PSScriptRoot 'AlToolTestResultAnalyzer.ps1')
+            $testResultsSummaryMD, $testResultsfailuresMD, $testResultsFailuresSummaryMD = Get-AlToolTestResultSummaryMD -Path $nativeResultsPath
+        }
+        else {
+            $testResultsFile = Join-Path $ENV:GITHUB_WORKSPACE "$project\TestResults.xml"
+            $testResultsSummaryMD, $testResultsfailuresMD, $testResultsFailuresSummaryMD = GetTestResultSummaryMD -testResultsFile $testResultsFile
+        }
         $testTitle = "Test results"
     }
     'bcpt' {

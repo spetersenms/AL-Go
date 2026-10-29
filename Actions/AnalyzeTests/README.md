@@ -1,6 +1,10 @@
 # Analyze Tests
 
-Analyze results of tests from the RunPipeline action
+Analyzes normal, BCPT, and page scripting test results and writes a Markdown summary to `GITHUB_STEP_SUMMARY`.
+
+For normal tests, reads runner-prepared method results from `<project>/AlToolTestResults/<app-id>/metadata.json` and run diagnostics from `response.json` when `AlToolTestResults` exists; otherwise reads `<project>/TestResults.xml` (JUnit). Native result errors are reported without falling back to XML.
+
+Custom `RunTestsInBcContainer` overrides must produce one of these formats. See the [AlTool override format](../RunTests/README.md#altool-override-format).
 
 ## INPUT
 
@@ -12,9 +16,9 @@ none
 
 | Name | Required | Description | Default value |
 | :-- | :-: | :-- | :-- |
-| shell | | The shell (powershell or pwsh) in which the PowerShell script in this action should run | powershell |
-| project | Yes | Name of project to analyze or . if the repository is setup for single project | |
-| testType | Yes | Which type of tests to analyze. Should be one of ('normal', 'bcpt', 'pageScripting') | |
+| shell | | Shell to use: `powershell` or `pwsh` | powershell |
+| project | Yes | Project folder, or `.` for a single-project repository | |
+| testType | Yes | `normal`, `bcpt`, or `pageScripting` | |
 
 ## OUTPUT
 
@@ -28,4 +32,4 @@ none
 
 ### SUMMARY
 
-This function will set the test result markdown in the GITHUB_STEP_SUMMARY section
+Writes the test result Markdown to `GITHUB_STEP_SUMMARY`.

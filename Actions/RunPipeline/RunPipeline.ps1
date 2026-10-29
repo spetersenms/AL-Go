@@ -401,6 +401,14 @@ try {
     if (Test-Path $testResultsFiles) {
         Remove-Item $testResultsFiles -Force
     }
+    foreach ($nativeTestResultsPath in @(
+            (Join-Path $projectPath "AlToolTestResults"),
+            (Join-Path $buildArtifactFolder "AlToolTestResults")
+        )) {
+        if (Test-Path -LiteralPath $nativeTestResultsPath) {
+            Remove-Item -LiteralPath $nativeTestResultsPath -Recurse -Force
+        }
+    }
 
     $buildOutputFile = Join-Path $projectPath "BuildOutput.txt"
     $containerEventLogFile = Join-Path $projectPath "ContainerEventLog.evtx"

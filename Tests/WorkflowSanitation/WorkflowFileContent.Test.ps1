@@ -22,6 +22,28 @@ Describe "All AL-Go workflows should have similar content" {
     }
 }
 
+Describe "Normal test result artifacts" {
+    It 'Publishes native and legacy test results without changing analyzer inputs in <Template>' -TestCases @(
+        @{ Template = 'Per Tenant Extension' }
+        @{ Template = 'AppSource App' }
+    ) {
+        param($Template)
+
+        . (Join-Path $PSScriptRoot '..\..\Actions\CheckForUpdates\yamlclass.ps1')
+        $workflow = Join-Path $PSScriptRoot "..\..\Templates\$Template\.github\workflows\_BuildALGoProject.yaml"
+        $yaml = [Yaml]::Load($workflow)
+        $steps = $yaml.Get('jobs:/BuildALGoProject:/steps:/')
+        $publish = $steps.Get('- name: Publish artifacts - test results/').content -join "`n"
+        $publish | Should -Match '\.buildartifacts/TestResults\.xml'
+        $publish | Should -Match '\.buildartifacts/AlToolTestResults/'
+        $publish | Should -Match "hashFiles\(format\('.*TestResults\.xml'.*format\('.*AlToolTestResults/\*\*/\*'"
+        $publish | Should -Match 'TestResultsArtifactsName'
+        $publish | Should -Not -Match 'CodeCoverage|bcptTestResults|PageScriptingTestResults'
+        $analyze = $steps.Get('- name: Analyze Test Results/').content -join "`n"
+        $analyze | Should -Match 'testType: "normal"'
+    }
+}
+
 Describe "PreGateCheck in PullRequestHandler should use runs-on: windows-latest" {
     It 'Check PullRequestHandler.yaml for runs-on: windows-latest' {
         # Check that PullRequestHandler.yaml in both templates uses runs-on: windows-latest, which doesn't get updated by the Update AL-Go System Files action

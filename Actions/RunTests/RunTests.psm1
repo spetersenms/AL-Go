@@ -182,14 +182,14 @@ function Get-DisabledTestsForApp {
 function Copy-TestResultsToBuildArtifacts {
     <#
     .SYNOPSIS
-        Copies an existing test result file to the project build artifacts folder.
+        Copies existing native results or a legacy result file to the build artifacts folder.
     .DESCRIPTION
         Preserves the project result for AnalyzeTests and creates an artifact copy only when a result
         exists.
     .PARAMETER projectPath
         The full path to the project folder.
     .PARAMETER testResultsFile
-        The canonical test result file in the project root.
+        The canonical native results directory or legacy result file in the project root.
     #>
     Param(
         [string] $projectPath,
@@ -197,13 +197,13 @@ function Copy-TestResultsToBuildArtifacts {
     )
 
     $buildArtifactsFolder = Join-Path $projectPath ".buildartifacts"
-    $artifactTestResultsFile = Join-Path $buildArtifactsFolder "TestResults.xml"
+    $artifactTestResultsFile = Join-Path $buildArtifactsFolder (Split-Path $testResultsFile -Leaf)
     try {
-        if (-not (Test-Path -Path $testResultsFile -PathType Leaf -ErrorAction Stop)) {
+        if (-not (Test-Path -LiteralPath $testResultsFile -ErrorAction Stop)) {
             return
         }
         New-Item -Path $buildArtifactsFolder -ItemType Directory -Force -ErrorAction Stop | Out-Null
-        Copy-Item -Path $testResultsFile -Destination $artifactTestResultsFile -Force -ErrorAction Stop
+        Copy-Item -LiteralPath $testResultsFile -Destination $artifactTestResultsFile -Recurse -Force -ErrorAction Stop
     }
     catch {
         throw "Failed to copy test results from '$testResultsFile' to '$artifactTestResultsFile'. Error: $($_.Exception.Message)"
@@ -247,7 +247,8 @@ function Invoke-AlGoTestRun {
         Runs the normal tests for an AL-Go project against a kept-alive build container.
     .DESCRIPTION
         Runs each selected test app with AlTool or a RunTestsInBcContainer override. Preserves
-        TestResults.xml for AnalyzeTests, copies produced results to .buildartifacts, and refreshes
+        native AlToolTestResults or override TestResults.xml for AnalyzeTests, copies produced
+        results to .buildartifacts, and refreshes
         ContainerEventLog.evtx after every outcome. Event-log capture failures are warnings and do
         not change the test outcome.
     .PARAMETER settings
@@ -279,6 +280,20 @@ function Invoke-AlGoTestRun {
     )
 
     try {
+        $testResultsFile = Join-Path $projectPath "TestResults.xml"
+        $nativeTestResultsPath = Join-Path $projectPath "AlToolTestResults"
+        $buildArtifactsFolder = Join-Path $projectPath ".buildartifacts"
+        foreach ($previousResult in @(
+                $testResultsFile,
+                $nativeTestResultsPath,
+                (Join-Path $buildArtifactsFolder "TestResults.xml"),
+                (Join-Path $buildArtifactsFolder "AlToolTestResults")
+            )) {
+            if (Test-Path -LiteralPath $previousResult) {
+                Remove-Item -LiteralPath $previousResult -Recurse -Force
+            }
+        }
+
         if (@($settings.restoreDatabases | Where-Object { -not [string]::IsNullOrWhiteSpace("$_") }).Count -gt 0) {
             Write-Host "::Warning::restoreDatabases is configured, but database restore is not currently supported by the separate RunTests action and will not be performed."
         }
@@ -292,11 +307,18 @@ function Invoke-AlGoTestRun {
 
         Write-Host "Running tests against container '$containerName'"
 
-        $testResultsFile = Join-Path $projectPath "TestResults.xml"
-        $artifactTestResultsFile = Join-Path (Join-Path $projectPath ".buildartifacts") "TestResults.xml"
-        foreach ($previousResultFile in @($testResultsFile, $artifactTestResultsFile)) {
-            if (Test-Path $previousResultFile) {
-                Remove-Item $previousResultFile -Force
+        if (-not $runTestsOverride) {
+            $appIds = @{}
+            foreach ($testApp in $testApps) {
+                $appId = [guid]::Empty
+                if (-not [guid]::TryParse("$($testApp.Id)", [ref]$appId)) {
+                    throw "Selected test app ID '$($testApp.Id)' is invalid."
+                }
+                $key = $appId.ToString()
+                if ($appIds.ContainsKey($key)) {
+                    throw "Selected test app ID '$key' is duplicated."
+                }
+                $appIds[$key] = $true
             }
         }
 
@@ -349,7 +371,7 @@ function Invoke-AlGoTestRun {
                         -TestType $testType `
                         -DisabledTests @($disabledTests) `
                         -AlToolPath $alToolPath `
-                        -JUnitResultFileName $testResultsFile
+                        -TestResultsPath $nativeTestResultsPath
                 }
 
                 if (-not $passed) {
@@ -364,15 +386,17 @@ function Invoke-AlGoTestRun {
             Pop-Location
         }
 
-        try {
-            Copy-TestResultsToBuildArtifacts -projectPath $projectPath -testResultsFile $testResultsFile
-        }
-        catch {
-            if ($testRunError) {
-                OutputWarning -message "The test run failed and produced test results could not be copied to build artifacts. $($_.Exception.Message)"
+        foreach ($producedResults in @($nativeTestResultsPath, $testResultsFile)) {
+            try {
+                Copy-TestResultsToBuildArtifacts -projectPath $projectPath -testResultsFile $producedResults
             }
-            else {
-                throw
+            catch {
+                if ($testRunError) {
+                    OutputWarning -message "The test run failed and produced test results could not be copied to build artifacts. $($_.Exception.Message)"
+                }
+                else {
+                    throw
+                }
             }
         }
 

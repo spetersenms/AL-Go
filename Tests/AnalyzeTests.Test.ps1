@@ -34,7 +34,7 @@ Describe "AnalyzeTests Action Tests" {
                     }
                 }
             }
-            $filename = Join-Path ([System.IO.Path]::GetTempPath()) "$([GUID]::NewGuid().ToString()).json"
+            $filename = Join-Path $TestDrive "$([GUID]::NewGuid().ToString()).json"
             $bcpt | ConvertTo-Json -Depth 100 | Set-Content -Path $filename -Encoding UTF8
             return $filename
         }
@@ -54,11 +54,8 @@ Describe "AnalyzeTests Action Tests" {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'bcptBaseLine2', Justification = 'False positive.')]
         $bcptBaseLine2 = GetBcptTestResultFile -noOfSuites 1 -noOfCodeunits 2 -noOfOperations 4 -noOfMeasurements 4 -durationOffset -2 -numberOfSQLStmtsOffset 0
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'thresholdsFile', Justification = 'False positive.')]
-        $thresholdsFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([GUID]::NewGuid().ToString()).json"
+        $thresholdsFile = Join-Path $TestDrive "$([GUID]::NewGuid().ToString()).json"
         @{ "NumberOfSqlStmtsThresholdWarning" = 1; "NumberOfSqlStmtsThresholdError" = 2 } | ConvertTo-Json | Set-Content -Path $thresholdsFile -Encoding UTF8
-        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'alToolTestRunnerModule', Justification = 'Used to generate production JUnit in a test.')]
-        $alToolTestRunnerModule = Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/AlToolTestRunner.psm1' -Resolve) `
-            -DisableNameChecking -Force -PassThru
     }
 
     It 'Compile Action' {
@@ -71,31 +68,23 @@ Describe "AnalyzeTests Action Tests" {
         YamlTest -scriptRoot $scriptRoot -actionName $actionName -actionScript $actionScript -outputs $outputs
     }
 
-    It 'Analyzes mixed normal JUnit produced by Add-JUnitTestSuite' {
+    It 'Analyzes mixed normal legacy JUnit independently of the AlTool runner' {
         . (Join-Path $scriptRoot '../AL-Go-Helper.ps1')
         . (Join-Path $scriptRoot 'TestResultAnalyzer.ps1')
         $junitFile = Join-Path $TestDrive 'TestResults.xml'
 
-        & $alToolTestRunnerModule {
-            param($Path)
-
-            $doc = [xml] '<?xml version="1.0" encoding="UTF-8"?><testsuites />'
-            $codeunit = [PSCustomObject]@{
-                Id    = 130001
-                Name  = 'Mixed Tests'
-                Tests = @('Passes', 'Fails', 'Skips')
-            }
-            $diagnosticText = "line one; detail`nAL Callstack:`nline two"
-            $results = @(
-                @{ MethodName = 'Passes'; Outcome = 'Pass'; Ms = 10; Message = ''; Stacktrace = '' },
-                @{ MethodName = 'Fails'; Outcome = 'Fail'; Ms = 20; Message = 'ignored'; Stacktrace = $diagnosticText },
-                @{ MethodName = 'Skips'; Outcome = 'Skip'; Ms = 0; Message = ''; Stacktrace = '' }
-            )
-            Add-JUnitTestSuite -Doc $doc -TestSuitesNode $doc.DocumentElement `
-                -Codeunit $codeunit -RequestedMethods $codeunit.Tests -MethodResults $results `
-                -ExtensionId '11111111-1111-1111-1111-111111111111' -AppName 'Test App' -Hostname 'host' | Out-Null
-            $doc.Save($Path)
-        } $junitFile
+        @'
+<testsuites>
+  <testsuite name="Mixed Tests" tests="3" failures="1" skipped="1" time="0.03">
+    <properties><property name="appName" value="Test App" /></properties>
+    <testcase name="Passes" time="0.01" />
+    <testcase name="Fails" time="0.02"><failure message="Test failed">line one; detail
+AL Callstack:
+line two</failure></testcase>
+    <testcase name="Skips" time="0"><skipped /></testcase>
+  </testsuite>
+</testsuites>
+'@ | Set-Content -LiteralPath $junitFile -Encoding UTF8
 
         $summary, $failures, $failureSummary = GetTestResultSummaryMD -testResultsFile $junitFile
 
@@ -136,7 +125,7 @@ Describe "AnalyzeTests Action Tests" {
     It 'Test GetBcptSummaryMD returns warning message when file exists but contains no entries' {
         . (Join-Path $scriptRoot '../AL-Go-Helper.ps1')
         . (Join-Path $scriptRoot 'TestResultAnalyzer.ps1')
-        $emptyResultsFile = Join-Path ([System.IO.Path]::GetTempPath()) "$([GUID]::NewGuid().ToString()).json"
+        $emptyResultsFile = Join-Path $TestDrive "$([GUID]::NewGuid().ToString()).json"
         $script:warningCount = 0
         Mock OutputWarning { Param([string] $message) Write-Host "WARNING: $message"; $script:warningCount++ }
         try {
@@ -270,6 +259,5 @@ Describe "AnalyzeTests Action Tests" {
         Remove-Item -Path $bcptBaseLine1 -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $bcptBaseLine2 -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $thresholdsFile -Force -ErrorAction SilentlyContinue
-        Remove-Module -ModuleInfo $alToolTestRunnerModule -Force -ErrorAction SilentlyContinue
     }
 }

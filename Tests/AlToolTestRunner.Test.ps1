@@ -1,1380 +1,716 @@
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Mock/callback parameters must match function signatures')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'Mock parameters match command signatures')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'Test-only credential')]
 param()
 
 $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
 
-Import-Module (Join-Path $PSScriptRoot '../Actions/.Modules/DebugLogHelper.psm1' -Resolve) -DisableNameChecking -Force
-Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/AlToolTestRunner.psm1' -Resolve) -DisableNameChecking -Force
+Import-Module (Join-Path $PSScriptRoot '..\Actions\.Modules\DebugLogHelper.psm1' -Resolve) -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot '..\Actions\RunTests\AlToolTestRunner.psm1' -Resolve) -Force -DisableNameChecking
 
-Describe 'AlToolTestRunner.psm1 Tests' {
-
+Describe 'AlToolTestRunner native results' {
     BeforeAll {
-        . (Join-Path -Path $PSScriptRoot -ChildPath "../Actions/AL-Go-Helper.ps1" -Resolve)
+        . (Join-Path $PSScriptRoot '..\Actions\AL-Go-Helper.ps1' -Resolve)
         $script:bcContainerHelperModulePaths = @(Get-Module BcContainerHelper | ForEach-Object { $_.Path })
         Get-Module BcContainerHelper | Remove-Module -Force
         $script:stubbedGlobalCommands = @()
-        $stubDefinitions = @{
-            'ConvertTo-HashTable'               = ${function:ConvertTo-HashTable}
-            'Get-TestsFromBcContainer'          = {
-                param(
-                    [string] $containerName,
-                    [string] $tenant,
-                    [System.Management.Automation.PSCredential] $credential,
-                    [string] $extensionId,
-                    [string] $testType,
-                    [switch] $ignoreGroups
-                )
-                throw 'Get-TestsFromBcContainer must be mocked by the test.'
+        $stubs = @{
+            'ConvertTo-HashTable' = ${function:ConvertTo-HashTable}
+            'Get-TestsFromBcContainer' = {
+                param($containerName, $tenant, [PSCredential]$credential, $extensionId, $testType, [switch]$ignoreGroups)
+                throw 'Mock required'
             }
-            'Get-BcContainerServerConfiguration' = {
-                param([string] $containerName)
-                throw 'Get-BcContainerServerConfiguration must be mocked by the test.'
-            }
-            'Get-CompanyInBcContainer'           = {
-                param(
-                    [string] $containerName,
-                    [string] $tenant
-                )
-                throw 'Get-CompanyInBcContainer must be mocked by the test.'
+            'Get-BcContainerServerConfiguration' = { param($containerName) throw 'Mock required' }
+            'Get-CompanyInBcContainer' = { param($containerName, $tenant) throw 'Mock required' }
+        }
+        foreach ($name in $stubs.Keys) {
+            if (-not (Test-Path "Function:\global:$name")) {
+                Set-Item "Function:\global:$name" -Value $stubs[$name]
+                $script:stubbedGlobalCommands += $name
             }
         }
-        foreach ($commandName in $stubDefinitions.Keys) {
-            $functionPath = "Function:\global:$commandName"
-            if (-not (Test-Path -LiteralPath $functionPath)) {
-                Set-Item -LiteralPath $functionPath -Value $stubDefinitions[$commandName]
-                $script:stubbedGlobalCommands += $commandName
-            }
-        }
-
-        # Re-import in the run phase so the module functions are guaranteed to be available even when
-        # this file runs in the same Invoke-Pester session as RunTests.Test.ps1. RunTests.psm1
-        # imports AlToolTestRunner.psm1 as a nested module with -Force, which removes the standalone
-        # module's functions from the global scope during discovery.
-        Import-Module (Join-Path $PSScriptRoot '../Actions/RunTests/AlToolTestRunner.psm1' -Resolve) -DisableNameChecking -Force
+        Import-Module (Join-Path $PSScriptRoot '..\Actions\RunTests\AlToolTestRunner.psm1' -Resolve) -Force -DisableNameChecking
     }
 
     AfterAll {
-        foreach ($commandName in $script:stubbedGlobalCommands) {
-            Remove-Item "Function:\global:$commandName" -Force -ErrorAction SilentlyContinue
+        foreach ($name in $script:stubbedGlobalCommands) {
+            Remove-Item "Function:\global:$name" -Force -ErrorAction SilentlyContinue
         }
-        foreach ($modulePath in $script:bcContainerHelperModulePaths) {
-            Import-Module $modulePath -Force -DisableNameChecking
-        }
-    }
-
-    Context 'Module exports' {
-        It 'Exports only the RunTests integration functions' {
-            @(Get-Command -Module AlToolTestRunner).Name | Sort-Object |
-                Should -Be @('Invoke-AlToolTestRun')
+        foreach ($path in $script:bcContainerHelperModulePaths) {
+            Import-Module $path -Force -DisableNameChecking
         }
     }
 
-    Context 'Get-DisabledTestKeySet' {
-        InModuleScope AlToolTestRunner {
-        It 'Reads production hashtable entries with scalar, array, duplicate, and wildcard methods' {
-            $disabled = @(
-                @{ codeunitName = 'My Tests'; method = 'TestOne' },
-                @{ codeunitName = 'MY TESTS'; method = @('TestTwo', 'TESTTHREE') },
-                @{ codeunitName = 'my tests'; method = 'testone' },
-                @{ codeunitName = 'Whole CU'; method = '*' }
-            )
-
-            $lookup = Get-DisabledTestKeySet -DisabledTests $disabled
-
-            @($lookup.Methods.Keys | Sort-Object) |
-                Should -Be @('my tests::testone', 'my tests::testthree', 'my tests::testtwo')
-            @($lookup.Codeunits.Keys) | Should -Be @('whole cu')
-            $lookup.Methods.ContainsKey('whole cu::*') | Should -BeFalse
+    BeforeEach {
+        $script:credential = [PSCredential]::new('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force))
+        $script:codeunits = @(
+            [pscustomobject]@{ Id = 130001; Name = 'My Tests'; Tests = @('TestOne', 'TestTwo') },
+            [pscustomobject]@{ Id = 130002; Name = 'Other Tests'; Tests = @('TestThree') }
+        )
+        $script:parameters = @{
+            ContainerName = 'test'
+            Credential = $script:credential
+            ExtensionId = [guid]::NewGuid().ToString()
+            TestResultsPath = Join-Path (Join-Path $TestDrive ([guid]::NewGuid().ToString())) 'AlToolTestResults'
+            AppName = 'Test App'
+            AlToolPath = 'C:\tools\al.exe'
         }
-
-        It 'Returns empty sets for an empty list' {
-            $lookup = Get-DisabledTestKeySet -DisabledTests @()
-            $lookup.Methods.Count | Should -Be 0
-            $lookup.Codeunits.Count | Should -Be 0
+        $script:appPath = Join-Path $script:parameters.TestResultsPath $script:parameters.ExtensionId
+        $script:metadataPath = Join-Path $script:appPath 'metadata.json'
+        $script:responsePath = Join-Path $script:appPath 'response.json'
+        $script:response = @{
+            succeeded = $true
+            data = @{ results = @(
+                @{ codeunitId = 130001; methodName = 'TestOne'; status = 'passed'; output = ''; durationMs = 1 },
+                @{ codeunitId = 130001; methodName = 'TestTwo'; status = 'passed'; output = ''; durationMs = 2 },
+                @{ codeunitId = 130002; methodName = 'TestThree'; status = 'skipped'; output = ''; durationMs = 0 }
+            ) }
         }
-        }
-    }
-
-    Context 'Get-AlToolTestCodeunits' {
-        InModuleScope AlToolTestRunner {
-        It 'Enumerates codeunits and filters disabled methods and whole codeunits' {
-            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer {
-                @(
-                    [PSCustomObject]@{ Id = '130001'; Name = 'My Tests'; Tests = @('TestOne', 'TestTwo') },
-                    [PSCustomObject]@{ Id = '130002'; Name = 'Whole CU'; Tests = @('X', 'Y') }
-                )
-            }
-            $testCodeunitParams = @{
-                ContainerName = 'test'
-                Credential    = (New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force)))
-                ExtensionId   = [Guid]::NewGuid().ToString()
-                DisabledTests = @(
-                    @{ codeunitName = 'My Tests'; method = 'TestTwo' },
-                    @{ codeunitName = 'Whole CU'; method = '*' }
-                )
-            }
-
-            $codeunits = @(Get-AlToolTestCodeunits @testCodeunitParams)
-
-            $codeunits.Count | Should -Be 1
-            $codeunits[0].Name | Should -Be 'My Tests'
-            @($codeunits[0].Tests).Count | Should -Be 1
-            $codeunits[0].Tests[0] | Should -Be 'TestOne'
-
-            $groupsPath = InModuleScope AlToolTestRunner -Parameters @{ Codeunits = $codeunits } {
-                New-AlTestGroupsFile -Codeunits $Codeunits
-            }
-            try {
-                $groupsJson = Get-Content -LiteralPath $groupsPath -Raw -Encoding UTF8
-                $groupsJson.TrimStart() | Should -Match '^\['
-                $groupsJson.Trim() |
-                    Should -Be '[{"codeunitId":130001,"testMethods":["TestOne"]}]'
-            }
-            finally {
-                Remove-Item -LiteralPath $groupsPath -Force -ErrorAction SilentlyContinue
-            }
-        }
-
-        It 'Filters the production hashtable shape case-insensitively while preserving enabled order' {
-            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer {
-                @(
-                    [PSCustomObject]@{
-                        Id = 130001; Name = 'My Tests'; Tests = @('TestOne', 'TestTwo', 'TestThree', 'TestFour')
-                    },
-                    [PSCustomObject]@{ Id = 130002; Name = 'Whole CU'; Tests = @('X', 'Y') },
-                    [PSCustomObject]@{ Id = 130003; Name = 'Other Tests'; Tests = @('First', 'Second') }
-                )
-            }
-            $testCodeunitParams = @{
-                ContainerName = 'test'
-                Credential    = (New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force)))
-                ExtensionId   = [Guid]::NewGuid().ToString()
-                DisabledTests = @(
-                    @{ codeunitName = 'MY TESTS'; method = 'testtwo' },
-                    @{ codeunitName = 'my tests'; method = @('TESTTHREE') },
-                    @{ codeunitName = 'My Tests'; method = 'TestTwo' },
-                    @{ codeunitName = 'whole cu'; method = '*' }
-                )
-            }
-
-            $codeunits = @(Get-AlToolTestCodeunits @testCodeunitParams)
-
-            $codeunits.Count | Should -Be 2
-            @($codeunits.Name) | Should -Be @('My Tests', 'Other Tests')
-            @($codeunits[0].Tests) | Should -Be @('TestOne', 'TestFour')
-            @($codeunits[1].Tests) | Should -Be @('First', 'Second')
-        }
-
-        It 'Omits testType when blank and returns every codeunit' {
-            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer {
-                @([PSCustomObject]@{ Id = 130001; Name = 'My Tests'; Tests = @('TestOne') })
-            }
-            $testCodeunitParams = @{
-                ContainerName = 'test'
-                Credential    = (New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force)))
-                ExtensionId   = [Guid]::NewGuid().ToString()
-                TestType      = ''
-            }
-
-            $codeunits = @(Get-AlToolTestCodeunits @testCodeunitParams)
-            $codeunits.Count | Should -Be 1
-            Should -Invoke -ModuleName AlToolTestRunner Get-TestsFromBcContainer -Times 1 -Exactly -ParameterFilter {
-                -not $PSBoundParameters.ContainsKey('testType')
-            }
-        }
-
-        It 'Passes a supported testType to BcContainerHelper' {
-            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer {
-                @([PSCustomObject]@{ Id = 130001; Name = 'Integration Tests'; Tests = @('TestOne') })
-            }
-            $testCodeunitParams = @{
-                ContainerName = 'test'
-                Credential    = (New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force)))
-                ExtensionId   = [Guid]::NewGuid().ToString()
-                TestType      = 'IntegrationTest'
-            }
-
-            $codeunits = @(Get-AlToolTestCodeunits @testCodeunitParams)
-
-            $codeunits.Count | Should -Be 1
-            Should -Invoke -ModuleName AlToolTestRunner Get-TestsFromBcContainer -Times 1 -Exactly -ParameterFilter {
-                $testType -eq 'IntegrationTest'
-            }
-        }
-
-        It 'Rejects an unsupported built-in testType before calling BcContainerHelper' {
-            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer {
-                throw 'BcContainerHelper should not be called'
-            }
-            $testCodeunitParams = @{
-                ContainerName = 'test'
-                Credential    = (New-Object System.Management.Automation.PSCredential('admin', (ConvertTo-SecureString 'password' -AsPlainText -Force)))
-                ExtensionId   = [Guid]::NewGuid().ToString()
-                TestType      = 'Legacy'
-            }
-
-            { Get-AlToolTestCodeunits @testCodeunitParams } |
-                Should -Throw "*Unsupported testType 'Legacy'*UnitTest*IntegrationTest*Uncategorized*"
-            Should -Invoke -ModuleName AlToolTestRunner Get-TestsFromBcContainer -Times 0 -Exactly
-        }
+        $script:stdout = @('  ', ($script:response | ConvertTo-Json -Depth 10), ' ')
+        $script:stderr = @()
+        $script:exitCode = 0
+        $script:previousUser = $env:BC_SERVER_USERNAME
+        $script:previousPassword = $env:BC_SERVER_PASSWORD
+        Mock -ModuleName AlToolTestRunner OutputDebug {}
+        Mock -ModuleName AlToolTestRunner Write-Host {}
+        Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
+            @{ StandardOutput = $script:stdout; StandardError = $script:stderr; ExitCode = $script:exitCode }
         }
     }
 
-    Context 'Get-AlToolConnection' {
-        InModuleScope AlToolTestRunner {
-        It 'Reads server instance and developer services port from the container configuration' {
-            Mock -ModuleName AlToolTestRunner Get-BcContainerServerConfiguration {
-                [PSCustomObject]@{ ServerInstance = 'MyBC'; DeveloperServicesPort = 7145 }
-            }
-
-            $connection = Get-AlToolConnection -ContainerName 'mycontainer'
-
-            $connection.Server | Should -Be 'http://mycontainer'
-            $connection.ServerInstance | Should -Be 'MyBC'
-            $connection.Port | Should -Be 7145
-        }
-
-        It 'Falls back to conventional defaults when configuration cannot be read' {
-            Mock -ModuleName AlToolTestRunner Get-BcContainerServerConfiguration { throw 'no such container' }
-
-            $connection = Get-AlToolConnection -ContainerName 'mycontainer'
-
-            $connection.Server | Should -Be 'http://mycontainer'
-            $connection.ServerInstance | Should -Be 'BC'
-            $connection.Port | Should -Be 7049
-        }
-        }
+    AfterEach {
+        if ($null -eq $script:previousUser) { Remove-Item Env:\BC_SERVER_USERNAME -ErrorAction SilentlyContinue }
+        else { $env:BC_SERVER_USERNAME = $script:previousUser }
+        if ($null -eq $script:previousPassword) { Remove-Item Env:\BC_SERVER_PASSWORD -ErrorAction SilentlyContinue }
+        else { $env:BC_SERVER_PASSWORD = $script:previousPassword }
     }
 
-    Context 'Get-AlToolCompany' {
-        InModuleScope AlToolTestRunner {
-        It 'Honors an explicitly requested company name without querying the container' {
-            Mock -ModuleName AlToolTestRunner Get-CompanyInBcContainer { throw 'should not be called' }
-            $company = Get-AlToolCompany -ContainerName 'test' -Tenant 'default' -CompanyName 'CRONUS'
-            $company | Should -Be 'CRONUS'
-        }
-
-        It 'Falls back to the container default company, preferring an evaluation company' {
-            Mock -ModuleName AlToolTestRunner Get-CompanyInBcContainer {
-                @(
-                    [PSCustomObject]@{ companyName = 'CRONUS Real'; evaluationCompany = $false },
-                    [PSCustomObject]@{ companyName = 'CRONUS Eval'; evaluationCompany = $true }
-                )
-            }
-            $company = Get-AlToolCompany -ContainerName 'test' -Tenant 'default'
-            $company | Should -Be 'CRONUS Eval'
-        }
-        }
-    }
-
-    Context 'ConvertFrom-AlTestGroupsOutput' {
-        InModuleScope AlToolTestRunner {
-        It 'Maps pass, fail, and skip result occurrences by codeunit' {
-            $failureOutput = "assertion failed`nAL Callstack:`nline one; detail`nline two"
-            $response = @{
-                succeeded = $false
-                message   = 'One or more tests failed.'
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 130001; methodName = 'SameName'; status = 'passed'; output = ''; durationMs = 11 },
-                        @{ codeunitId = 130001; methodName = 'Fails'; status = 'failed'; output = $failureOutput; durationMs = 12 },
-                        @{ codeunitId = 130002; methodName = 'SameName'; status = 'skipped'; output = ''; durationMs = 0 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            $parsed.Succeeded | Should -BeFalse
-            $parsed.Message | Should -Be 'One or more tests failed.'
-            @($parsed.Results['130001']).Count | Should -Be 2
-            ($parsed.Results['130001'] | Where-Object MethodName -eq 'SameName').Outcome | Should -Be 'Pass'
-            ($parsed.Results['130002'] | Where-Object MethodName -eq 'SameName').Outcome | Should -Be 'Skip'
-            $failedResult = $parsed.Results['130001'] | Where-Object MethodName -eq 'Fails'
-            $failedResult.Outcome | Should -Be 'Fail'
-            $failedResult.Message | Should -BeExactly 'Test failed'
-            $failedResult.Stacktrace | Should -BeExactly $failureOutput
-        }
-
-        It 'Uses a stable message and preserves multiline output without a callstack marker' {
-            $failureOutput = "`n  plain failure  `nsecond line; still diagnostic`nthird line"
-            $response = @{
-                succeeded = $false
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 130001; methodName = 'Fails'; status = 'failed'; output = $failureOutput; durationMs = 12 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-            $failedResult = $parsed.Results['130001'][0]
-
-            $failedResult.Message | Should -BeExactly 'Test failed'
-            $failedResult.Stacktrace | Should -BeExactly $failureOutput
-        }
-
-        It 'Uses a stable message and preserves empty failed output' {
-            $response = @{
-                succeeded = $false
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 130001; methodName = 'Fails'; status = 'failed'; output = ''; durationMs = 12 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            $parsed.Results['130001'][0].Message | Should -BeExactly 'Test failed'
-            $parsed.Results['130001'][0].Stacktrace | Should -BeExactly ''
-        }
-
-        It 'Uses a stable message and preserves whitespace-only failed output' {
-            $response = @{
-                succeeded = $false
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 130001; methodName = 'Fails'; status = 'failed'; output = "`n  `n"; durationMs = 12 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            $parsed.Results['130001'][0].Message | Should -BeExactly 'Test failed'
-            $parsed.Results['130001'][0].Stacktrace | Should -BeExactly "`n  `n"
-        }
-
-        It 'Preserves every duplicate result occurrence in response order' {
-            $response = @{
-                succeeded = $true
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 130001; methodName = 'Duplicate'; status = 'passed'; output = ''; durationMs = 1 },
-                        @{ codeunitId = 130001; methodName = 'Duplicate'; status = 'failed'; output = 'failed'; durationMs = 2 },
-                        @{ codeunitId = 130001; methodName = 'Duplicate'; status = 'passed'; output = ''; durationMs = 3 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            @($parsed.Results['130001']).Count | Should -Be 3
-            @($parsed.Results['130001'].Outcome) | Should -Be @('Pass', 'Fail', 'Pass')
-            @($parsed.Results['130001'].Ms) | Should -Be @(1, 2, 3)
-        }
-
-        It 'Parses durationMs values beyond the Int32 range as Int64' {
-            $response = @{
-                succeeded = $true
-                data      = @{
-                    results = @(
-                        @{
-                            codeunitId = 130001
-                            methodName = 'LongRunning'
-                            status     = 'passed'
-                            output     = ''
-                            durationMs = 3000000000
-                        }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            $parsed.Results['130001'][0].Ms | Should -Be ([long] 3000000000)
-            $parsed.Results['130001'][0].Ms.GetType() | Should -Be ([long])
-        }
-
-        It 'Accepts a skipped missing-codeunit sentinel with a blank method name' {
-            $response = @{
-                succeeded = $true
-                data      = @{
-                    results = @(
-                        @{ codeunitId = 0; methodName = ''; status = 'skipped'; output = ''; durationMs = 0 }
-                    )
-                }
-            } | ConvertTo-Json -Depth 6
-
-            $parsed = ConvertFrom-AlTestGroupsOutput -OutputLines @($response)
-
-            $parsed.Results['0'][0].MethodName | Should -Be ''
-            $parsed.Results['0'][0].Outcome | Should -Be 'Skip'
-        }
-        }
-    }
-
-    Context 'New-AlTestGroupsFile' {
-        It 'Rejects an invalid codeunit ID' -TestCases @(
-            @{ Id = ' ' }
-            @{ Id = 'not-a-number' }
-            @{ Id = '2147483648' }
-        ) {
-            param($Id)
-
-            InModuleScope AlToolTestRunner -Parameters @{ CodeunitId = $Id } {
-                {
-                    New-AlTestGroupsFile -Codeunits @(
-                        [PSCustomObject]@{ Id = $CodeunitId; Tests = @('TestOne') }
-                    )
-                } | Should -Throw "*must be a valid Int32 value*"
-            }
-        }
-    }
-
-    Context 'Invoke-AlRunTestsBatch' {
-        BeforeEach {
-            $script:batchCodeunits = @(
-                [PSCustomObject]@{ Id = '130001'; Name = 'First Tests'; Tests = @('TestOne', 'TestTwo') },
-                [PSCustomObject]@{ Id = '130002'; Name = 'Second Tests'; Tests = @('TestThree') }
-            )
-            $script:batchConnection = @{ Server = 'http://test'; ServerInstance = 'BC'; Port = 7049 }
-            $script:batchAlToolPath = 'C:\dotnet-tools\al.exe'
-            $script:capturedBatchArguments = $null
-            $script:capturedTestGroupsPath = $null
-            $script:capturedTestGroupsJson = $null
-            Mock -ModuleName AlToolTestRunner OutputDebug {}
-        }
-
-        It 'Uses one testgroups invocation with the exact enabled method lists and removes the temporary file' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $script:capturedBatchArguments = @($ArgumentList)
-                $testGroupsIndex = [Array]::IndexOf($ArgumentList, '--testgroups')
-                $script:capturedTestGroupsPath = $ArgumentList[$testGroupsIndex + 1]
-                $script:capturedTestGroupsJson = Get-Content -LiteralPath $script:capturedTestGroupsPath -Raw -Encoding UTF8
-                $stdout = @{
-                    succeeded = $true
-                    data      = @{
-                        results = @(
-                            @{ codeunitId = 130001; methodName = 'TestOne'; status = 'passed'; output = ''; durationMs = 1 },
-                            @{ codeunitId = 130001; methodName = 'TestTwo'; status = 'passed'; output = ''; durationMs = 2 },
-                            @{ codeunitId = 130002; methodName = 'TestThree'; status = 'passed'; output = ''; durationMs = 3 }
-                        )
-                    }
-                } | ConvertTo-Json -Depth 6
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@()
-                    Output         = [string[]]@($stdout)
-                    ExitCode       = [int] 0
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                $result = Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                    -Tenant 'default' -Connection $Connection
-                $result.Results['130001'].Count | Should -Be 2
-                $result.Results['130002'].Count | Should -Be 1
-                $result.ElapsedSec | Should -BeGreaterOrEqual 0
-            }
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 1 -Exactly -ParameterFilter {
-                $FilePath -eq $script:batchAlToolPath
-            }
-            $script:capturedBatchArguments[0] | Should -Be 'runtests'
-            $script:capturedBatchArguments | Should -Contain '--testgroups'
-            $script:capturedBatchArguments | Should -Not -Contain '--project'
-            $script:capturedBatchArguments | Should -Not -Contain '--raw'
-            $script:capturedBatchArguments | Should -Not -Contain '--testmethods'
-            $script:capturedBatchArguments | Should -Not -Contain '130001'
-            $script:capturedBatchArguments | Should -Not -Contain '130002'
-            $script:capturedTestGroupsJson.Trim() |
-                Should -Be '[{"codeunitId":130001,"testMethods":["TestOne","TestTwo"]},{"codeunitId":130002,"testMethods":["TestThree"]}]'
-            Test-Path -LiteralPath $script:capturedTestGroupsPath | Should -BeFalse
-            Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 0 -Exactly
-        }
-
-        It 'Writes successful native stderr only to debug output' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $stdout = @{
-                    succeeded = $true
-                    data      = @{
-                        results = @(
-                            @{ codeunitId = 130001; methodName = 'TestOne'; status = 'passed'; output = ''; durationMs = 1 },
-                            @{ codeunitId = 130001; methodName = 'TestTwo'; status = 'passed'; output = ''; durationMs = 2 },
-                            @{ codeunitId = 130002; methodName = 'TestThree'; status = 'passed'; output = ''; durationMs = 3 }
-                        )
-                    }
-                } | ConvertTo-Json -Depth 6
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@('informational diagnostic', 'server trace')
-                    Output         = [string[]]@($stdout, 'informational diagnostic', 'server trace')
-                    ExitCode       = [int] 0
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                $result = Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                    -Tenant 'default' -Connection $Connection
-                $result.Succeeded | Should -BeTrue
-            }
-
-            Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 1 -Exactly -ParameterFilter {
-                $message -like 'al runtests stderr:*informational diagnostic*server trace*'
-            }
-        }
-
-        It 'Parses valid failed-test JSON when AlTool exits with code one' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $stdout = @{
-                    succeeded = $false
-                    data      = @{
-                        results = @(
-                            @{ codeunitId = 130001; methodName = 'TestOne'; status = 'failed'; output = 'failed'; durationMs = 4 },
-                            @{ codeunitId = 130001; methodName = 'TestTwo'; status = 'passed'; output = ''; durationMs = 5 },
-                            @{ codeunitId = 130002; methodName = 'TestThree'; status = 'skipped'; output = ''; durationMs = 0 }
-                        )
-                    }
-                } | ConvertTo-Json -Depth 6
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@('test diagnostics')
-                    Output         = [string[]]@($stdout, 'test diagnostics')
-                    ExitCode       = [int] 1
-                }
-            }
-            Mock -ModuleName AlToolTestRunner Write-Host {}
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                $result = Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                    -Tenant 'default' -Connection $Connection
-                $result.Succeeded | Should -BeFalse
-                ($result.Results['130001'] | Where-Object MethodName -eq 'TestOne').Outcome | Should -Be 'Fail'
-                ($result.Results['130001'] | Where-Object MethodName -eq 'TestTwo').Outcome | Should -Be 'Pass'
-                ($result.Results['130002'] | Where-Object MethodName -eq 'TestThree').Outcome | Should -Be 'Skip'
-            }
-
-            Should -Invoke -ModuleName AlToolTestRunner Write-Host -Times 0 -Exactly -ParameterFilter {
-                "$Object" -like '::warning::*'
-            }
-            Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 1 -Exactly -ParameterFilter {
-                $message -like 'al runtests stderr:*test diagnostics*'
-            }
-        }
-
-        It 'Terminates when AlTool exits above one despite complete passing JSON' {
-            Mock -ModuleName AlToolTestRunner ConvertFrom-AlTestGroupsOutput {
-                throw 'structured response should not be parsed'
-            }
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $stdout = @{
-                    succeeded = $false
-                    data      = @{
-                        results = @(
-                            @{ codeunitId = 130001; methodName = 'TestOne'; status = 'passed'; output = ''; durationMs = 1 },
-                            @{ codeunitId = 130001; methodName = 'TestTwo'; status = 'passed'; output = ''; durationMs = 2 },
-                            @{ codeunitId = 130002; methodName = 'TestThree'; status = 'skipped'; output = ''; durationMs = 0 }
-                        )
-                    }
-                } | ConvertTo-Json -Depth 6
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@('transport failed')
-                    Output         = [string[]]@($stdout, 'transport failed')
-                    ExitCode       = [int] 9
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw '*process failure*unexpected code 9*stderr: transport failed*'
-            }
-            Should -Invoke -ModuleName AlToolTestRunner ConvertFrom-AlTestGroupsOutput -Times 0 -Exactly
-        }
-
-        It 'Surfaces stderr when AlTool fails before serializing a ToolResponse' {
-            Mock -ModuleName AlToolTestRunner ConvertFrom-AlTestGroupsOutput {
-                throw 'empty stdout should not be parsed'
-            }
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@()
-                    StandardError  = [string[]]@('no response diagnostic')
-                    Output         = [string[]]@('no response diagnostic')
-                    ExitCode       = [int] 1
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw '*al runtests failed: no response diagnostic*exit code 1*'
-            }
-            Should -Invoke -ModuleName AlToolTestRunner ConvertFrom-AlTestGroupsOutput -Times 0 -Exactly
-        }
-
-        It 'Reports the exit code when AlTool returns no stdout or stderr' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@()
-                    StandardError  = [string[]]@()
-                    Output         = [string[]]@()
-                    ExitCode       = [int] 1
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw '*no structured stdout or stderr*exit code 1*'
-            }
-        }
-
-        It 'Surfaces the failed-envelope message and stderr when results are absent' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $stdout = @{
-                    succeeded = $false
-                    message   = 'The company could not be opened.'
-                } | ConvertTo-Json -Depth 5
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@('The company could not be opened.', 'server refused the connection')
-                    Output         = [string[]]@($stdout, 'The company could not be opened.', 'server refused the connection')
-                    ExitCode       = [int] 1
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                try {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                    throw 'Expected Invoke-AlRunTestsBatch to fail.'
-                }
-                catch {
-                    $_.Exception.Message | Should -BeLike '*The company could not be opened*'
-                    $_.Exception.Message | Should -BeLike '*server refused the connection*'
-                }
-            }
-        }
-
-        It 'Does not repeat stderr that exactly matches a failed-envelope message' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $stdout = @{
-                    succeeded = $false
-                    message   = 'The company could not be opened.'
-                } | ConvertTo-Json
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@($stdout)
-                    StandardError  = [string[]]@('The company could not be opened.')
-                    Output         = [string[]]@($stdout, 'The company could not be opened.')
-                    ExitCode       = [int] 1
-                }
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw 'al runtests failed: The company could not be opened.'
-            }
-        }
-
-        It 'Terminates with stdout and stderr when the batch response is malformed' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $testGroupsIndex = [Array]::IndexOf($ArgumentList, '--testgroups')
-                $script:capturedTestGroupsPath = $ArgumentList[$testGroupsIndex + 1]
-                return [PSCustomObject]@{
-                    StandardOutput = [string[]]@('{not-json')
-                    StandardError  = [string[]]@('parse diagnostic')
-                    Output         = [string[]]@('{not-json', 'parse diagnostic')
-                    ExitCode       = [int] 1
-                }
-            }
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw '*protocol failure*could not be parsed as JSON*stdout: {not-json*stderr: parse diagnostic*'
-            }
-
-            Test-Path -LiteralPath $script:capturedTestGroupsPath | Should -BeFalse
-        }
-
-        It 'Removes the testgroups file when native invocation fails' {
-            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
-                $testGroupsIndex = [Array]::IndexOf($ArgumentList, '--testgroups')
-                $script:capturedTestGroupsPath = $ArgumentList[$testGroupsIndex + 1]
-                throw 'native invocation failed'
-            }
-
-            InModuleScope AlToolTestRunner -Parameters @{
-                Codeunits  = $script:batchCodeunits
-                Connection = $script:batchConnection
-            } {
-                {
-                    Invoke-AlRunTestsBatch -AlToolPath 'C:\dotnet-tools\al.exe' -Codeunits $Codeunits -Company 'CRONUS' `
-                        -Tenant 'default' -Connection $Connection
-                } | Should -Throw '*native invocation failed*'
-            }
-
-            Test-Path -LiteralPath $script:capturedTestGroupsPath | Should -BeFalse
-        }
-    }
-
-    Context 'Invoke-AlToolTestRun parameter contract' {
-        BeforeAll {
-            $script:requiredParameterCredential = New-Object System.Management.Automation.PSCredential(
-                'admin',
-                (ConvertTo-SecureString 'password' -AsPlainText -Force)
-            )
-            $script:requiredParameterExtensionId = [Guid]::NewGuid().ToString()
-            $script:requiredParameterResultFile = Join-Path $TestDrive 'RequiredParameters.xml'
-            $script:requiredParameterModulePath = (Resolve-Path (
-                    Join-Path $PSScriptRoot '../Actions/RunTests/AlToolTestRunner.psm1'
-                )).Path
-            $script:requiredParameterPowerShell = (Get-Process -Id $PID).Path
-        }
-
-        It 'Declares only the explicit runner contract and marks required values mandatory' {
+    Context 'Parameter contract' {
+        It 'Exports the runner and override matching helper and requires native results instead of JUnit' {
+            @(Get-Command -Module AlToolTestRunner).Name | Should -Be @('Get-AlToolTestMethodResults', 'Invoke-AlToolTestRun')
             $command = Get-Command Invoke-AlToolTestRun
-
+            $command.Parameters.ContainsKey('JUnitResultFileName') | Should -BeFalse
             $command.Parameters.ContainsKey('Parameters') | Should -BeFalse
-            foreach ($parameterName in @('ContainerName', 'Credential', 'ExtensionId', 'JUnitResultFileName')) {
-                $parameterAttribute = $command.Parameters[$parameterName].Attributes |
-                    Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] } |
-                    Select-Object -First 1
-                $parameterAttribute.Mandatory | Should -BeTrue
+            foreach ($name in @('ContainerName', 'Credential', 'ExtensionId', 'TestResultsPath')) {
+                ($command.Parameters[$name].Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }).Mandatory | Should -BeTrue
             }
-            $command.Parameters.DisabledTests.ParameterType | Should -Be ([hashtable[]])
-            $command.Parameters.TestType.ParameterType | Should -Be ([string])
-            $command.Parameters.AlToolPath.ParameterType | Should -Be ([string])
         }
 
-        It 'Rejects calls that omit required parameter <ParameterName>' -TestCases @(
-            @{ ParameterName = 'ContainerName' }
-            @{ ParameterName = 'Credential' }
-            @{ ParameterName = 'ExtensionId' }
-            @{ ParameterName = 'JUnitResultFileName' }
-        ) {
-            param($ParameterName)
-
-            $parameterExpressions = [ordered]@{
-                ContainerName       = "-ContainerName 'test'"
-                Credential          = '-Credential $credential'
-                ExtensionId         = "-ExtensionId '$($script:requiredParameterExtensionId)'"
-                JUnitResultFileName = "-JUnitResultFileName '$($script:requiredParameterResultFile)'"
-            }
-            $null = $parameterExpressions.Remove($ParameterName)
-            $escapedModulePath = $script:requiredParameterModulePath.Replace("'", "''")
-            $childScript = @"
-`$ErrorActionPreference = 'Stop'
-Import-Module '$escapedModulePath' -Force
-`$credential = New-Object System.Management.Automation.PSCredential(
-    'admin',
-    (ConvertTo-SecureString 'password' -AsPlainText -Force)
-)
-Invoke-AlToolTestRun $($parameterExpressions.Values -join ' ')
-"@
-            $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
-            $standardOutputPath = Join-Path $TestDrive "$ParameterName-stdout.txt"
-            $standardErrorPath = Join-Path $TestDrive "$ParameterName-stderr.txt"
-
-            $process = Start-Process -FilePath $script:requiredParameterPowerShell -ArgumentList @(
-                '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript
-            ) -RedirectStandardOutput $standardOutputPath -RedirectStandardError $standardErrorPath -Wait -PassThru
-            $bindingOutput = @(
-                Get-Content -LiteralPath $standardOutputPath -Raw -ErrorAction SilentlyContinue
-                Get-Content -LiteralPath $standardErrorPath -Raw -ErrorAction SilentlyContinue
-            ) -join "`n"
-
-            $process.ExitCode | Should -Not -Be 0
-            $bindingOutput | Should -Match ([regex]::Escape($ParameterName))
+        It 'Rejects blank results paths' -TestCases @(@{ Value = $null }, @{ Value = '' }, @{ Value = ' ' }) {
+            param($Value)
+            $script:parameters.TestResultsPath = $Value
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw
         }
 
-        It 'Rejects a blank JUnitResultFileName' -TestCases @(
-            @{ Value = $null }
-            @{ Value = '' }
-            @{ Value = ' ' }
+        It 'Rejects invalid and traversal app IDs' -TestCases @(
+            @{ Value = '..\outside' }, @{ Value = '' }, @{ Value = 'not-a-guid' }
         ) {
             param($Value)
-
-            {
-                Invoke-AlToolTestRun -ContainerName 'test' -Credential $script:requiredParameterCredential `
-                    -ExtensionId $script:requiredParameterExtensionId -JUnitResultFileName $Value
-            } | Should -Throw
+            $script:parameters.ExtensionId = $Value
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 0
         }
     }
 
-    Context 'Invoke-AlToolTestRun batch behavior' {
-        BeforeEach {
-            $script:testRunCredential = New-Object System.Management.Automation.PSCredential(
-                'admin',
-                (ConvertTo-SecureString 'password' -AsPlainText -Force)
-            )
-            $script:testRunParameters = @{
-                ContainerName       = 'test'
-                Credential          = $script:testRunCredential
-                ExtensionId         = [Guid]::NewGuid().ToString()
-                AppName             = 'Test App'
-                AlToolPath          = Join-Path $TestDrive 'al'
-                JUnitResultFileName = Join-Path $TestDrive 'TestResults.xml'
-            }
-            $script:testRunCodeunit = [PSCustomObject]@{
-                Id    = 130001
-                Name  = 'My Tests'
-                Tests = @('TestOne')
-            }
-            Remove-Item -LiteralPath (Join-Path $TestDrive 'TestResults.xml') -Force -ErrorAction SilentlyContinue
+    Context 'Get-AlToolTestMethodResults' {
+        It 'Preserves every exact duplicate occurrence including a failing duplicate' {
+            $results = @(Get-AlToolTestMethodResults -RequestedMethods @('Duplicate') -MethodResults @(
+                @{ methodName = 'Duplicate'; status = 'passed'; durationMs = [long]1; output = '' },
+                @{ methodName = 'Duplicate'; status = 'failed'; durationMs = [long]2; output = 'failure' }
+            ))
+            @($results.status) | Should -Be @('passed', 'failed')
+            @($results.durationMs) | Should -Be @(1, 2)
+        }
 
-            Mock -ModuleName AlToolTestRunner Get-AlToolConnection {
-                return @{ Server = 'http://test'; ServerInstance = 'BC'; Port = 7049 }
-            }
-            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { return 'CRONUS' }
-            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { return @($script:testRunCodeunit) }
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{ '130001' = @(
-                            @{ MethodName = 'TestOne'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' }
-                        ) }
-                    Succeeded  = $true
-                    ElapsedSec = 0.1
+        It 'Matches every data-driven decorated case including nested brackets case-insensitively' {
+            $results = @(Get-AlToolTestMethodResults -RequestedMethods @('DataDriven') -MethodResults @(
+                @{ methodName = 'DataDriven[Case A]'; status = 'passed' },
+                @{ methodName = 'datadriven[Case [B]]'; status = 'skipped' }
+            ))
+            @($results.methodName) | Should -Be @('DataDriven[Case A]', 'datadriven[Case [B]]')
+            @($results.status) | Should -Be @('passed', 'skipped')
+        }
+
+        It 'Does not let unrelated decorated results satisfy a requested method' {
+            $results = @(Get-AlToolTestMethodResults -RequestedMethods @('Expected') -MethodResults @(
+                @{ methodName = 'Other[Case]'; status = 'passed' }
+            ))
+            $results.Count | Should -Be 1
+            $results[0].methodName | Should -BeExactly 'Expected'
+            $results[0].status | Should -Be 'failed'
+            $results[0].output | Should -BeExactly 'No result produced by al runtests'
+            $results[0].durationMs | Should -Be 0
+            $results[0].durationMs.GetType() | Should -Be ([long])
+        }
+
+        It 'Preserves requested ordering with missing results and accepts empty requests' {
+            $results = @(Get-AlToolTestMethodResults -RequestedMethods @('Missing', 'Present') -MethodResults @(
+                @{ methodName = 'Present'; status = 'passed' }
+            ))
+            @($results.methodName) | Should -Be @('Missing', 'Present')
+            @($results.status) | Should -Be @('failed', 'passed')
+            @(Get-AlToolTestMethodResults -RequestedMethods @() -MethodResults @()).Count | Should -Be 0
+        }
+
+        It 'Returns original native records without modifying the input' {
+            $native = @{ methodName = 'Present'; status = 'passed'; durationMs = [long]1; extra = 'retained' }
+            $before = $native | ConvertTo-Json
+            $results = @(Get-AlToolTestMethodResults -RequestedMethods @('Present', 'Missing') -MethodResults @($native))
+            [object]::ReferenceEquals($results[0], $native) | Should -BeTrue
+            ($native | ConvertTo-Json) | Should -BeExactly $before
+            $results[0].extra | Should -BeExactly 'retained'
+        }
+    }
+
+    Context 'Verify-AlTestGroupsOutput' {
+        It 'Verifies native fields without emitting or reshaping results' {
+            $response = @{
+                succeeded = $false
+                message = ' One or more tests failed. '
+                data = @{
+                    coverage = @{ extra = 'retained' }
+                    results = @(
+                        @{ codeunitId = 130001; methodName = 'Duplicate'; status = 'passed'; output = ''; durationMs = [long]3000000000 },
+                        @{ codeunitId = 130001; methodName = 'Duplicate'; status = 'failed'; output = "`n  failure`nAL Callstack:`nline two  "; durationMs = 12 },
+                        @{ codeunitId = 0; methodName = ''; status = 'skipped'; output = $null; durationMs = 0 }
+                    )
                 }
             }
+            $before = $response | ConvertTo-Json -Depth 10
+            InModuleScope AlToolTestRunner -Parameters @{ Response = $response } {
+                @(Verify-AlTestGroupsOutput -Response $Response).Count | Should -Be 0
+            }
+            ($response | ConvertTo-Json -Depth 10) | Should -BeExactly $before
+        }
+
+        It 'Accepts native response <Json>' -TestCases @(
+            @{ Json = '{"succeeded":true,"data":{"results":[]}}' },
+            @{ Json = '{"succeeded":false,"message":"Connection refused"}' },
+            @{ Json = '{"succeeded":false,"data":null}' },
+            @{ Json = '{"succeeded":false,"data":{"results":[{"codeunitId":1,"methodName":"Fails","status":"failed","durationMs":1}]}}' },
+            @{ Json = '{"succeeded":false,"data":{"results":[{"codeunitId":1,"methodName":"Fails","status":"failed","durationMs":1,"output":null}]}}' }
+        ) {
+            param($Json)
+            InModuleScope AlToolTestRunner -Parameters @{ Json = $Json } {
+                $response = $Json | ConvertFrom-Json | ConvertTo-HashTable -recurse
+                { Verify-AlTestGroupsOutput -Response $response } | Should -Not -Throw
+            }
+        }
+
+        It 'Rejects invalid native response <Json>' -TestCases @(
+            @{ Json = 'null' },
+            @{ Json = '[]' },
+            @{ Json = '{}' },
+            @{ Json = '{"succeeded":"true"}' },
+            @{ Json = '{"succeeded":true}' },
+            @{ Json = '{"succeeded":true,"data":[]}' },
+            @{ Json = '{"succeeded":true,"data":{"results":{}}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[null]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{}]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{"codeunitId":1,"methodName":"X","status":"unknown","durationMs":0}]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{"codeunitId":1,"methodName":"X","status":"passed","durationMs":-1}]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{"codeunitId":1,"methodName":"X","status":"passed","durationMs":9223372036854775808}]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{"codeunitId":1,"methodName":"","status":"passed","durationMs":0}]}}' },
+            @{ Json = '{"succeeded":true,"data":{"results":[{"codeunitId":1,"methodName":"X","status":"failed","durationMs":0,"output":{}}]}}' }
+        ) {
+            param($Json)
+            InModuleScope AlToolTestRunner -Parameters @{ Json = $Json } {
+                $response = $Json | ConvertFrom-Json | ConvertTo-HashTable -recurse
+                { Verify-AlTestGroupsOutput -Response $response } | Should -Throw
+            }
+        }
+    }
+
+    Context 'Native persistence and interpretation' {
+        BeforeEach {
+            Mock -ModuleName AlToolTestRunner Get-AlToolConnection { @{ Server = 'http://test'; ServerInstance = 'BC'; Port = 7049 } }
+            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { 'CRONUS' }
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { $script:codeunits }
+        }
+
+        It 'Persists metadata and exact captured stdout without XML in one batch per app' {
+            $script:methodMatcher = ${function:Get-AlToolTestMethodResults}
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestMethodResults {
+                param($RequestedMethods, $MethodResults)
+                & $script:methodMatcher -RequestedMethods $RequestedMethods -MethodResults $MethodResults
+            }
+            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
+                param($FilePath, $ArgumentList)
+                $script:capturedArguments = $ArgumentList
+                $script:groupsPath = $ArgumentList[2]
+                $script:groups = Get-Content -LiteralPath $script:groupsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $script:duringRun = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                    ConvertFrom-Json | ConvertTo-HashTable -recurse
+                $env:BC_SERVER_USERNAME | Should -Be 'admin'
+                $env:BC_SERVER_PASSWORD | Should -Be 'password'
+                @{ StandardOutput = $script:stdout; StandardError = @(); ExitCode = 0 }
+            }
+
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            $metadata.ContainsKey('schemaVersion') | Should -BeFalse
+            $metadata.appId | Should -BeExactly $script:parameters.ExtensionId
+            $metadata.appName | Should -BeExactly 'Test App'
+            $metadata.enumerated | Should -BeTrue
+            $metadata.attempted | Should -BeTrue
+            $metadata.verified | Should -BeTrue
+            $metadata.exitCode | Should -Be 0
+            @($metadata.codeunits).Count | Should -Be 2
+            @($metadata.codeunits[0].methods) | Should -Be @('TestOne', 'TestTwo')
+            $metadata.codeunits[0].id | Should -Be 130001
+            $metadata.codeunits[0].name | Should -BeExactly 'My Tests'
+            @($metadata.codeunits[0].results.methodName) | Should -Be @('TestOne', 'TestTwo')
+            @($metadata.codeunits[0].results.status) | Should -Be @('passed', 'passed')
+            @($metadata.codeunits[0].results.durationMs) | Should -Be @(1, 2)
+            @($metadata.codeunits[1].results).Count | Should -Be 1
+            $metadata.codeunits[1].results[0].status | Should -Be 'skipped'
+            $script:duringRun.attempted | Should -BeTrue
+            $script:duringRun.verified | Should -BeFalse
+            $script:duringRun.exitCode | Should -BeNullOrEmpty
+            Get-Content -LiteralPath $script:responsePath -Raw -Encoding UTF8 |
+                Should -BeExactly ($script:stdout -join [Environment]::NewLine)
+            @(Get-ChildItem -LiteralPath $script:parameters.TestResultsPath -Recurse -Filter '*.xml').Count | Should -Be 0
+            @($script:groups).Count | Should -Be 2
+            @($script:groups[0].testMethods) | Should -Be @('TestOne', 'TestTwo')
+            $script:capturedArguments | Should -Contain '--testgroups'
+            $script:capturedArguments | Should -Contain 'UserPassword'
+            $script:capturedArguments | Should -Contain 'default'
+            Test-Path -LiteralPath $script:groupsPath | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 1 -Exactly
+            Should -Invoke -ModuleName AlToolTestRunner Get-AlToolTestMethodResults -Times 2 -Exactly
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+        }
+
+        It 'Normalizes braced uppercase GUIDs and allows omitted app names' {
+            $script:parameters.ExtensionId = ([guid]$script:parameters.ExtensionId).ToString('B').ToUpperInvariant()
+            $script:parameters.Remove('AppName')
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata.appId | Should -BeExactly ([guid]$script:parameters.ExtensionId).ToString('D')
+            $metadata.appName | Should -BeExactly ''
+        }
+
+        It 'Analyzes production native artifacts directly for <Outcome> tests' -TestCases @(
+            @{ Outcome = 'passing'; Pass = $true }
+            @{ Outcome = 'failing'; Pass = $false }
+        ) {
+            param($Outcome, $Pass)
+
+            if (-not $Pass) {
+                $script:response.succeeded = $false
+                $script:response.data.results[0].status = 'failed'
+                $script:response.data.results[0].output = "assertion <failed>`nAL Callstack:`nTestOne line 10"
+                $script:exitCode = 1
+                $script:stdout = @('  ', ($script:response | ConvertTo-Json -Depth 10), ' ')
+            }
+            Invoke-AlToolTestRun @script:parameters | Should -Be $Pass
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestMethodResults { throw 'Analyzer must not match results again' }
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\TestResultAnalyzer.ps1')
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\AlToolTestResultAnalyzer.ps1')
+            Mock Trace-Information {}
+            Mock Out-Host {}
+
+            $summary, $failures, $compact = Get-AlToolTestResultSummaryMD -Path $script:parameters.TestResultsPath
+
+            if ($Pass) {
+                $summary | Should -Match '\|Test App\|3\|2[^|]*\|[^|]*\|1[^|]*\|0\.003\|'
+                $compact | Should -Be '<i>No test failures</i>'
+            }
+            else {
+                $summary | Should -Match '\|Test App\|3\|1[^|]*\|1[^|]*\|1[^|]*\|0\.003\|'
+                $failures | Should -Match 'assertion &lt;failed&gt;<br/>AL Callstack:<br/>TestOne line 10'
+                $compact | Should -Match '1 failing tests'
+            }
+            [System.IO.File]::ReadAllText($script:responsePath) | Should -BeExactly ($script:stdout -join [Environment]::NewLine)
+            Should -Invoke -ModuleName AlToolTestRunner Get-AlToolTestMethodResults -Times 0
+        }
+
+        It 'Writes unattempted metadata and no response when no enabled tests exist' {
+            $script:codeunits = @()
+            New-Item -ItemType Directory -Path $script:appPath -Force | Out-Null
+            Set-Content -LiteralPath $script:responsePath -Value 'stale' -Encoding UTF8
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            @($metadata.codeunits).Count | Should -Be 0
+            $metadata.attempted | Should -BeFalse
+            $metadata.verified | Should -BeFalse
+            $metadata.exitCode | Should -BeNullOrEmpty
+            Test-Path -LiteralPath $script:responsePath | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 0
+        }
+
+        It 'Retains metadata before connection failures and clears credentials' {
+            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { '' }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*Could not resolve a company*'
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata.attempted | Should -BeFalse
+            @($metadata.codeunits).Count | Should -Be 2
+            @($metadata.codeunits[0].results.methodName) | Should -Be @('TestOne', 'TestTwo')
+            @($metadata.codeunits[0].results.status) | Should -Be @('failed', 'failed')
+            $metadata.codeunits[1].results[0].status | Should -Be 'failed'
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\TestResultAnalyzer.ps1')
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\AlToolTestResultAnalyzer.ps1')
+            Mock Trace-Information {}
+            Mock Out-Host {}
+            $summary, $failures, $compact = Get-AlToolTestResultSummaryMD -Path $script:parameters.TestResultsPath
+            $summary | Should -Match '\|Test App\|3\|[^|]*\|3'
+            $failures | Should -Match 'Test setup failed before execution'
+            $compact | Should -Match '3 failing tests, 1 AlTool run errors'
+        }
+
+        It 'Preserves a setup error if saving missing-result metadata also fails' {
+            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { throw 'company lookup failed' }
             Mock -ModuleName AlToolTestRunner OutputWarning {}
-            Mock -ModuleName AlToolTestRunner Write-Host {}
-        }
-
-        It 'Creates a new testsuites document when the result file does not exist' {
-            $junitFile = $script:testRunParameters.JUnitResultFileName
-            Test-Path -LiteralPath $junitFile | Should -BeFalse
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-
-            [xml] $junit = Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8
-            $junit.DocumentElement.LocalName | Should -Be 'testsuites'
-            $junit.SelectNodes('testsuites/testsuite').Count | Should -Be 1
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='TestOne']") | Should -Not -BeNullOrEmpty
-        }
-
-        It 'Accepts an omitted app name and omits the optional JUnit appName property' {
-            $null = $script:testRunParameters.Remove('AppName')
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-
-            [xml] $junit = Get-Content -LiteralPath $script:testRunParameters.JUnitResultFileName -Raw -Encoding UTF8
-            $junit.SelectSingleNode("testsuites/testsuite/properties/property[@name='extensionid']") |
-                Should -Not -BeNullOrEmpty
-            $junit.SelectSingleNode("testsuites/testsuite/properties/property[@name='appName']") |
-                Should -BeNullOrEmpty
-        }
-
-        It 'Resolves AlTool through the shared helper when a direct call omits the path' {
-            $null = $script:testRunParameters.Remove('AlToolPath')
-            Mock -ModuleName AlToolTestRunner GetAlToolPath {
-                return 'C:\dotnet-tools\al.exe'
+            Mock -ModuleName AlToolTestRunner Set-Content { throw 'missing results write failed' } -ParameterFilter {
+                $LiteralPath -eq $script:metadataPath -and ($Value -join '') -match '"results"'
             }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-
-            Should -Invoke -ModuleName AlToolTestRunner GetAlToolPath -Times 1 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly -ParameterFilter {
-                $AlToolPath -eq 'C:\dotnet-tools\al.exe'
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*company lookup failed*'
+            Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 1 -Exactly -ParameterFilter {
+                $message -like '*metadata could not be saved*missing results write failed*'
             }
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
         }
 
-        It 'Uses a supplied full AlTool path without resolving it again' {
-            $script:testRunParameters.AlToolPath = 'D:\shared-tools\al.exe'
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly -ParameterFilter {
-                $AlToolPath -eq 'D:\shared-tools\al.exe'
-            }
-        }
-
-        It 'Runs all codeunits for an app in exactly one batch' {
-            $script:testRunParameters.TestType = 'UnitTest'
-            $secondCodeunit = [PSCustomObject]@{ Id = 130002; Name = 'Other Tests'; Tests = @('TestTwo') }
+        It 'Retains initial metadata even when enumeration throws' {
+            New-Item -ItemType Directory -Path $script:appPath -Force | Out-Null
+            Set-Content -LiteralPath $script:responsePath -Value 'stale' -Encoding UTF8
             Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits {
-                return @($script:testRunCodeunit, $secondCodeunit)
+                Test-Path -LiteralPath $script:metadataPath | Should -BeTrue
+                Test-Path -LiteralPath $script:responsePath | Should -BeFalse
+                throw 'enumeration failed'
             }
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{
-                        '130001' = @(@{ MethodName = 'TestOne'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' })
-                        '130002' = @(@{ MethodName = 'TestTwo'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' })
-                    }
-                    Succeeded  = $true
-                    ElapsedSec = 0.1
-                }
-            }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*enumeration failed*'
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata.attempted | Should -BeFalse
+            $metadata.enumerated | Should -BeFalse
+        }
 
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+        It 'Leaves execution unattempted when preparing the batch input fails' {
+            Mock -ModuleName AlToolTestRunner New-AlTestGroupsFile { throw 'input preparation failed' }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*input preparation failed*'
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            $metadata.enumerated | Should -BeTrue
+            $metadata.attempted | Should -BeFalse
+            $metadata.exitCode | Should -BeNullOrEmpty
+            @($metadata.codeunits[0].results.status) | Should -Be @('failed', 'failed')
+            $metadata.codeunits[1].results[0].status | Should -Be 'failed'
+            Test-Path -LiteralPath $script:responsePath | Should -BeFalse
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 0
+        }
 
-            Should -Invoke -ModuleName AlToolTestRunner Get-AlToolTestCodeunits -Times 1 -Exactly -ParameterFilter {
-                $ContainerName -eq 'test' -and
-                $Credential.UserName -eq 'admin' -and
-                $ExtensionId -eq $script:testRunParameters.ExtensionId -and
-                $Tenant -eq 'default' -and
-                $TestType -eq 'UnitTest' -and
-                $DisabledTests.Count -eq 0
+        It 'Keeps prior apps independently when a later app fails' {
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            $original = Get-Content -LiteralPath $script:responsePath -Raw -Encoding UTF8
+            $script:parameters.ExtensionId = [guid]::NewGuid().ToString()
+            $script:stdout = @('invalid second app')
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*protocol failure*'
+            Get-Content -LiteralPath $script:responsePath -Raw -Encoding UTF8 | Should -BeExactly $original
+            $secondPath = Join-Path (Join-Path $script:parameters.TestResultsPath $script:parameters.ExtensionId) 'response.json'
+            Get-Content -LiteralPath $secondPath -Raw -Encoding UTF8 | Should -BeExactly 'invalid second app'
+        }
+
+        It 'Does not reuse a stale response if native invocation throws' {
+            New-Item -ItemType Directory -Path $script:appPath -Force | Out-Null
+            Set-Content -LiteralPath $script:responsePath -Value 'stale' -Encoding UTF8
+            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand { throw 'native launch failed' }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*native launch failed*'
+            Test-Path -LiteralPath $script:responsePath | Should -BeFalse
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata.attempted | Should -BeTrue
+            $metadata.exitCode | Should -BeNullOrEmpty
+            @($metadata.codeunits[0].results.status) | Should -Be @('failed', 'failed')
+            $metadata.codeunits[1].results[0].status | Should -Be 'failed'
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+        }
+
+        It 'Fails rather than hiding output persistence errors' {
+            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
+                New-Item -ItemType Directory -Path $script:responsePath | Out-Null
+                @{ StandardOutput = $script:stdout; StandardError = @(); ExitCode = 0 }
             }
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly -ParameterFilter {
-                $Codeunits.Count -eq 2 -and
-                "$($Codeunits[0].Id)" -eq '130001' -and
-                "$($Codeunits[1].Id)" -eq '130002'
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            $metadata.exitCode | Should -Be 0
+        }
+
+        It 'Clears credentials even if the final metadata write fails' {
+            Mock -ModuleName AlToolTestRunner Set-Content { throw 'final metadata write failed' } -ParameterFilter {
+                $LiteralPath -eq $script:metadataPath -and ($Value -join '') -match '"exitCode"\s*:\s*0'
+            }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*final metadata write failed*'
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+        }
+
+        It 'Preserves a process failure if saving its final metadata also fails' {
+            $script:exitCode = 7
+            Mock -ModuleName AlToolTestRunner OutputWarning {}
+            Mock -ModuleName AlToolTestRunner Set-Content { throw 'final metadata write failed' } -ParameterFilter {
+                $LiteralPath -eq $script:metadataPath -and ($Value -join '') -match '"exitCode"\s*:\s*7'
+            }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*unexpected code 7*'
+            Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 1 -Exactly -ParameterFilter {
+                $message -like '*metadata could not be saved*final metadata write failed*'
+            }
+            Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
+            Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+        }
+
+        It 'Resolves AlTool only when no explicit path is supplied' {
+            $script:parameters.Remove('AlToolPath')
+            Mock -ModuleName AlToolTestRunner GetAlToolPath { 'D:\resolved\al.exe' }
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            Should -Invoke -ModuleName AlToolTestRunner GetAlToolPath -Times 1 -Exactly
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlNativeCommand -Times 1 -ParameterFilter {
+                $FilePath -eq 'D:\resolved\al.exe'
             }
         }
 
-        It 'Keeps pass, fail, and skip outcomes from the single batch' {
-            $script:testRunCodeunit.Tests = @('Passing', 'Failing', 'Skipped')
-            $junitFile = Join-Path $TestDrive 'TestResults.xml'
-            $script:testRunParameters.JUnitResultFileName = $junitFile
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{ '130001' = @(
-                            @{ MethodName = 'Passing'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' },
-                            @{ MethodName = 'Failing'; Outcome = 'Fail'; Ms = 2; Message = 'primary failure'; Stacktrace = 'stack' },
-                            @{ MethodName = 'Skipped'; Outcome = 'Skip'; Ms = 0; Message = ''; Stacktrace = '' }
-                        ) }
-                    Succeeded  = $false
-                    ElapsedSec = 0.1
-                }
-            }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeFalse
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly
-            [xml] $junit = Get-Content -Path $junitFile -Raw
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='Passing']/failure") | Should -BeNullOrEmpty
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='Failing']/failure").GetAttribute('message') |
-                Should -BeExactly 'Test failed'
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='Skipped']/skipped") | Should -Not -BeNullOrEmpty
+        It 'Uses an explicit AlTool path without resolving it' {
+            Mock -ModuleName AlToolTestRunner GetAlToolPath { throw 'Unexpected resolution' }
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            Should -Invoke -ModuleName AlToolTestRunner GetAlToolPath -Times 0
         }
 
-        It 'Turns a partial valid batch into a final missing-result JUnit failure' {
-            $script:testRunCodeunit.Tests = @('Reported', 'Missing')
-            $junitFile = Join-Path $TestDrive 'TestResults.xml'
-            $script:testRunParameters.JUnitResultFileName = $junitFile
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{ '130001' = @(
-                            @{ MethodName = 'Reported'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' }
-                        ) }
-                    Succeeded  = $false
-                    ElapsedSec = 0.1
-                }
-            }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeFalse
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly
-            [xml] $junit = Get-Content -Path $junitFile -Raw
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='Reported']/failure") | Should -BeNullOrEmpty
-            $missingFailure = $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='Missing']/failure")
-            $missingFailure.GetAttribute('message') | Should -Be 'No result produced by al runtests'
-        }
-
-        It 'Reports a failed batch envelope after preserving complete JUnit results' {
-            $junitFile = Join-Path $TestDrive 'TestResults.xml'
-            $script:testRunParameters.JUnitResultFileName = $junitFile
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{ '130001' = @(
-                            @{ MethodName = 'TestOne'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' }
-                        ) }
-                    Succeeded  = $false
-                    ElapsedSec = 0.1
-                }
-            }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeFalse
-
-            [xml] $junit = Get-Content -Path $junitFile -Raw
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='TestOne']") | Should -Not -BeNullOrEmpty
-            $junit.SelectSingleNode("testsuites/testsuite/testcase[@name='TestOne']/failure") | Should -BeNullOrEmpty
-        }
-
-        It 'Emits exact duplicate results and includes a duplicate failure in allPassed' {
-            $script:testRunCodeunit.Tests = @('Duplicate')
-            $junitFile = Join-Path $TestDrive 'TestResults.xml'
-            $script:testRunParameters.JUnitResultFileName = $junitFile
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                return @{
-                    Results    = @{ '130001' = @(
-                            @{ MethodName = 'Duplicate'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' },
-                            @{ MethodName = 'Duplicate'; Outcome = 'Fail'; Ms = 2; Message = 'second occurrence failed'; Stacktrace = 'stack' }
-                        ) }
-                    Succeeded  = $false
-                    ElapsedSec = 0.1
-                }
-            }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeFalse
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 1 -Exactly
-            [xml] $junit = Get-Content -Path $junitFile -Raw
-            $cases = @($junit.SelectNodes("testsuites/testsuite/testcase[@name='Duplicate']"))
-            $cases.Count | Should -Be 2
-            @($cases | Where-Object { $null -ne $_.SelectSingleNode('failure') }).Count | Should -Be 1
-            $cases[1].SelectSingleNode('failure').GetAttribute('message') | Should -BeExactly 'Test failed'
-            $junit.SelectNodes("testsuites/testsuite/testcase/failure[@message='No result produced by al runtests']").Count |
-                Should -Be 0
-        }
-
-        It 'Clears runtime credentials when batch execution fails' {
-            $previousUserName = $env:BC_SERVER_USERNAME
-            $previousPassword = $env:BC_SERVER_PASSWORD
-            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
-                throw 'batch failed'
-            }
-
-            try {
-                { Invoke-AlToolTestRun @script:testRunParameters } | Should -Throw '*batch failed*'
-                Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
-                Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
-            }
-            finally {
-                if ($null -ne $previousUserName) {
-                    $env:BC_SERVER_USERNAME = $previousUserName
-                }
-                if ($null -ne $previousPassword) {
-                    $env:BC_SERVER_PASSWORD = $previousPassword
-                }
+        It 'Reports missing requested results as failure without synthesizing native output' {
+            $script:response.data.results = @($script:response.data.results[0])
+            $script:stdout = @($script:response | ConvertTo-Json -Depth 10)
+            Invoke-AlToolTestRun @script:parameters | Should -BeFalse
+            Get-Content -LiteralPath $script:responsePath -Raw -Encoding UTF8 | Should -BeExactly $script:stdout[0]
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            @($metadata.codeunits[0].results.status) | Should -Be @('passed', 'failed')
+            $metadata.codeunits[0].results[1].output | Should -Be 'No result produced by al runtests'
+            $metadata.codeunits[1].results[0].status | Should -Be 'failed'
+            Should -Invoke -ModuleName AlToolTestRunner Write-Host -ParameterFilter {
+                "$Object" -like '*1 failed result(s)*'
             }
         }
 
-        It 'Clears runtime credentials after successful batch execution' {
-            $previousUserName = $env:BC_SERVER_USERNAME
-            $previousPassword = $env:BC_SERVER_PASSWORD
-            try {
-                Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-                Test-Path Env:\BC_SERVER_USERNAME | Should -BeFalse
-                Test-Path Env:\BC_SERVER_PASSWORD | Should -BeFalse
+        It 'Preserves duplicate and decorated outcomes and includes duplicate failures' {
+            $script:codeunits = @([pscustomobject]@{ Id = 130001; Name = 'Cases'; Tests = @('TestOne') })
+            $script:response.data.results = @(
+                @{ codeunitId = 130001; methodName = 'TestOne[Case [A]]'; status = 'passed'; output = ''; durationMs = 1 },
+                @{ codeunitId = 130001; methodName = 'TestOne[Case [A]]'; status = 'failed'; output = 'failed'; durationMs = 2 }
+            )
+            $script:stdout = @($script:response | ConvertTo-Json -Depth 10)
+            Invoke-AlToolTestRun @script:parameters | Should -BeFalse
+            Get-Content -LiteralPath $script:responsePath -Raw -Encoding UTF8 | Should -BeExactly $script:stdout[0]
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json | ConvertTo-HashTable -recurse
+            @($metadata.codeunits[0].results.methodName) | Should -Be @('TestOne[Case [A]]', 'TestOne[Case [A]]')
+            @($metadata.codeunits[0].results.status) | Should -Be @('passed', 'failed')
+        }
+
+        It 'Returns false for a failed envelope even when all requested results passed' {
+            $script:response.succeeded = $false
+            $script:stdout = @($script:response | ConvertTo-Json -Depth 10)
+            Invoke-AlToolTestRun @script:parameters | Should -BeFalse
+            Test-Path -LiteralPath $script:responsePath | Should -BeTrue
+        }
+
+        It 'Accepts exit one with valid failed-test results and persists the exit' {
+            $script:exitCode = 1
+            $script:response.succeeded = $false
+            $script:response.data.results[0].status = 'failed'
+            $script:stdout = @($script:response | ConvertTo-Json -Depth 10)
+            Invoke-AlToolTestRun @script:parameters | Should -BeFalse
+            (Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json).exitCode | Should -Be 1
+        }
+
+        It 'Persists unexpected exits, malformed stdout, and failed envelopes before throwing' -TestCases @(
+            @{ Output = '{"succeeded":true,"data":{"results":[]}}'; Exit = 7; Verified = $false; Message = '*unexpected code 7*' },
+            @{ Output = 'not json'; Exit = 0; Verified = $false; Message = '*protocol failure*stdout: not json*' },
+            @{ Output = '{"succeeded":false,"message":"Connection refused"}'; Exit = 1; Verified = $true; Message = '*Connection refused*stderr: diagnostic*' },
+            @{ Output = ''; Exit = 1; Verified = $false; Message = '*diagnostic*exit code 1*' }
+        ) {
+            param($Output, $Exit, $Verified, $Message)
+            $script:stdout = @($Output)
+            $script:exitCode = $Exit
+            $script:stderr = @('diagnostic')
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw $Message
+            Should -ActualValue ([System.IO.File]::ReadAllText($script:responsePath)) -BeExactly $Output
+            $metadata = Get-Content -LiteralPath $script:metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $metadata.attempted | Should -BeTrue
+            $metadata.exitCode | Should -Be $Exit
+            $metadata.verified | Should -Be $Verified
+            @($metadata.codeunits[0].results.status) | Should -Be @('failed', 'failed')
+            $metadata.codeunits[1].results[0].status | Should -Be 'failed'
+        }
+
+        It 'Reports runner-rejected output without verifying it again in the analyzer' -TestCases @(
+            @{ Output = 'not JSON' },
+            @{ Output = '{"succeeded":true,"data":{"results":[{"codeunitId":130001,"methodName":"TestOne","status":"unknown","durationMs":1}]}}' }
+        ) {
+            param($Output)
+            $script:stdout = @($Output)
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*protocol failure*'
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\TestResultAnalyzer.ps1')
+            . (Join-Path $PSScriptRoot '..\Actions\AnalyzeTests\AlToolTestResultAnalyzer.ps1')
+            Mock Trace-Information {}
+            Mock Out-Host {}
+
+            $summary, $failures, $compact = Get-AlToolTestResultSummaryMD -Path $script:parameters.TestResultsPath
+            $summary | Should -Match '\|Test App\|3\|[^|]*\|3'
+            $failures | Should -Match 'response verification did not complete successfully'
+            $compact | Should -Match '1 AlTool run errors'
+            [System.IO.File]::ReadAllText($script:responsePath) | Should -BeExactly $Output
+        }
+
+        It 'Reports no-output failures with the exit code' {
+            $script:stdout = @()
+            $script:exitCode = 1
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*no structured stdout or stderr*exit code 1*'
+            Test-Path -LiteralPath $script:responsePath | Should -BeTrue
+        }
+
+        It 'Writes successful stderr only to debug output' {
+            $script:stderr = @('native diagnostic')
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 1 -ParameterFilter {
+                $message -like '*native diagnostic*'
             }
-            finally {
-                if ($null -eq $previousUserName) {
-                    Remove-Item Env:\BC_SERVER_USERNAME -ErrorAction SilentlyContinue
-                }
-                else {
-                    $env:BC_SERVER_USERNAME = $previousUserName
-                }
-                if ($null -eq $previousPassword) {
-                    Remove-Item Env:\BC_SERVER_PASSWORD -ErrorAction SilentlyContinue
-                }
-                else {
-                    $env:BC_SERVER_PASSWORD = $previousPassword
-                }
+            Should -Invoke -ModuleName AlToolTestRunner Write-Host -Times 0 -ParameterFilter {
+                "$Object" -like '*native diagnostic*'
             }
         }
 
-        It 'Skips AlTool when enumeration finds no enabled codeunits' {
-            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { return @() }
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
-        }
-
-        It 'Preserves a valid existing testsuites document and appends the next app suite' {
-            $junitFile = Join-Path $TestDrive 'TestResults.xml'
-            $script:testRunParameters.JUnitResultFileName = $junitFile
-
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-            [xml] $firstDocument = Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8
-            $firstSuiteXml = $firstDocument.SelectSingleNode('testsuites/testsuite').OuterXml
-
-            $script:testRunParameters.AppName = 'Second Test App'
-            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
-
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 2 -Exactly
-            [xml] $junit = Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8
-            $suites = @($junit.SelectNodes('testsuites/testsuite'))
-            $suites.Count | Should -Be 2
-            $suites[0].OuterXml | Should -Be $firstSuiteXml
-            $junit.SelectNodes('testsuites/testsuite/testcase').Count | Should -Be 2
-        }
-
-        It 'Fails on malformed accumulated JUnit without replacing the file' {
-            $junitFile = $script:testRunParameters.JUnitResultFileName
-            $originalContent = '<testsuites><testsuite name="Earlier">'
-            Set-Content -LiteralPath $junitFile -Value $originalContent -Encoding UTF8 -NoNewline
-
-            $loadMessage = try {
-                Invoke-AlToolTestRun @script:testRunParameters
-                ''
-            }
-            catch {
-                $_.Exception.Message
-            }
-
-            $loadMessage | Should -Match 'Could not load existing JUnit file'
-            $loadMessage | Should -Match ([regex]::Escape($junitFile))
-            Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8 | Should -Be $originalContent
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner Write-Host -Times 0 -Exactly -ParameterFilter {
-                "$Object" -like '*starting fresh*'
-            }
-        }
-
-        It 'Fails on an unexpected accumulated JUnit root without replacing the file' {
-            $junitFile = $script:testRunParameters.JUnitResultFileName
-            $originalContent = '<root><testsuite name="Earlier" /></root>'
-            Set-Content -LiteralPath $junitFile -Value $originalContent -Encoding UTF8 -NoNewline
-
-            $loadMessage = try {
-                Invoke-AlToolTestRun @script:testRunParameters
-                ''
-            }
-            catch {
-                $_.Exception.Message
-            }
-
-            $loadMessage | Should -Match 'Existing JUnit file'
-            $loadMessage | Should -Match ([regex]::Escape($junitFile))
-            $loadMessage | Should -Match "expected a 'testsuites' root element"
-            Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8 | Should -Be $originalContent
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner Write-Host -Times 0 -Exactly -ParameterFilter {
-                "$Object" -like '*starting fresh*'
-            }
-        }
-
-        It 'Fails with file context when the accumulated JUnit path cannot be read as a file' {
-            $junitPath = Join-Path $TestDrive 'UnreadableResults'
-            New-Item -ItemType Directory -Path $junitPath | Out-Null
-            $script:testRunParameters.JUnitResultFileName = $junitPath
-
-            $loadMessage = try {
-                Invoke-AlToolTestRun @script:testRunParameters
-                ''
-            }
-            catch {
-                $_.Exception.Message
-            }
-
-            $loadMessage | Should -Match 'Could not load existing JUnit file'
-            $loadMessage | Should -Match ([regex]::Escape($junitPath))
-            Test-Path -LiteralPath $junitPath -PathType Container | Should -BeTrue
-            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner OutputWarning -Times 0 -Exactly
-            Should -Invoke -ModuleName AlToolTestRunner Write-Host -Times 0 -Exactly -ParameterFilter {
-                "$Object" -like '*starting fresh*'
-            }
+        It 'Does not repeat stderr identical to a failed envelope message' {
+            $script:stdout = @('{"succeeded":false,"message":"Connection refused"}')
+            $script:stderr = @('Connection refused')
+            $script:exitCode = 1
+            $message = try { Invoke-AlToolTestRun @script:parameters; '' } catch { $_.Exception.Message }
+            $message | Should -BeExactly 'al runtests failed: Connection refused'
         }
     }
 
-    Context 'Add-JUnitTestSuite' {
-        InModuleScope AlToolTestRunner {
-        BeforeEach {
-            $script:doc = New-Object System.Xml.XmlDocument
-            $script:doc.AppendChild($script:doc.CreateXmlDeclaration("1.0", "UTF-8", $null)) | Out-Null
-            $script:suites = $script:doc.CreateElement("testsuites")
-            $script:doc.AppendChild($script:suites) | Out-Null
+    Context 'Enumeration, connection, and testgroups input' {
+        It 'Filters scalar, array, duplicate and wildcard disabled methods case-insensitively' {
+            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer { $script:codeunits }
+            InModuleScope AlToolTestRunner -Parameters @{ Credential = $script:credential } {
+                $result = @(Get-AlToolTestCodeunits -ContainerName 'test' -Credential $Credential `
+                    -ExtensionId ([guid]::NewGuid().ToString()) -DisabledTests @(
+                        @{ codeunitName = 'MY TESTS'; method = @('testtwo', 'TESTTWO') },
+                        @{ codeunitName = 'Other Tests'; method = '*' }
+                    ))
+                $result.Count | Should -Be 1
+                @($result[0].Tests) | Should -Be @('TestOne')
+            }
         }
 
-        It 'Writes a passing suite with correct counts and no failure nodes' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Pass'; Ms = 10; Message = ''; Stacktrace = '' }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA') -MethodResults $methodResults -ExtensionId 'ext-id' -AppName 'MyApp' `
-                -Hostname 'host'
-
-            $failed | Should -Be 0
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('name') | Should -Be '130001 My Tests'
-            $suite.GetAttribute('tests') | Should -Be '1'
-            $suite.GetAttribute('failures') | Should -Be '0'
-            $suite.GetAttribute('time') | Should -Be '0.01'
-            $suite.SelectNodes('testcase/failure').Count | Should -Be 0
+        It 'Passes supported test types and omits blank test types' -TestCases @(
+            @{ TestType = '' }, @{ TestType = 'UnitTest' }, @{ TestType = 'IntegrationTest' }, @{ TestType = 'Uncategorized' }
+        ) {
+            param($TestType)
+            $script:expectedTestType = $TestType
+            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer { $script:codeunits }
+            InModuleScope AlToolTestRunner -Parameters @{ Credential = $script:credential; Type = $TestType } {
+                @(Get-AlToolTestCodeunits -ContainerName 'test' -Credential $Credential `
+                    -ExtensionId ([guid]::NewGuid().ToString()) -TestType $Type).Count | Should -Be 2
+            }
+            Should -Invoke -ModuleName AlToolTestRunner Get-TestsFromBcContainer -Times 1 -ParameterFilter {
+                if ($script:expectedTestType) { $testType -eq $script:expectedTestType }
+                else { -not $PSBoundParameters.ContainsKey('testType') }
+            }
         }
 
-        It 'Marks a requested method with no result as a failure' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('MissingTest') -MethodResults @() -ExtensionId 'ext-id' -AppName 'MyApp' `
-                -Hostname 'host'
-
-            $failed | Should -Be 1
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('failures') | Should -Be '1'
-            $suite.SelectSingleNode('testcase/failure').GetAttribute('message') | Should -Match 'No result produced'
+        It 'Rejects unsupported test types before enumeration' {
+            Mock -ModuleName AlToolTestRunner Get-TestsFromBcContainer { throw 'Unexpected enumeration' }
+            InModuleScope AlToolTestRunner -Parameters @{ Credential = $script:credential } {
+                { Get-AlToolTestCodeunits -ContainerName 'test' -Credential $Credential `
+                    -ExtensionId ([guid]::NewGuid().ToString()) -TestType 'Legacy' } | Should -Throw '*Unsupported testType*'
+            }
+            Should -Invoke -ModuleName AlToolTestRunner Get-TestsFromBcContainer -Times 0
         }
 
-        It 'Records a failing method with its message and exact diagnostic output' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $diagnosticText = "line1; detail & context <tag>`nAL Callstack:`nline2 > expected"
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Fail'; Ms = 4; Message = 'boom'; Stacktrace = $diagnosticText }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA') -MethodResults $methodResults -ExtensionId 'ext-id' -AppName 'MyApp' `
-                -Hostname 'host'
-
-            $failed | Should -Be 1
-            $failureNode = $script:suites.SelectSingleNode('testsuite/testcase/failure')
-            $failureNode.GetAttribute('message') | Should -BeExactly 'Test failed'
-            $failureNode.InnerText | Should -BeExactly $diagnosticText
-
-            $serialized = $script:doc.OuterXml
-            $serialized | Should -Match '&amp;'
-            $serialized | Should -Match '&lt;tag&gt;'
-            ([xml] $serialized).SelectSingleNode('testsuites/testsuite/testcase/failure').InnerText |
-                Should -BeExactly $diagnosticText
+        It 'Builds disabled lookup sets and accepts an empty disabled list' {
+            InModuleScope AlToolTestRunner {
+                $lookup = Get-DisabledTestKeySet -DisabledTests @(
+                    @{ codeunitName = 'Tests'; method = 'One' },
+                    @{ codeunitName = 'TESTS'; method = @('one', 'Two') },
+                    @{ codeunitName = 'All'; method = '*' }
+                )
+                @($lookup.Methods.Keys | Sort-Object) | Should -Be @('tests::one', 'tests::two')
+                @($lookup.Codeunits.Keys) | Should -Be @('all')
+                (Get-DisabledTestKeySet -DisabledTests @()).Methods.Count | Should -Be 0
+            }
         }
 
-        It 'Uses a stable failure message and safe body for empty diagnostic output' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Fail'; Ms = 4; Message = 'ignored'; Stacktrace = '' }
-            )
-
-            Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA') -MethodResults $methodResults -ExtensionId 'ext' -AppName 'app' -Hostname 'host' | Out-Null
-
-            $failureNode = $script:suites.SelectSingleNode('testsuite/testcase/failure')
-            $failureNode.GetAttribute('message') | Should -BeExactly 'Test failed'
-            $failureNode.InnerText | Should -BeExactly ''
+        It 'Reads container connection settings and falls back when unavailable' {
+            Mock -ModuleName AlToolTestRunner Get-BcContainerServerConfiguration {
+                [pscustomobject]@{ ServerInstance = 'MyBC'; DeveloperServicesPort = 7145 }
+            }
+            InModuleScope AlToolTestRunner {
+                $connection = Get-AlToolConnection -ContainerName 'test'
+                $connection.ServerInstance | Should -Be 'MyBC'
+                $connection.Port | Should -Be 7145
+            }
+            Mock -ModuleName AlToolTestRunner Get-BcContainerServerConfiguration { throw 'unavailable' }
+            InModuleScope AlToolTestRunner {
+                $connection = Get-AlToolConnection -ContainerName 'test'
+                $connection.Server | Should -Be 'http://test'
+                $connection.ServerInstance | Should -Be 'BC'
+                $connection.Port | Should -Be 7049
+            }
         }
 
-        It 'Uses a stable failure message and preserves whitespace-only diagnostic output' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $diagnosticText = "`n  `n"
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Fail'; Ms = 4; Message = 'ignored'; Stacktrace = $diagnosticText }
-            )
-
-            Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA') -MethodResults $methodResults -ExtensionId 'ext' -AppName 'app' -Hostname 'host' | Out-Null
-
-            $failureNode = $script:suites.SelectSingleNode('testsuite/testcase/failure')
-            $failureNode.GetAttribute('message') | Should -BeExactly 'Test failed'
-            $failureNode.InnerText | Should -BeExactly $diagnosticText
+        It 'Honors explicit company names and prefers evaluation companies otherwise' {
+            Mock -ModuleName AlToolTestRunner Get-CompanyInBcContainer {
+                @([pscustomobject]@{ companyName = 'First'; evaluationCompany = $false },
+                    [pscustomobject]@{ companyName = 'Evaluation'; evaluationCompany = $true })
+            }
+            InModuleScope AlToolTestRunner {
+                Get-AlToolCompany -ContainerName 'test' -Tenant 'default' -CompanyName 'Explicit' | Should -Be 'Explicit'
+                Get-AlToolCompany -ContainerName 'test' -Tenant 'default' | Should -Be 'Evaluation'
+            }
+            Should -Invoke -ModuleName AlToolTestRunner Get-CompanyInBcContainer -Times 1
         }
 
-        It 'Records skipped methods in the suite count' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Skip'; Ms = 0; Message = ''; Stacktrace = '' }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA') -MethodResults $methodResults -ExtensionId 'ext-id' -AppName 'MyApp' `
-                -Hostname 'host'
-
-            $failed | Should -Be 0
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('tests') | Should -Be '1'
-            $suite.GetAttribute('skipped') | Should -Be '1'
-            $suite.SelectNodes('testcase/skipped').Count | Should -Be 1
+        It 'Rejects invalid codeunit IDs before writing testgroups' -TestCases @(
+            @{ Id = ' ' }, @{ Id = 'not-a-number' }, @{ Id = '2147483648' }
+        ) {
+            param($Id)
+            InModuleScope AlToolTestRunner -Parameters @{ Id = $Id } {
+                { New-AlTestGroupsFile -Codeunits @([pscustomobject]@{ Id = $Id; Tests = @('One') }) } |
+                    Should -Throw '*must be a valid Int32 value*'
+            }
         }
 
-        It 'Sets suite time to the sum of available requested method durations' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'TestA'; Outcome = 'Pass'; Ms = 1250; Message = ''; Stacktrace = '' },
-                @{ MethodName = 'TestB'; Outcome = 'Skip'; Ms = 250; Message = ''; Stacktrace = '' }
-            )
-
-            Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('TestA', 'TestB', 'MissingTest') -MethodResults $methodResults `
-                -ExtensionId 'ext-id' -AppName 'MyApp' -Hostname 'host' | Out-Null
-
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('time') | Should -Be '1.5'
-            $suite.SelectSingleNode("testcase[@name='MissingTest']").GetAttribute('time') | Should -Be '0'
+        It 'Removes the batch input file when native invocation fails' {
+            Mock -ModuleName AlToolTestRunner Get-AlToolConnection { @{ Server = 'http://test'; ServerInstance = 'BC'; Port = 7049 } }
+            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { 'CRONUS' }
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { $script:codeunits }
+            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
+                param($FilePath, $ArgumentList)
+                $script:groupsPath = $ArgumentList[2]
+                throw 'native launch failed'
+            }
+            { Invoke-AlToolTestRun @script:parameters } | Should -Throw '*native launch failed*'
+            Test-Path -LiteralPath $script:groupsPath | Should -BeFalse
         }
 
-        It 'Emits every decorated data-driven case and preserves nested brackets' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'DataTest[Case A]'; Outcome = 'Pass'; Ms = 100; Message = ''; Stacktrace = '' },
-                @{ MethodName = 'DataTest[Outer[Inner]]'; Outcome = 'Skip'; Ms = 250; Message = ''; Stacktrace = '' }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('DataTest') -MethodResults $methodResults -ExtensionId 'ext-id' `
-                -AppName 'MyApp' -Hostname 'host'
-
-            $failed | Should -Be 0
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('tests') | Should -Be '2'
-            $suite.GetAttribute('skipped') | Should -Be '1'
-            $suite.GetAttribute('time') | Should -Be '0.35'
-            $suite.SelectSingleNode("testcase[@name='DataTest[Case A]']") | Should -Not -BeNullOrEmpty
-            $suite.SelectSingleNode("testcase[@name='DataTest[Outer[Inner]]']") | Should -Not -BeNullOrEmpty
-            $suite.SelectNodes("testcase/failure[@message='No result produced by al runtests']").Count | Should -Be 0
-        }
-
-        It 'Does not let an unrelated decorated result satisfy a requested base method' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'OtherTest[Case A]'; Outcome = 'Pass'; Ms = 100; Message = ''; Stacktrace = '' },
-                @{ MethodName = 'DataTest[]'; Outcome = 'Pass'; Ms = 100; Message = ''; Stacktrace = '' }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('DataTest') -MethodResults $methodResults -ExtensionId 'ext-id' `
-                -AppName 'MyApp' -Hostname 'host'
-
-            $failed | Should -Be 1
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('tests') | Should -Be '1'
-            $suite.SelectSingleNode("testcase[@name='DataTest']/failure").GetAttribute('message') |
-                Should -Be 'No result produced by al runtests'
-            $suite.SelectSingleNode("testcase[@name='OtherTest[Case A]']") | Should -BeNullOrEmpty
-            $suite.SelectSingleNode("testcase[@name='DataTest[]']") | Should -BeNullOrEmpty
-        }
-
-        It 'Emits every exact duplicate occurrence including mixed outcomes' {
-            $codeunit = [PSCustomObject]@{ Id = 130001; Name = 'My Tests' }
-            $methodResults = @(
-                @{ MethodName = 'Duplicate'; Outcome = 'Pass'; Ms = 100; Message = ''; Stacktrace = '' },
-                @{ MethodName = 'Duplicate'; Outcome = 'Fail'; Ms = 200; Message = 'failed duplicate'; Stacktrace = 'line' }
-            )
-
-            $failed = Add-JUnitTestSuite -Doc $script:doc -TestSuitesNode $script:suites -Codeunit $codeunit `
-                -RequestedMethods @('Duplicate') -MethodResults $methodResults -ExtensionId 'ext-id' `
-                -AppName 'MyApp' -Hostname 'host'
-
-            $failed | Should -Be 1
-            $suite = $script:suites.SelectSingleNode('testsuite')
-            $suite.GetAttribute('tests') | Should -Be '2'
-            $suite.GetAttribute('failures') | Should -Be '1'
-            $suite.GetAttribute('time') | Should -Be '0.3'
-            $suite.SelectNodes("testcase[@name='Duplicate']").Count | Should -Be 2
-            $suite.SelectNodes("testcase/failure[@message='No result produced by al runtests']").Count | Should -Be 0
-        }
+        It 'Interprets batch results and writes a single-codeunit input array' {
+            Mock -ModuleName AlToolTestRunner Get-AlToolConnection { @{ Server = 'http://test'; ServerInstance = 'BC'; Port = 7049 } }
+            Mock -ModuleName AlToolTestRunner Get-AlToolCompany { 'CRONUS' }
+            Mock -ModuleName AlToolTestRunner Get-AlToolTestCodeunits { $script:codeunits[0] }
+            Mock -ModuleName AlToolTestRunner Invoke-AlNativeCommand {
+                param($FilePath, $ArgumentList)
+                $script:groupsPath = $ArgumentList[2]
+                $script:groupsJson = Get-Content -LiteralPath $script:groupsPath -Raw -Encoding UTF8
+                @{ StandardOutput = $script:stdout; StandardError = @(); ExitCode = 0 }
+            }
+            Invoke-AlToolTestRun @script:parameters | Should -BeTrue
+            $script:groupsJson.Trim() | Should -BeExactly '[{"codeunitId":130001,"testMethods":["TestOne","TestTwo"]}]'
+            Test-Path -LiteralPath $script:groupsPath | Should -BeFalse
         }
     }
 }

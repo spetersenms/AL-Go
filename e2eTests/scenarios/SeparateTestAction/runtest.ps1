@@ -159,14 +159,30 @@ codeunit 60000 "Separate Test Action E2E"
         -runid $run.id `
         -folder "artifacts" `
         -expectedArtifacts @{"Apps" = 1; "TestApps" = 1} `
-        -expectedNumberOfTests 1 `
         -repoVersion "1.0" `
         -appVersion ""
 
-    $testResultFiles = @(Get-Item -Path (Join-Path $repoPath "artifacts\*-TestResults*\TestResults.xml"))
+    $testResultFiles = @(Get-Item -Path (Join-Path $repoPath "artifacts\*-TestResults*\AlToolTestResults\*\response.json"))
     $testResultFiles.Count | Should -Be 1
-    [xml] $testResults = Get-Content -Path $testResultFiles[0].FullName -Encoding UTF8
-    @($testResults.SelectNodes("//testcase[@name='$expectedTestCaseName']")).Count | Should -Be 1
+    $testResults = Get-Content -LiteralPath $testResultFiles[0].FullName -Raw -Encoding UTF8 |
+        ConvertFrom-Json | ConvertTo-HashTable -recurse
+    $testResults.succeeded | Should -BeTrue
+    @($testResults.data.results).Count | Should -Be 1
+    $testResults.data.results[0].methodName | Should -Be $expectedTestCaseName
+    $testResults.data.results[0].status | Should -Be 'passed'
+    $metadata = Get-Content -LiteralPath (Join-Path $testResultFiles[0].DirectoryName 'metadata.json') -Raw -Encoding UTF8 |
+        ConvertFrom-Json | ConvertTo-HashTable -recurse
+    $metadata.enumerated | Should -BeTrue
+    $metadata.appName | Should -Be 'My App.Test'
+    $metadata.attempted | Should -BeTrue
+    $metadata.verified | Should -BeTrue
+    $metadata.exitCode | Should -Be 0
+    @($metadata.codeunits).Count | Should -Be 1
+    @($metadata.codeunits[0].results).Count | Should -Be 1
+    $metadata.codeunits[0].results[0].methodName | Should -Be $expectedTestCaseName
+    $metadata.codeunits[0].results[0].status | Should -Be 'passed'
+    @(Get-ChildItem -Path (Join-Path $repoPath 'artifacts\*-TestResults*') -Filter 'TestResults.xml' -Recurse).Count |
+        Should -Be 0
 }
 catch {
     $scenarioError = $_

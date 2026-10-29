@@ -98,6 +98,30 @@ Describe "RunPipeline Action Tests" {
         $actionScript | Should -Match ([regex]::Escape('$separateTestActionIneligibilityReasons -join ''; '''))
     }
 
+    It 'Clears stale native results before legacy test execution' {
+        $scriptContent = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $start = $scriptContent.IndexOf('    foreach ($nativeTestResultsPath in @(')
+        $end = $scriptContent.IndexOf('    $buildOutputFile =', $start)
+        $start | Should -BeGreaterThan -1
+        $end | Should -BeGreaterThan $start
+        $cleanup = [scriptblock]::Create($scriptContent.Substring($start, $end - $start))
+        $projectPath = Join-Path $TestDrive 'LegacyProject'
+        $buildArtifactFolder = Join-Path $projectPath '.buildartifacts'
+        foreach ($base in @($projectPath, $buildArtifactFolder)) {
+            $nativePath = Join-Path $base 'AlToolTestResults'
+            New-Item -Path $nativePath -ItemType Directory -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $nativePath 'stale.json') -Value '{}' -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $base 'TestResults.xml') -Value '<testsuites />' -Encoding UTF8
+        }
+
+        . $cleanup
+
+        foreach ($base in @($projectPath, $buildArtifactFolder)) {
+            Test-Path (Join-Path $base 'AlToolTestResults') | Should -BeFalse
+            Test-Path (Join-Path $base 'TestResults.xml') | Should -BeTrue
+        }
+    }
+
     It 'Computes eligibility and configures the container credential for <Name>' -TestCases @(
         @{
             Name           = 'an enabled single-country container build'
