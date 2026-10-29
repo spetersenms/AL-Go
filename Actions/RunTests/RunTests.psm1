@@ -303,6 +303,10 @@ function Invoke-AlGoTestRun {
     )
 
     try {
+        if (@($settings.restoreDatabases | Where-Object { -not [string]::IsNullOrWhiteSpace("$_") }).Count -gt 0) {
+            Write-Host "::Warning::restoreDatabases is configured, but database restore is not currently supported by the separate RunTests action and will not be performed."
+        }
+
         $testApps = Get-TestAppsToRun -settings $settings -projectPath $projectPath `
             -installTestAppsJson $installTestAppsJson
         if (@($testApps).Count -eq 0) {

@@ -28,7 +28,6 @@ $defaultCICDPushBranches = @( 'main', 'release/*', 'feature/*' )
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'defaultCICDPullRequestBranches', Justification = 'False positive.')]
 $defaultCICDPullRequestBranches = @( 'main' )
 $defaultBcContainerHelperVersion = "preview"
-$alToolPackageId = "Microsoft.Dynamics.BusinessCentral.Development.Tools"
 $notSecretProperties = @("Scopes","TenantId","BlobName","ContainerName","StorageAccountName","ServerUrl","ppUserName","GitHubAppClientId","EnvironmentName")
 
 $runAlPipelineOverrides = @(
@@ -398,261 +397,6 @@ function Expand-7zipArchive {
         OutputDebug -message "Using Expand-Archive"
         Expand-Archive -Path $Path -DestinationPath "$DestinationPath" -Force
     }
-}
-
-<#
-.SYNOPSIS
-    Invokes a native executable and returns its output streams and exit code.
-.DESCRIPTION
-    Keeps stdout separate from native stderr and restores the caller's error preference immediately
-    after invocation. Windows PowerShell 5 stderr can include PowerShell formatting metadata.
-    Command resolution and invocation failures remain terminating.
-.PARAMETER FilePath
-    The native executable name or full path.
-.PARAMETER ArgumentList
-    Arguments passed to the native executable.
-.OUTPUTS
-    [pscustomobject] with StandardOutput, StandardError, combined Output, and ExitCode properties.
-#>
-function Invoke-AlNativeCommand {
-    param(
-        [Parameter(Mandatory = $true)][string] $FilePath,
-        [string[]] $ArgumentList = @()
-    )
-
-    $nativeCommand = Get-Command -Name $FilePath -CommandType Application -ErrorAction Stop |
-        Select-Object -First 1
-    $standardErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) "altool-stderr-$([Guid]::NewGuid().ToString('N')).txt"
-    $originalErrorActionPreference = $ErrorActionPreference
-    $nativeErrorPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
-    $originalNativeErrorPreference = if ($nativeErrorPreference) { $nativeErrorPreference.Value } else { $null }
-    try {
-        try {
-            $ErrorActionPreference = "Continue"
-            if ($nativeErrorPreference) {
-                $PSNativeCommandUseErrorActionPreference = $false
-            }
-            $standardOutput = & $nativeCommand.Source @ArgumentList 2> $standardErrorPath
-            [int] $exitCode = $LASTEXITCODE
-        }
-        finally {
-            $ErrorActionPreference = $originalErrorActionPreference
-            if ($nativeErrorPreference) {
-                $PSNativeCommandUseErrorActionPreference = $originalNativeErrorPreference
-            }
-        }
-
-        [string[]] $standardOutputLines = @($standardOutput | ForEach-Object { "$_" })
-        if (Test-Path -LiteralPath $standardErrorPath) {
-            [string[]] $standardErrorLines = @(Get-Content -LiteralPath $standardErrorPath | ForEach-Object { "$_" })
-        }
-        else {
-            [string[]] $standardErrorLines = @()
-        }
-
-        return [PSCustomObject]@{
-            StandardOutput = $standardOutputLines
-            StandardError  = $standardErrorLines
-            Output         = [string[]] (@($standardOutputLines) + @($standardErrorLines))
-            ExitCode       = $exitCode
-        }
-    }
-    finally {
-        Remove-Item -LiteralPath $standardErrorPath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-<#
-.SYNOPSIS
-    Verifies that an AlTool executable can report its version.
-.PARAMETER AlToolPath
-    Full path to the AlTool executable.
-.OUTPUTS
-    [string] The verified executable path.
-#>
-function Confirm-AlToolPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $AlToolPath
-    )
-
-    $versionResult = Invoke-AlNativeCommand -FilePath $AlToolPath -ArgumentList @("--version")
-    if ($versionResult.ExitCode -ne 0) {
-        throw "Failed to run 'al --version'. The command exited with code $($versionResult.ExitCode). Output: $($versionResult.Output -join [Environment]::NewLine)"
-    }
-    if ($versionResult.StandardOutput.Count -eq 0) {
-        throw "Failed to run 'al --version'. The command returned no output."
-    }
-    Write-Host "Using al CLI version: $($versionResult.StandardOutput[0])"
-    return $AlToolPath
-}
-
-<#
-.SYNOPSIS
-    Converts an environment-derived value to a safe path segment.
-.PARAMETER Value
-    Value to sanitize.
-.OUTPUTS
-    [string] A path segment containing only letters, numbers, period, underscore, and hyphen.
-#>
-function ConvertTo-AlToolPathSegment {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Value
-    )
-
-    $segment = ($Value -replace "[^a-zA-Z0-9._-]", "-").Trim([char[]]".-_")
-    if ([string]::IsNullOrWhiteSpace($segment)) {
-        return "unknown"
-    }
-    if ($segment.Length -gt 48) {
-        return $segment.Substring(0, 48)
-    }
-    return $segment
-}
-
-<#
-.SYNOPSIS
-    Returns a stable short hash for an AlTool installation identity.
-.PARAMETER Value
-    Identity value to hash.
-.OUTPUTS
-    [string] A 16-character lowercase hexadecimal hash.
-#>
-function Get-AlToolIdentityHash {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Value
-    )
-
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return -join @(
-            $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Value))[0..7] |
-                ForEach-Object { $_.ToString("x2") }
-        )
-    }
-    finally {
-        $sha256.Dispose()
-    }
-}
-
-<#
-.SYNOPSIS
-    Returns the deterministic, job-scoped directory used to install AlTool.
-.DESCRIPTION
-    Uses RUNNER_TEMP plus sanitized GitHub run, attempt, and job values. Outside GitHub Actions,
-    uses the system temporary directory and a stable hash of the current working directory.
-.OUTPUTS
-    [string] The full installation directory path.
-#>
-function Get-AlToolInstallDirectory {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        $basePath = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
-        $rawJobIdentity = "run-$(if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { 'local' })" +
-            "-attempt-$(if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { '1' })" +
-            "-job-$(if ($env:GITHUB_JOB) { $env:GITHUB_JOB } else { 'local' })"
-        $jobIdentity = "$(ConvertTo-AlToolPathSegment -Value $rawJobIdentity)-$(Get-AlToolIdentityHash -Value $rawJobIdentity)"
-    }
-    else {
-        $basePath = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-        $identitySource = [System.IO.Path]::GetFullPath((Get-Location).Path)
-        $jobIdentity = "local-$(Get-AlToolIdentityHash -Value $identitySource)"
-    }
-
-    return [System.IO.Path]::GetFullPath(
-        (Join-Path (Join-Path $basePath "AL-Go-AlTool") $jobIdentity)
-    )
-}
-
-<#
-.SYNOPSIS
-    Returns the platform-specific AlTool executable name.
-.PARAMETER Platform
-    Operating system platform. Defaults to the current platform.
-.OUTPUTS
-    [string] al.exe on Windows, otherwise al.
-#>
-function Get-AlToolExecutableName {
-    param(
-        [System.PlatformID] $Platform = [Environment]::OSVersion.Platform
-    )
-
-    if ($Platform -eq [System.PlatformID]::Win32NT) {
-        return "al.exe"
-    }
-    return "al"
-}
-
-<#
-.SYNOPSIS
-    Resolves the latest prerelease AlTool executable, installing it when needed.
-.DESCRIPTION
-    Reuses a path from AlToolPath or the deterministic job-scoped tool directory when it can report
-    its version. Otherwise, installs the latest prerelease package into that directory with
-    dotnet tool install --prerelease --tool-path.
-    Newly resolved paths are stored in the current process and GITHUB_ENV for later action steps.
-.OUTPUTS
-    [string] The full path to the AlTool executable.
-#>
-function GetAlToolPath {
-    if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath) -and
-        (Test-Path -LiteralPath $env:AlToolPath -PathType Leaf)) {
-        try {
-            return Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($env:AlToolPath))
-        }
-        catch {
-            Write-Host "::Warning::Ignoring the persisted AlToolPath because executable validation failed. $($_.Exception.Message)"
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath)) {
-        Remove-Item Env:\AlToolPath -ErrorAction SilentlyContinue
-    }
-
-    $toolDirectory = Get-AlToolInstallDirectory
-    $alToolPath = Join-Path $toolDirectory (Get-AlToolExecutableName)
-    $installRequired = $true
-    if (Test-Path -LiteralPath $alToolPath -PathType Leaf) {
-        try {
-            $alToolPath = Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath))
-            $installRequired = $false
-        }
-        catch {
-            Write-Host "::Warning::Replacing the job-scoped AlTool installation because executable validation failed. $($_.Exception.Message)"
-        }
-    }
-
-    if ($installRequired) {
-        if (Test-Path -LiteralPath $toolDirectory) {
-            Write-Host "Removing incomplete or stale AlTool installation from '$toolDirectory'."
-            Remove-Item -LiteralPath $toolDirectory -Recurse -Force
-        }
-        New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
-
-        Write-Host "Installing latest prerelease '$alToolPackageId' into '$toolDirectory'..."
-        $installResult = Invoke-AlNativeCommand -FilePath "dotnet" -ArgumentList @(
-            "tool", "install", $alToolPackageId, "--prerelease", "--tool-path", $toolDirectory
-        )
-        $installResult.Output | ForEach-Object { Write-Host $_ }
-        if ($installResult.ExitCode -ne 0) {
-            throw "Failed to install '$alToolPackageId' into '$toolDirectory'. dotnet tool install exited with code $($installResult.ExitCode). Output: $($installResult.Output -join [Environment]::NewLine)"
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $alToolPath -PathType Leaf)) {
-        throw "The AlTool installation command completed, but the expected executable '$alToolPath' does not exist."
-    }
-
-    if ($installRequired) {
-        $alToolPath = Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath))
-    }
-
-    $env:AlToolPath = $alToolPath
-    if ($env:GITHUB_ENV) {
-        Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "AlToolPath=$alToolPath"
-    }
-    return $alToolPath
 }
 
 #
@@ -1166,11 +910,19 @@ function CheckAppDependencyProbingPaths {
         [hashTable] $settings,
         $token,
         [string] $baseFolder = $ENV:GITHUB_WORKSPACE,
-        [string] $repository = $ENV:GITHUB_REPOSITORY,
+        [string] $repositoryUrl = "",
         [string] $project = '.',
         [string[]] $includeOnlyAppIds
     )
 
+    if (-not $repositoryUrl) {
+        if ($ENV:GITHUB_REPOSITORY -and $ENV:GITHUB_SERVER_URL) {
+            $repositoryUrl = "$ENV:GITHUB_SERVER_URL/$ENV:GITHUB_REPOSITORY"
+        }
+        else {
+            throw "Repository URL must be provided."
+        }
+    }
     Write-Host "Checking appDependencyProbingPaths"
     $settings = $settings | Copy-HashTable
     if ($settings.appDependencyProbingPaths) {
@@ -1182,15 +934,17 @@ function CheckAppDependencyProbingPaths {
                     New-Object -Type PSObject -Property $_
                 }
             })
+        $repositoryUri = [uri]$repositoryUrl
         foreach($dependency in $settings.appDependencyProbingPaths) {
             if (-not ($dependency.PsObject.Properties.name -eq "repo")) {
                 throw "The Setting AppDependencyProbingPaths needs to contain a repo property, pointing to the repository on which your project have a dependency"
             }
             if ($dependency.Repo -eq ".") {
-                $dependency.Repo = "https://github.com/$repository"
+                $dependency.Repo = $repositoryUrl
             }
             elseif ($dependency.Repo -notlike "https://*") {
-                $dependency.Repo = "https://github.com/$($dependency.Repo)"
+                # If the repo is not a full URL, prepend the GitHub server URL from the repository variable (current repo url)
+                $dependency.Repo = "$($repositoryUri.Scheme)://$($repositoryUri.Authority)/$($dependency.Repo)"
             }
             if (-not ($dependency.PsObject.Properties.name -eq "Version")) {
                 $dependency | Add-Member -name "Version" -MemberType NoteProperty -Value "latest"
@@ -1208,6 +962,12 @@ function CheckAppDependencyProbingPaths {
                 $dependency | Add-Member -name "branch" -MemberType NoteProperty -Value "main"
             }
             Write-Host "Dependency to projects '$($dependency.projects)' in $($dependency.Repo)@$($dependency.branch), version $($dependency.version), release status $($dependency.release_status)"
+            $dependencyUri = [uri]$dependency.Repo
+            if ($dependencyUri.Authority -ne $repositoryUri.Authority) {
+                if ($dependency.release_status -eq "latestBuild") {
+                    throw "Cannot use 'latestBuild' for dependency '$($dependency.Repo)', which is hosted on a different enterprise than '$($repositoryUrl)'."
+                }
+            }
             if ($dependency.PsObject.Properties.name -eq "AuthTokenSecret") {
                 Write-Host "Using secret $($dependency.AuthTokenSecret) for access to repository"
                 if ("$env:Secrets" -eq "") {
@@ -1218,20 +978,25 @@ function CheckAppDependencyProbingPaths {
                 $dependency.AuthTokenSecret = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($secrets."$($dependency.AuthTokenSecret)"))
             }
             else {
-                if ($token) {
-                    Write-Host "Using GITHUB_TOKEN for access to repository"
+                $useToken = $null
+                if ($dependencyUri.Authority -eq $repositoryUri.Authority) {
+                    # Only use GitHub token if the dependency is hosted on the same enterprise as the repository
+                    if ($token) {
+                        Write-Host "Using GITHUB_TOKEN for access to repository"
+                        $useToken = $token
+                    }
                 }
-                else {
+                if (-not $useToken) {
                     Write-Host "No token available, will attempt to invoke gh auth token for access to repository"
                     try {
-                        $token = invoke-gh -silent -returnValue auth token
+                        # Get an auth token from GitHub CLI for the dependency repository's host
+                        $useToken = invoke-gh -silent -returnValue auth token --hostname $dependencyUri.Host
                     }
                     catch {
                         Write-Host "Unable to get token from gh, will attempt to access repository without token. Message: $($_.Exception.Message)"
-                        $token = $null
                     }
                 }
-                $dependency | Add-Member -name "AuthTokenSecret" -MemberType NoteProperty -Value $token
+                $dependency | Add-Member -name "AuthTokenSecret" -MemberType NoteProperty -Value $useToken
             }
             if (-not ($dependency.PsObject.Properties.name -eq "alwaysIncludeApps")) {
                 $dependency | Add-Member -name "alwaysIncludeApps" -MemberType NoteProperty -Value @()
@@ -1244,7 +1009,7 @@ function CheckAppDependencyProbingPaths {
             }
 
             if ($dependency.release_status -eq "include") {
-                if ($dependency.Repo -ne "https://github.com/$repository") {
+                if ($dependency.Repo -ne $repositoryUrl) {
                     OutputWarning "Dependencies with release_status 'include' must be to other projects in the same repository."
                 }
                 else {
@@ -1259,7 +1024,7 @@ function CheckAppDependencyProbingPaths {
                             $thisIncludeOnlyAppIds = @($dependencyIds + $includeOnlyAppIds + $dependency.alwaysIncludeApps)
                             $depSettings = ReadSettings -baseFolder $baseFolder -project $depProject -workflowName "CI/CD"
                             $depSettings = AnalyzeRepo -settings $depSettings -baseFolder $baseFolder -project $depProject -includeOnlyAppIds $thisIncludeOnlyAppIds -doNotCheckArtifactSetting -doNotIssueWarnings
-                            $depSettings = CheckAppDependencyProbingPaths -settings $depSettings -token $token -baseFolder $baseFolder -repository $repository -project $depProject -includeOnlyAppIds $thisIncludeOnlyAppIds
+                            $depSettings = CheckAppDependencyProbingPaths -settings $depSettings -token $token -baseFolder $baseFolder -repositoryUrl $repositoryUrl -project $depProject -includeOnlyAppIds $thisIncludeOnlyAppIds
 
                             $projectPath = Join-Path $baseFolder $project -Resolve
                             Push-Location $projectPath
@@ -1705,7 +1470,7 @@ function CreateDevEnv {
         [string] $caller = 'local',
         [Parameter(Mandatory = $true)]
         [string] $baseFolder,
-        [string] $repository = "$ENV:GITHUB_REPOSITORY",
+        [string] $repositoryUrl = "",
         [string] $project,
         [string] $userName = $env:Username,
 
@@ -1735,14 +1500,21 @@ function CreateDevEnv {
         throw "Specified parameters doesn't match kind=$kind"
     }
 
-    if ("$repository" -eq "") {
-        Push-Location $baseFolder
-        try {
-            $repoInfo = invoke-gh -silent -returnValue repo view --json "owner,name" | ConvertFrom-Json
-            $repository = "$($repoInfo.owner.login)/$($repoInfo.name)"
+    # Determine the repository URL if not specified
+    if ("$repositoryUrl" -eq "") {
+        if ($ENV:GITHUB_SERVER_URL -and $ENV:GITHUB_REPOSITORY) {
+            $repositoryUrl = "$ENV:GITHUB_SERVER_URL/$ENV:GITHUB_REPOSITORY"
         }
-        finally {
-            Pop-Location
+        else {
+            Push-Location $baseFolder
+            try {
+                # Get the full URL of the repository for dependency resolutions towards .
+                $repoInfo = invoke-gh -silent -returnValue repo view --json "url" | ConvertFrom-Json
+                $repositoryUrl = $repoInfo.url
+            }
+            finally {
+                Pop-Location
+            }
         }
     }
     $projectFolder = Join-Path $baseFolder $project -Resolve
@@ -1876,7 +1648,7 @@ function CreateDevEnv {
             }
         }
         $settings = AnalyzeRepo -settings $settings -baseFolder $baseFolder -project $project @params
-        $settings = CheckAppDependencyProbingPaths -settings $settings -baseFolder $baseFolder -repository $repository -project $project
+        $settings = CheckAppDependencyProbingPaths -settings $settings -baseFolder $baseFolder -repositoryUrl $repositoryUrl -project $project
 
         if (!$accept_insiderEula -and ($settings.artifact -like 'https://bcinsider*.net/*')) {
             Read-Host 'Press ENTER to accept the Business Central insider EULA (https://go.microsoft.com/fwlink/?linkid=2245051) or break the script to cancel'
@@ -1917,7 +1689,7 @@ function CreateDevEnv {
                         New-Object -Type PSObject -Property $_
                     }
                 })
-            GetDependencies -probingPathsJson $settings.appDependencyProbingPaths -saveToPath $dependenciesFolder -api_url 'https://api.github.com' | ForEach-Object {
+            GetDependencies -probingPathsJson $settings.appDependencyProbingPaths -saveToPath $dependenciesFolder | ForEach-Object {
                 if ($_.startswith('(')) {
                     $installTestApps += $_
                 }
@@ -2688,24 +2460,30 @@ function GetFoldersFromAllProjects {
 
 function GetPackageVersion($packageName) {
     $projFilePath = "$PSScriptRoot\Environment.Packages.proj"
+    $packageJsonPath = "$PSScriptRoot\package.json"
 
-    # Check if the proj file exists
     if (-not (Test-Path $projFilePath)) {
         throw "Environment.Packages.proj file not found at $projFilePath"
     }
 
-    # Load the XML content
     [xml]$projXml = Get-Content -Path $projFilePath
-
-    # Find the PackageReference with the specified Include (package name)
     $packageReference = $projXml.Project.ItemGroup.PackageReference | Where-Object { $_.Include -eq $packageName }
 
     if ($packageReference) {
         return $packageReference.Version
     }
-    else {
-        throw "Package $packageName is not in the list of packages"
+
+    if (Test-Path $packageJsonPath) {
+        $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-HashTable -recurse
+        foreach ($sectionName in @('dependencies', 'devDependencies')) {
+            $section = $packageJson[$sectionName]
+            if ($section -and $section.ContainsKey($packageName)) {
+                return [string] $section[$packageName]
+            }
+        }
     }
+
+    throw "Package $packageName is not in the list of packages"
 }
 
 function InstallAzModuleIfNeeded {

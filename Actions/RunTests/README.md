@@ -1,14 +1,16 @@
 # Run tests
 
-Run normal tests (`testFolders`) against the build container kept alive by the RunPipeline action.
+Run normal tests from `testFolders` against an existing Business Central container.
 
 For the developer-facing call sequence, worker lifecycle, file contracts, and failure behavior, see [RunTests code coverage architecture](CodeCoverageArchitecture.md).
 
 Enable this action with `useSeparateTestAction.enabled`. It is used when normal tests are enabled and RunPipeline creates one local build container. Builds with `additionalCountries` or without a local build container continue to run normal tests in RunPipeline. BCPT and page scripting tests always remain in RunPipeline.
 
-The action keeps `TestResults.xml` in the project folder for AnalyzeTests and copies a produced result to `.buildartifacts/TestResults.xml` for artifact upload. It does not create a result artifact when no result is produced. After the run, it refreshes `ContainerEventLog.evtx` in the project folder so failure diagnostics include test-time events.
+The action reads analyzed settings from `Settings` and reconnects to the kept-alive build container using `containerName` and `containerCredential`; `project` selects the project folder, and `installTestAppsJson` supplies installed test-app paths from earlier jobs.
 
-Compiled apps are selected by matching their app IDs to `testFolders`, which excludes BCPT-only apps from the shared test-app artifact. When `runTestsInAllInstalledTestApps` is enabled, apps from `installTestAppsJson` are also included. The action honors `disabledTests.json` files found recursively under the matching test folder and project-wide `<appId>.disabledTests.json` files for both the default runner and overrides.
+Compiled apps are matched to normal `testFolders`; eligible installed test apps are added from `installTestAppsJson`, and matching disabled-test files are applied. The built-in runner uses AlTool and BcContainerHelper metadata to execute each selected app and append JUnit results to `TestResults.xml`.
+
+Produced results remain in the project folder for AnalyzeTests and are copied to `.buildartifacts/TestResults.xml`. The action refreshes `ContainerEventLog.evtx` after execution.
 
 ## Test runner
 
@@ -53,7 +55,7 @@ The override should use its existing noncoverage implementation when `codeCovera
 
 ## Code coverage
 
-Set `useSeparateTestAction.codeCoverageEnabled` to `true` to collect coverage with the built-in AlTool runner or an opted-in `RunTestsInBcContainer.ps1` override. Coverage uses the latest prerelease `Microsoft.Dynamics.BusinessCentral.Development.Tools` package and requires container platform 30.0.56026.0 or later. After RunPipeline creates the container, it hands the actual platform version to RunTests. Missing, malformed, older, or failed version detection produces a warning and tests continue normally without coverage. Once the platform requirement is confirmed, collection or export errors fail the run instead of silently retrying without coverage.
+Set `useSeparateTestAction.codeCoverageEnabled` to `true` to collect coverage with the built-in AlTool runner or an opted-in `RunTestsInBcContainer.ps1` override. Coverage pins `Microsoft.Dynamics.BusinessCentral.Development.Tools` version `30.0.43.45776-beta` and requires container platform 30.0.56026.0 or later. After RunPipeline creates the container, it hands the actual platform version to RunTests. Missing, malformed, older, or failed version detection produces a warning and tests continue normally without coverage. Once the platform requirement is confirmed, collection or export errors fail the run instead of silently retrying without coverage.
 
 AL-Go collects executable-line coverage. Procedure coverage is not currently exposed because AlTool source enrichment cannot reliably construct a local method inventory in the separate-test environment. `codeCoverageFormats` accepts `bc-json` and `cobertura` and defaults to both. `codeCoverageSummary` accepts `none`, `project`, `repository`, or `both` and defaults to `both`; `none` disables visualization without disabling raw collection. Project and repository summaries require `bc-json`, so use `codeCoverageSummary: none` for Cobertura-only collection. Existing app and test folders that contain AL source files in the current AL-Go project are passed automatically as source roots to improve source mapping. Test projects also use the analyzed app and test folders from their direct `projectsToTest` targets.
 

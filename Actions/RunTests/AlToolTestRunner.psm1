@@ -11,6 +11,7 @@
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot '..\AL-Go-Helper.ps1' -Resolve)
+Import-Module (Join-Path $PSScriptRoot '..\.Modules\AlToolHelper.psm1' -Resolve) -DisableNameChecking -Force
 
 <#
 .SYNOPSIS
@@ -205,34 +206,6 @@ function Get-AlToolTestCodeunits {
     return @($result)
 }
 
-function ConvertFrom-AlFailureOutput {
-    param(
-        [AllowEmptyString()][string] $Output
-    )
-
-    $messageLines = @()
-    $stackLines = @()
-    $inStack = $false
-    foreach ($line in @("$Output" -split "\r?\n")) {
-        if ($line -match '^\s*AL Callstack:\s*$') {
-            $inStack = $true
-            continue
-        }
-        if ($line.Trim().Length -eq 0) { continue }
-        if ($inStack) {
-            $stackLines += $line.Trim()
-        }
-        else {
-            $messageLines += $line.Trim()
-        }
-    }
-
-    return @{
-        Message    = ($messageLines -join ' ').Trim()
-        Stacktrace = ($stackLines -join ';')
-    }
-}
-
 <#
 .SYNOPSIS
     Parses an AlTool test-groups ToolResponse into result occurrences.
@@ -384,11 +357,10 @@ function ConvertFrom-AlTestGroupsOutput {
 
         [long] $durationMs = $entry.durationMs
         $message = ""
-        $callstackText = ""
+        $diagnosticText = ""
         if ($outcome -eq "Fail") {
-            $failure = ConvertFrom-AlFailureOutput -Output "$($entry.output)"
-            $message = $failure.Message
-            $callstackText = $failure.Stacktrace
+            $diagnosticText = "$($entry.output)"
+            $message = "Test failed"
         }
 
         $codeunitKey = "$codeunitId"
@@ -400,7 +372,7 @@ function ConvertFrom-AlTestGroupsOutput {
             Outcome    = $outcome
             Ms         = $durationMs
             Message    = $message
-            Stacktrace = $callstackText
+            Stacktrace = $diagnosticText
         }
     }
 
@@ -770,8 +742,8 @@ function Add-JUnitTestSuite {
                 switch ($res.Outcome) {
                     'Fail' {
                         $failure = $Doc.CreateElement("failure")
-                        $failure.SetAttribute("message", "$($res.Message)")
-                        $failure.InnerText = "$($res.Stacktrace)".Replace(";", "`n")
+                        $failure.SetAttribute("message", "Test failed")
+                        $failure.InnerText = "$($res.Stacktrace)"
                         $tc.AppendChild($failure) | Out-Null
                         $failed++
                     }
