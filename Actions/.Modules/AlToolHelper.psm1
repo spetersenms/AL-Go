@@ -6,7 +6,7 @@
 $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
 
 $alToolPackageId = "Microsoft.Dynamics.BusinessCentral.Development.Tools"
-$alToolPackageVersion = "30.0.43.45776-beta"
+$alToolNuGetVersion = "30.0.43.45776-beta"
 
 <#
 .SYNOPSIS
@@ -75,8 +75,8 @@ function Invoke-AlNativeCommand {
     Verifies that an AlTool executable can report its version.
 .PARAMETER AlToolPath
     Full path to the AlTool executable.
-.PARAMETER ExpectedVersion
-    Optional exact version required from the executable.
+.PARAMETER ExpectedNuGetVersion
+    Optional NuGet package version whose numeric version must match the executable version.
 .OUTPUTS
     [string] The verified executable path.
 #>
@@ -84,7 +84,7 @@ function Confirm-AlToolPath {
     param(
         [Parameter(Mandatory = $true)]
         [string] $AlToolPath,
-        [string] $ExpectedVersion = ""
+        [string] $ExpectedNuGetVersion = ""
     )
 
     $versionResult = Invoke-AlNativeCommand -FilePath $AlToolPath -ArgumentList @("--version")
@@ -94,13 +94,56 @@ function Confirm-AlToolPath {
     if ($versionResult.StandardOutput.Count -eq 0) {
         throw "Failed to run 'al --version'. The command returned no output."
     }
-    $actualVersion = "$($versionResult.StandardOutput[0])".Trim()
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and
-        -not $actualVersion.Equals($ExpectedVersion, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Expected al CLI version '$ExpectedVersion', but '$actualVersion' was found."
+    $actualAlVersion = "$($versionResult.StandardOutput[0])".Trim()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedNuGetVersion)) {
+        # The preview NuGet version ends in -beta, while al --version reports the numeric core plus build metadata.
+        $expectedAlVersionCore = ($ExpectedNuGetVersion -split '[-+]', 2)[0]
+        $alVersionMatches = $actualAlVersion.Equals(
+            $ExpectedNuGetVersion,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+            $actualAlVersion.Equals($expectedAlVersionCore, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $actualAlVersion.StartsWith("$expectedAlVersionCore+", [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $alVersionMatches) {
+            throw "Expected al CLI version matching NuGet package '$ExpectedNuGetVersion', but '$actualAlVersion' was found."
+        }
     }
-    Write-Host "Using al CLI version: $actualVersion"
+    Write-Host "Using al CLI version: $actualAlVersion"
     return $AlToolPath
+}
+
+<#
+.SYNOPSIS
+    Verifies the exact AlTool NuGet package version in a job-scoped dotnet tool installation.
+.DESCRIPTION
+    Checks the dotnet tool package store because `al --version` reports the numeric AL version plus
+    build metadata and does not preserve the NuGet prerelease suffix. Use this together with
+    Confirm-AlToolPath to validate both the pinned package identity and its executable.
+.PARAMETER ToolDirectory
+    Job-scoped directory supplied to `dotnet tool install --tool-path`.
+.PARAMETER PackageId
+    NuGet package identifier expected in the dotnet tool store.
+.PARAMETER ExpectedNuGetVersion
+    Exact NuGet package version expected in the dotnet tool store.
+#>
+function Confirm-AlToolPackageVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ToolDirectory,
+        [Parameter(Mandatory = $true)]
+        [string] $PackageId,
+        [Parameter(Mandatory = $true)]
+        [string] $ExpectedNuGetVersion
+    )
+
+    $packageStorePath = Join-Path (
+        Join-Path (
+            Join-Path $ToolDirectory ".store"
+        ) $PackageId.ToLowerInvariant()
+    ) $ExpectedNuGetVersion
+    if (-not (Test-Path -LiteralPath $packageStorePath -PathType Container)) {
+        throw "Expected dotnet tool package '$PackageId' version '$ExpectedNuGetVersion' was not found in '$ToolDirectory'."
+    }
 }
 
 <#
@@ -205,17 +248,31 @@ function Get-AlToolExecutableName {
     Resolves the AlTool executable, installing the pinned preview dotnet tool when needed.
 .DESCRIPTION
     Reuses any valid explicit AlToolPath override. A cached executable in the deterministic
-    job-scoped directory is reused only when it reports the pinned package version. Otherwise,
-    installs the exact preview package with dotnet tool install --version --tool-path.
+    job-scoped directory is reused only when its exact package-store version exists and its
+    executable reports the matching build identity. Otherwise, installs the exact preview package
+    with dotnet tool install --version --tool-path.
     Newly resolved paths are stored in the current process and GITHUB_ENV for later action steps.
 .OUTPUTS
     [string] The full path to the AlTool executable.
 #>
 function GetAlToolPath {
+    $toolDirectory = Get-AlToolInstallDirectory
+    $alToolPath = Join-Path $toolDirectory (Get-AlToolExecutableName)
+
     if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath) -and
         (Test-Path -LiteralPath $env:AlToolPath -PathType Leaf)) {
         try {
-            return Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($env:AlToolPath))
+            $persistedAlToolPath = [System.IO.Path]::GetFullPath($env:AlToolPath)
+            if ($persistedAlToolPath.Equals(
+                    [System.IO.Path]::GetFullPath($alToolPath),
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                Confirm-AlToolPackageVersion -ToolDirectory $toolDirectory `
+                    -PackageId $alToolPackageId -ExpectedNuGetVersion $alToolNuGetVersion
+                return Confirm-AlToolPath -AlToolPath $persistedAlToolPath `
+                    -ExpectedNuGetVersion $alToolNuGetVersion
+            }
+            return Confirm-AlToolPath -AlToolPath $persistedAlToolPath
         }
         catch {
             Write-Host "::Warning::Ignoring the persisted AlToolPath because executable validation failed. $($_.Exception.Message)"
@@ -226,14 +283,14 @@ function GetAlToolPath {
         Remove-Item Env:\AlToolPath -ErrorAction SilentlyContinue
     }
 
-    $toolDirectory = Get-AlToolInstallDirectory
-    $alToolPath = Join-Path $toolDirectory (Get-AlToolExecutableName)
     $installRequired = $true
     if (Test-Path -LiteralPath $alToolPath -PathType Leaf) {
         try {
+            Confirm-AlToolPackageVersion -ToolDirectory $toolDirectory `
+                -PackageId $alToolPackageId -ExpectedNuGetVersion $alToolNuGetVersion
             $alToolPath = Confirm-AlToolPath `
                 -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath)) `
-                -ExpectedVersion $alToolPackageVersion
+                -ExpectedNuGetVersion $alToolNuGetVersion
             $installRequired = $false
         }
         catch {
@@ -248,9 +305,9 @@ function GetAlToolPath {
         }
         New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
 
-        Write-Host "Installing '$alToolPackageId' version '$alToolPackageVersion' into '$toolDirectory'..."
+        Write-Host "Installing '$alToolPackageId' version '$alToolNuGetVersion' into '$toolDirectory'..."
         $installResult = Invoke-AlNativeCommand -FilePath "dotnet" -ArgumentList @(
-            "tool", "install", $alToolPackageId, "--version", $alToolPackageVersion,
+            "tool", "install", $alToolPackageId, "--version", $alToolNuGetVersion,
             "--tool-path", $toolDirectory
         )
         $installResult.Output | ForEach-Object { Write-Host $_ }
@@ -264,9 +321,11 @@ function GetAlToolPath {
     }
 
     if ($installRequired) {
+        Confirm-AlToolPackageVersion -ToolDirectory $toolDirectory `
+            -PackageId $alToolPackageId -ExpectedNuGetVersion $alToolNuGetVersion
         $alToolPath = Confirm-AlToolPath `
             -AlToolPath ([System.IO.Path]::GetFullPath($alToolPath)) `
-            -ExpectedVersion $alToolPackageVersion
+            -ExpectedNuGetVersion $alToolNuGetVersion
     }
 
     $env:AlToolPath = $alToolPath

@@ -135,6 +135,8 @@ Each selected test app is a separate AlTool invocation. AL-Go passes the same or
 
 The source roots let AlTool map runtime coverage facts back to repository files. They are intentionally project-scoped rather than test-app-scoped because a test can execute code across multiple applications and transitive platform dependencies.
 
+Large projects can produce enough source-root and compiler-package arguments to exceed the Windows native command-line limit. `Invoke-AlRunTestsBatch` detects large argument sets, writes the arguments to a temporary UTF-8 AlTool response file, invokes `al runtests` with the single `@<file>` argument, and removes the file after the process exits. Connection credentials remain environment-based and are never written to the response file.
+
 This means per-app BC JSON reports can contain large, overlapping executable-line inventories. A commonly used application can appear in many reports even though each invocation ran a different test app. In a repository such as BCApps, shared dependencies such as Base Application are exercised by many test apps, so the same semantic lines can be repeated across several very large reports.
 
 Keeping every report until artifact upload and then parsing them in AnalyzeCodeCoverage has three costs:
@@ -192,7 +194,7 @@ The repository AnalyzeCodeCoverage job starts after the build jobs. It downloads
 | `New-AlGoCodeCoverageSession` | `Invoke-AlGoTestRun` | Once before the app loop | Resolves ordered source roots and creates minimal ordered per-app run records. |
 | `Resolve-CodeCoverageSourceRootData` | Session creation | Once for a supported session | Collects app and test roots containing AL source files from the project and direct `projectsToTest`, rejects unsafe paths, deduplicates, and sorts roots. |
 | `Invoke-AlToolTestRun` | App loop or opted-in override | Once per selected test app | Enumerates tests, invokes AlTool, appends JUnit, surfaces diagnostics, and returns test success plus coverage completeness. |
-| `Invoke-AlRunTestsBatch` | `Invoke-AlToolTestRun` | Once per app with test codeunits | Builds the `al runtests` arguments, invokes the native process, and parses its structured output. |
+| `Invoke-AlRunTestsBatch` | `Invoke-AlToolTestRun` | Once per app with test codeunits | Builds the `al runtests` arguments, uses a temporary response file when the native command would be too large, invokes the process, and parses its structured output. |
 | `Complete-AlGoCodeCoverageRun` | App loop | Immediately after one supported invocation | Validates fixed artifacts and metadata, assigns the final run state, starts the worker if needed, and enqueues the report. |
 | `Test-CodeCoverageArtifacts` | Per-run completion | Before enqueue | Checks requested files, schema version, mode, and agreement between structured completeness and BC JSON. |
 | `Start-CodeCoverageAggregateWorker` | Per-run completion | Lazily for the first valid BC JSON report | Creates the queue, event queue, and single background PowerShell runspace. |

@@ -13,6 +13,8 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot '..\AL-Go-Helper.ps1' -Resolve)
 Import-Module (Join-Path $PSScriptRoot '..\.Modules\AlToolHelper.psm1' -Resolve) -DisableNameChecking -Force
 
+$alToolResponseFileThreshold = 24000
+
 <#
 .SYNOPSIS
     Resolves the on-prem connection settings (server URL, instance, dev-service port) for a container.
@@ -501,6 +503,64 @@ function Write-EmptyAlToolCoverageArtifacts {
     }
 }
 
+function ConvertTo-AlToolResponseFileArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Argument
+    )
+
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    [void] $builder.Append([char]34)
+    $backslashCount = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]92) {
+            $backslashCount++
+            continue
+        }
+
+        if ($character -eq [char]34) {
+            [void] $builder.Append([char]92, (($backslashCount * 2) + 1))
+            [void] $builder.Append([char]34)
+        }
+        else {
+            if ($backslashCount -gt 0) {
+                [void] $builder.Append([char]92, $backslashCount)
+            }
+            [void] $builder.Append($character)
+        }
+        $backslashCount = 0
+    }
+
+    if ($backslashCount -gt 0) {
+        [void] $builder.Append([char]92, ($backslashCount * 2))
+    }
+    [void] $builder.Append([char]34)
+    return $builder.ToString()
+}
+
+function New-AlToolResponseFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $ArgumentList
+    )
+
+    $responseFilePath = Join-Path ([System.IO.Path]::GetTempPath()) "altool-arguments-$([Guid]::NewGuid().ToString('N')).rsp"
+    $responseFileLines = @($ArgumentList | ForEach-Object {
+            ConvertTo-AlToolResponseFileArgument -Argument "$_"
+        })
+    [System.IO.File]::WriteAllLines(
+        $responseFilePath,
+        [string[]] $responseFileLines,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $responseFilePath
+}
+
 <#
 .SYNOPSIS
     Runs all enabled test groups for one app through one AlTool connection.
@@ -523,6 +583,7 @@ function Invoke-AlRunTestsBatch {
     )
 
     $testGroupsFile = New-AlTestGroupsFile -Codeunits $Codeunits
+    $responseFilePath = ""
     try {
         $alArgs = @(
             'runtests',
@@ -563,8 +624,18 @@ function Invoke-AlRunTestsBatch {
             }
         }
 
+        $nativeArgumentList = @($alArgs)
+        $estimatedCommandLength = $AlToolPath.Length + 1 + (($alArgs | ForEach-Object {
+                    "$_".Length + 3
+                } | Measure-Object -Sum).Sum)
+        if ($estimatedCommandLength -gt $alToolResponseFileThreshold) {
+            $responseFilePath = New-AlToolResponseFile -ArgumentList $alArgs
+            $nativeArgumentList = @("@$responseFilePath")
+            OutputDebug -message "Using an AlTool response file for $($alArgs.Count) arguments."
+        }
+
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $nativeResult = Invoke-AlNativeCommand -FilePath $AlToolPath -ArgumentList $alArgs
+        $nativeResult = Invoke-AlNativeCommand -FilePath $AlToolPath -ArgumentList $nativeArgumentList
         $sw.Stop()
         $standardOutputText = ($nativeResult.StandardOutput -join [Environment]::NewLine).Trim()
         $standardErrorText = ($nativeResult.StandardError -join [Environment]::NewLine).Trim()
@@ -646,6 +717,9 @@ function Invoke-AlRunTestsBatch {
         }
     }
     finally {
+        if (-not [string]::IsNullOrWhiteSpace($responseFilePath)) {
+            Remove-Item -LiteralPath $responseFilePath -Force -ErrorAction SilentlyContinue
+        }
         Remove-Item -LiteralPath $testGroupsFile -Force -ErrorAction SilentlyContinue
     }
 }
