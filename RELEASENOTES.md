@@ -111,6 +111,10 @@ AL-Go now supports a new `doNotPerformUpgrade` setting that is passed through to
 
 Workspace compilation now finds altool both in the platform-specific subfolder (`compiler/extension/bin/win32` or `.../linux`) and directly under `compiler/extension/bin`, so a `vsixFile` using the flat (framework-dependent / marketplace) layout no longer fails with "Could not find AL tool in the compiler folder". URL-based `customCodeCops` are likewise downloaded to the flat `bin` folder when no `Analyzers` subfolder is present. The aldoc tool used for reference documentation is resolved the same way, falling back to the flat `bin` folder when no platform subfolder is present.
 
+### Generated code and AL tool overrides for workspace compilation
+
+Workspace compilation can now opt into `workspaceCompilation.generateCode` to package compiler-generated metadata and code for compatible tooling such as compiler-exact code coverage. The setting defaults to `false` because generated packages are larger and require more compilation resources. Set the `AlToolPath` environment variable before the Compile Apps action to override the AL tool bundled in the AL Language extension. If generated code is requested and the selected tool does not advertise `workspace compile --generatecode`, compilation fails before producing unusable packages.
+
 ### `failOn: newWarning` now works with workspace compilation
 
 Previously, the `failOn: newWarning` setting (which fails a pull request when it introduces new AL compiler warnings) only took effect when compiling in a container or compiler folder. It had no effect when `workspaceCompilation` was enabled, because the new-warning comparison only ran in the `RunPipeline` action, whereas workspace compilation produces the compiler output in the `CompileApps` action. The check now also runs in `CompileApps`, so `failOn: newWarning` is honored with workspace compilation.

@@ -327,6 +327,7 @@ function GetDefaultSettings
         "workspaceCompilation"                          = [ordered]@{
             "enabled"                                   = $false
             "parallelism"                               = 1
+            "generateCode"                              = $false
         }
         "pullRequestTrigger"                            = "pull_request"
         "bcptThresholds"                                = [ordered]@{

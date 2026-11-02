@@ -184,10 +184,11 @@ function Get-BuildMetadata {
     .SYNOPSIS
     Gets the path to the AL compiler tool (altool).
     .DESCRIPTION
-    Returns the full path to the AL compiler tool located in the specified compiler folder.
-    Newer AL Language extensions place altool in a platform-specific subfolder (win32/linux),
-    while framework-dependent / marketplace-packaged extensions place it directly under
-    compiler/extension/bin. Both layouts are supported.
+        Returns the explicit AlToolPath environment override when set, otherwise returns the
+        AL compiler tool located in the specified compiler folder.
+        Newer AL Language extensions place altool in a platform-specific subfolder (win32/linux),
+        while framework-dependent / marketplace-packaged extensions place it directly under
+        compiler/extension/bin. Both layouts are supported.
     .PARAMETER CompilerFolder
     The folder where the AL compiler tool is located.
     .OUTPUTS
@@ -198,6 +199,13 @@ function Get-ALTool {
         [Parameter(Mandatory = $true)]
         [string] $CompilerFolder
     )
+
+    if ($env:AlToolPath) {
+        if (-not (Test-Path -Path $env:AlToolPath -PathType Leaf)) {
+            throw "The AL tool specified by environment variable AlToolPath does not exist: $env:AlToolPath"
+        }
+        return (Get-Item -Path $env:AlToolPath).FullName
+    }
 
     if ($script:alTool -and (Test-Path $script:alTool)) {
         return $script:alTool
@@ -237,6 +245,8 @@ function Get-ALTool {
     Array of app folder paths to compile.
 .PARAMETER CompilerFolder
     Path to the compiler folder containing the ALTool and symbols.
+.PARAMETER GenerateCode
+    Generate and package compiler metadata and code. This increases package size and compilation cost.
 .PARAMETER PackageCachePath
     Path to the package cache folder. Defaults to the compiler folder's symbols subfolder.
 .PARAMETER OutFolder
@@ -283,6 +293,8 @@ function Build-AppsInWorkspace {
         [string[]]$Folders,
         [Parameter(Mandatory = $true)]
         [string]$CompilerFolder,
+        [Parameter(Mandatory = $false)]
+        [switch]$GenerateCode,
         [Parameter(Mandatory = $false)]
         [string]$PackageCachePath,
         [Parameter(Mandatory = $false)]
@@ -369,6 +381,7 @@ function Build-AppsInWorkspace {
         CustomAnalyzers = $CustomAnalyzers
         PreprocessorSymbols = $PreprocessorSymbols
         Features = $Features
+        GenerateCode = $GenerateCode
         GenerateReportLayout = $GenerateReportLayout
         Ruleset = $Ruleset
         SourceRepositoryUrl = $SourceRepositoryUrl
@@ -516,6 +529,9 @@ function CompileAppsInWorkspace {
         [string[]]$Features,
 
         [Parameter(Mandatory = $false)]
+        [switch]$GenerateCode,
+
+        [Parameter(Mandatory = $false)]
         [switch]$GenerateReportLayout,
 
         [Parameter(Mandatory = $false)]
@@ -603,6 +619,13 @@ function CompileAppsInWorkspace {
     if ($Features -and $Features.Count -gt 0) {
         $arguments += "--features"
         $arguments += ($Features -join ",")
+    }
+
+    if ($GenerateCode.IsPresent) {
+        if (-not (Test-ALToolWorkspaceCompileSupportsOption -ALToolPath $ALToolPath -Option 'generatecode')) {
+            throw "Generated-code compilation was requested, but this AL tool does not support 'workspace compile --generatecode'. Use an AL tool version that supports the option."
+        }
+        $arguments += "--generatecode"
     }
 
     if ($GenerateReportLayout.IsPresent) {

@@ -923,12 +923,14 @@ InModuleScope ReadSettings { # Allows testing of private functions
 
         It 'Records accepted and derived sources in metadata' {
             $metadata = @{}
-            $settings = ReadSettings -baseFolder $PSScriptRoot -project '' -repoName 'repo' -workflowName '' -orgSettingsVariableValue '{"additionalCountries":["de"],"workspaceCompilation":{"parallelism":0}}' -repoSettingsVariableValue '' -environmentSettingsVariableValue '' -customSettings '{"additionalCountries":["at"]}' -metadata $metadata
+            $settings = ReadSettings -baseFolder $PSScriptRoot -project '' -repoName 'repo' -workflowName '' -orgSettingsVariableValue '{"additionalCountries":["de"],"workspaceCompilation":{"parallelism":0,"generateCode":true}}' -repoSettingsVariableValue '' -environmentSettingsVariableValue '' -customSettings '{"additionalCountries":["at"]}' -metadata $metadata
 
             $settings.additionalCountries | Should -Be @('de', 'at')
+            $settings.workspaceCompilation.generateCode | Should -BeTrue
             $metadata.properties.additionalCountries.sources | Should -Be @('default', 'settings ALGoOrgSettings (Variable)', 'settings CustomSettings (Parameter)')
             $metadata.properties.workspaceCompilation.sources | Should -Be @('default', 'settings ALGoOrgSettings (Variable)')
             $metadata.properties.workspaceCompilation.properties.parallelism.sources | Should -Be @('settings ALGoOrgSettings (Variable) > workspaceCompilation', 'derived from processor count')
+            $metadata.properties.workspaceCompilation.properties.generateCode.sources | Should -Be @('settings ALGoOrgSettings (Variable) > workspaceCompilation')
             $metadata.properties.shell.sources | Should -Be @('default', 'derived from runs-on')
             $metadata.properties.githubRunner.sources | Should -Be @('default', 'derived from runs-on')
             $metadata.properties.githubRunnerShell.sources | Should -Be @('default', 'derived from shell')

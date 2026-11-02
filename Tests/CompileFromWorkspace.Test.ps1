@@ -548,6 +548,22 @@ Write-Host "Post-compile: $($appFiles.Count) apps"
             Build-AppsInWorkspace -Folders @((Join-Path $projectPath "App7")) -CompilerFolder $script:mockCompilerFolder -Analyzers @('CodeCop', 'UICop')
         }
 
+        It 'Passes GenerateCode to CompileAppsInWorkspace' {
+            Mock Get-ALTool { return (Join-Path $TestDrive 'compiler\altool.exe') } -ModuleName CompileFromWorkspace
+            Mock New-WorkspaceFromFolders { } -ModuleName CompileFromWorkspace
+            Mock CompileAppsInWorkspace {
+                param($GenerateCode)
+                $GenerateCode.IsPresent | Should -BeTrue
+                return @()
+            } -ModuleName CompileFromWorkspace
+
+            $projectPath = New-ALGoTestProject -BaseFolder (Join-Path $TestDrive 'proj-generatecode') -AppFolders @(
+                @{ Name = "GenerateCodeApp"; Id = "99999999-9999-9999-9999-999999999999" }
+            )
+
+            Build-AppsInWorkspace -Folders @((Join-Path $projectPath "GenerateCodeApp")) -CompilerFolder $script:mockCompilerFolder -GenerateCode
+        }
+
         It 'Accepts bcptApp as AppType for BCPT workspace compilation' {
             Mock Get-ALTool { return (Join-Path $TestDrive 'compiler\altool.exe') } -ModuleName CompileFromWorkspace
             Mock New-WorkspaceFromFolders { } -ModuleName CompileFromWorkspace
@@ -844,6 +860,39 @@ Write-Host "Post-compile: $($appFiles.Count) apps"
     }
 
     Describe 'Get-ALTool' {
+        BeforeEach {
+            $script:originalAlToolPath = $env:AlToolPath
+            $env:AlToolPath = $null
+        }
+
+        AfterEach {
+            $env:AlToolPath = $script:originalAlToolPath
+        }
+
+        It 'Uses the explicit AlToolPath environment override' {
+            $override = Join-Path $TestDrive 'development-altool.exe'
+            Set-Content -Path $override -Value 'tool'
+            $env:AlToolPath = $override
+
+            InModuleScope CompileFromWorkspace -Parameters @{ CompilerFolder = (Join-Path $TestDrive 'unused-compiler') } {
+                param($CompilerFolder)
+                $script:alTool = $null
+
+                Get-ALTool -CompilerFolder $CompilerFolder | Should -Be (Get-Item -Path $env:AlToolPath).FullName
+            }
+        }
+
+        It 'Rejects a missing AlToolPath environment override' {
+            $env:AlToolPath = Join-Path $TestDrive 'missing-altool.exe'
+
+            InModuleScope CompileFromWorkspace -Parameters @{ CompilerFolder = (Join-Path $TestDrive 'unused-compiler') } {
+                param($CompilerFolder)
+                $script:alTool = $null
+
+                { Get-ALTool -CompilerFolder $CompilerFolder } | Should -Throw "*environment variable AlToolPath does not exist*"
+            }
+        }
+
         It 'Finds altool in the platform-specific subfolder (win32/linux)' {
             $cf = Join-Path $TestDrive 'altool-platform'
             InModuleScope CompileFromWorkspace -Parameters @{ CompilerFolder = $cf } {
@@ -1363,6 +1412,65 @@ Write-Host "Post-compile: $($appFiles.Count) apps"
                 CompileAppsInWorkspace -ALToolPath 'altool.exe' -WorkspaceFile $wsFile -MaxCpuCount 1 -OutFolder $outDir -PackageCachePath $outDir
 
                 $script:capturedArguments | Should -Not -Contain '--errorlogdirectory'
+            }
+        }
+
+        It 'Includes --generatecode when requested and supported' {
+            InModuleScope CompileFromWorkspace {
+                $script:capturedArguments = @()
+                $wsFile = Join-Path $TestDrive 'test-generatecode.code-workspace'
+                Set-Content -Path $wsFile -Value '{}'
+                $outDir = Join-Path $TestDrive 'out-generatecode'
+                New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+                Mock RunAndCheck {
+                    $script:capturedArguments = $args
+                }
+                Mock Copy-CompiledAppsToOutput { return @() }
+                Mock Test-ALToolWorkspaceCompileSupportsOption { return $true }
+
+                CompileAppsInWorkspace -ALToolPath 'altool.exe' -WorkspaceFile $wsFile -MaxCpuCount 1 -OutFolder $outDir -PackageCachePath $outDir -GenerateCode
+
+                $script:capturedArguments | Should -Contain '--generatecode'
+            }
+        }
+
+        It 'Does not include --generatecode by default' {
+            InModuleScope CompileFromWorkspace {
+                $script:capturedArguments = @()
+                $wsFile = Join-Path $TestDrive 'test-default-generatecode.code-workspace'
+                Set-Content -Path $wsFile -Value '{}'
+                $outDir = Join-Path $TestDrive 'out-default-generatecode'
+                New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+                Mock RunAndCheck {
+                    $script:capturedArguments = $args
+                }
+                Mock Copy-CompiledAppsToOutput { return @() }
+                Mock Test-ALToolWorkspaceCompileSupportsOption { return $true }
+
+                CompileAppsInWorkspace -ALToolPath 'altool.exe' -WorkspaceFile $wsFile -MaxCpuCount 1 -OutFolder $outDir -PackageCachePath $outDir
+
+                $script:capturedArguments | Should -Not -Contain '--generatecode'
+                Should -Invoke Test-ALToolWorkspaceCompileSupportsOption -Times 0
+            }
+        }
+
+        It 'Fails before compilation when --generatecode is unsupported' {
+            InModuleScope CompileFromWorkspace {
+                $script:capturedArguments = @()
+                $wsFile = Join-Path $TestDrive 'test-unsupported-generatecode.code-workspace'
+                Set-Content -Path $wsFile -Value '{}'
+                $outDir = Join-Path $TestDrive 'out-unsupported-generatecode'
+                New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+                Mock RunAndCheck {
+                    $script:capturedArguments = $args
+                }
+                Mock Copy-CompiledAppsToOutput { return @() }
+                Mock Test-ALToolWorkspaceCompileSupportsOption { return $false }
+
+                { CompileAppsInWorkspace -ALToolPath 'altool.exe' -WorkspaceFile $wsFile -MaxCpuCount 1 -OutFolder $outDir -PackageCachePath $outDir -GenerateCode } |
+                    Should -Throw "*does not support 'workspace compile --generatecode'*"
+
+                Should -Invoke RunAndCheck -Times 0
             }
         }
     }

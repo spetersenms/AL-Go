@@ -237,6 +237,7 @@ try {
         AssemblyProbingPaths        = (Get-AssemblyProbingPaths -CompilerFolder $compilerFolder)
         PreprocessorSymbols         = $settings.preprocessorSymbols
         Features                    = $settings.features
+        GenerateCode                = $settings.workspaceCompilation.generateCode
         MaxCpuCount                 = $settings.workspaceCompilation.parallelism
         SourceRepositoryUrl         = $buildMetadata.SourceRepositoryUrl
         SourceCommit                = $buildMetadata.SourceCommit

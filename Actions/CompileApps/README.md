@@ -26,6 +26,12 @@ Compile AL apps by using workspace compilation from the ALTool
 | baselineWorkflowSHA | | SHA of the baseline workflow run | '' |
 | previousAppsPath | | Path to folder containing previous release apps for AppSourceCop baseline | '' |
 
+When workspace compilation is enabled, `workspaceCompilation.generateCode` passes
+`--generatecode` to a compatible AL tool. Generated-code packages remain normal
+installable `.app` files, but they are larger and take more resources to compile.
+Set the `AlToolPath` environment variable before this action to use a specific AL
+tool instead of the executable bundled in the downloaded AL Language extension.
+
 ## OUTPUT
 
 None
