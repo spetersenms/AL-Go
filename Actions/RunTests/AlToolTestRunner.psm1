@@ -642,6 +642,10 @@ function Invoke-AlRunTestsBatch {
             Initialize-AlToolCoverageOutput -CoverageOutputPath $CoverageOutputPath `
                 -CoverageFormats $CoverageFormats
             $alArgs += @('--coverage', 'line', '--coverage-output', $CoverageOutputPath)
+            if (-not [string]::IsNullOrWhiteSpace($env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH) -and
+                -not [string]::IsNullOrWhiteSpace($env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION)) {
+                $alArgs += @('--coverage-scope', 'sources')
+            }
             foreach ($coverageFormat in $CoverageFormats) {
                 $alArgs += @('--coverage-format', $coverageFormat)
             }

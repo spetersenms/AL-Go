@@ -74,6 +74,7 @@ function Invoke-CodeCoverageAggregateWorker {
         [System.StringComparer]::OrdinalIgnoreCase
     )
     $totalParseMilliseconds = [double]0
+    $reportIndex = 0
 
     try {
         while ($true) {
@@ -85,6 +86,7 @@ function Invoke-CodeCoverageAggregateWorker {
             if ([string]::IsNullOrWhiteSpace($descriptorJson)) {
                 continue
             }
+            $reportIndex++
             $descriptor = $descriptorJson | ConvertFrom-Json -AsHashtable
             $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
             $file = Get-Item -LiteralPath "$($descriptor.ReportPath)"
@@ -103,6 +105,10 @@ function Invoke-CodeCoverageAggregateWorker {
                 Get-CoverageArray $reportResult.Data.diagnostics |
                     ForEach-Object { "$_" }
             )
+            foreach ($diagnostic in $rawDiagnostics) {
+                Write-Host ("Code coverage raw diagnostic: appId='{0}', report={1}: {2}" -f
+                    "$($descriptor.AppId)", $reportIndex, $diagnostic)
+            }
             $filteredDiagnostics = @(
                 $rawDiagnostics | Where-Object {
                     -not (& $isExternalMissingSourceDiagnostic "$_")
@@ -118,7 +124,7 @@ function Invoke-CodeCoverageAggregateWorker {
             $semanticLineCount += [int]$reportResult.NewLineCount
             $culture = [System.Globalization.CultureInfo]::InvariantCulture
             Write-Host ("Code coverage compactor report {0}: size={1} MiB, parse={2}s, extracted={3}, new={4}, aggregate={5}." -f
-                $runDiagnostics.Count,
+                $reportIndex,
                 ($file.Length / 1MB).ToString("0.0", $culture),
                 ($stopwatch.Elapsed.TotalMilliseconds / 1000).ToString("0.000", $culture),
                 [int]$reportResult.ExtractedLineCount,

@@ -496,7 +496,24 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             $script:capturedBatchArguments = $null
             $script:capturedTestGroupsPath = $null
             $script:capturedTestGroupsJson = $null
+            $script:previousExperimentalAlToolPackagePath = $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH
+            $script:previousExperimentalAlToolPackageVersion = $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION -ErrorAction SilentlyContinue
             Mock -ModuleName AlToolTestRunner OutputDebug {}
+        }
+
+        AfterEach {
+            [Environment]::SetEnvironmentVariable(
+                'ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH',
+                $script:previousExperimentalAlToolPackagePath,
+                [EnvironmentVariableTarget]::Process
+            )
+            [Environment]::SetEnvironmentVariable(
+                'ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION',
+                $script:previousExperimentalAlToolPackageVersion,
+                [EnvironmentVariableTarget]::Process
+            )
         }
 
         It 'Uses one testgroups invocation with the exact enabled method lists and removes the temporary file' {
@@ -550,7 +567,16 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 0 -Exactly
         }
 
-        It 'Passes coverage formats, source roots, and app packages to one isolated output folder' {
+        It 'Passes coverage formats, source roots, app packages, and the expected scope in <Mode> mode' -TestCases @(
+            @{ Mode = 'production'; Experimental = $false; ExpectedScopeCount = 0 }
+            @{ Mode = 'experimental'; Experimental = $true; ExpectedScopeCount = 1 }
+        ) {
+            param($Mode, $Experimental, $ExpectedScopeCount)
+
+            if ($Experimental) {
+                $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH = 'C:\experimental\AlTool.nupkg'
+                $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION = '30.0.0-test'
+            }
             $script:coverageOutputPath = Join-Path $TestDrive 'coverage-app-one'
             $script:coverageSourceRootOne = Join-Path $TestDrive 'App'
             $script:coverageSourceRootTwo = Join-Path $TestDrive 'Test'
@@ -616,6 +642,12 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-format' }).Count | Should -Be 2
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-source-root' }).Count | Should -Be 2
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-app' }).Count | Should -Be 2
+            @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-scope' }).Count |
+                Should -Be $ExpectedScopeCount
+            if ($Experimental) {
+                $coverageScopeIndex = [Array]::IndexOf($script:capturedBatchArguments, '--coverage-scope')
+                $script:capturedBatchArguments[$coverageScopeIndex + 1] | Should -Be 'sources'
+            }
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootOne))
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootTwo))
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageAppOne))

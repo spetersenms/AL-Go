@@ -301,6 +301,7 @@ Describe "Code coverage aggregate" {
         )
         $metadata = Get-AggregateMetadata -status $status
         $metadata.ApplicationObjectIdRanges = @(@{ From = 50000; To = 50100 })
+        Mock -ModuleName CodeCoverageAggregate Write-Host {}
 
         $result = Invoke-CodeCoverageAggregateWorker -inputReader $inputReader `
             -readerModulePath (Join-Path $PSScriptRoot "..\Actions\.Modules\CodeCoverageReportReader.psm1" -Resolve) `
@@ -314,6 +315,15 @@ Describe "Code coverage aggregate" {
             "No source file was found for AL object 5:50100.",
             "Coverage method identity resolution failed for 'App'."
         )
+        Should -Invoke -ModuleName CodeCoverageAggregate Write-Host -Times 1 -Exactly -ParameterFilter {
+            "$Object" -eq "Code coverage raw diagnostic: appId='external', report=1: No source file was found for AL object 5:130002."
+        }
+        Should -Invoke -ModuleName CodeCoverageAggregate Write-Host -Times 1 -Exactly -ParameterFilter {
+            "$Object" -eq "Code coverage raw diagnostic: appId='repository', report=2: No source file was found for AL object 5:50100."
+        }
+        Should -Invoke -ModuleName CodeCoverageAggregate Write-Host -Times 1 -Exactly -ParameterFilter {
+            "$Object" -eq "Code coverage raw diagnostic: appId='repository', report=2: Coverage method identity resolution failed for 'App'."
+        }
         $result.Aggregate.LineCount | Should -Be 1
     }
 

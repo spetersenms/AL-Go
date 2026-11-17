@@ -48,6 +48,8 @@ Describe "RunTests Action Tests" {
         $script:previousTokenObservationPath = $ENV:_runTestsTokenObservationPath
         $script:previousGitHubWorkspace = $ENV:GITHUB_WORKSPACE
         $script:previousSettings = $ENV:Settings
+        $script:previousExperimentalAlToolPackagePath = $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH
+        $script:previousExperimentalAlToolPackageVersion = $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION
     }
 
     AfterEach {
@@ -98,6 +100,18 @@ Describe "RunTests Action Tests" {
         }
         else {
             $ENV:Settings = $script:previousSettings
+        }
+        if ($null -eq $script:previousExperimentalAlToolPackagePath) {
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH = $script:previousExperimentalAlToolPackagePath
+        }
+        if ($null -eq $script:previousExperimentalAlToolPackageVersion) {
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION = $script:previousExperimentalAlToolPackageVersion
         }
     }
 
@@ -235,6 +249,31 @@ Describe "RunTests Action Tests" {
             $containerPlatformVersion -eq '30.0.56026.0' -and
             $containerPlatformVersionReason -eq ''
         }
+    }
+
+    It 'Resolves an experimental AlTool package path relative to the action directory' {
+        $ENV:GITHUB_WORKSPACE = $TestDrive
+        $ENV:Settings = '{}'
+        $ENV:containerName = 'test-container'
+        $ENV:containerPlatformVersion = '30.0.56026.0'
+        $ENV:containerPlatformVersionReason = ''
+        $ENV:containerCredential = [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes('{"username":"test-user","password":"test-password"}')
+        )
+        $relativePackagePath = '..\..\Experimental\AlTool\Microsoft.Dynamics.BusinessCentral.Development.Tools.30.0.0-test.nupkg'
+
+        Mock DownloadAndImportBcContainerHelper {}
+        Mock AnalyzeRepo { return @{ testFolders = @() } }
+        Mock Get-ScriptOverrides { return @{} }
+        Mock Invoke-AlGoTestRun {}
+
+        & $scriptPath -experimentalAlToolPackagePath $relativePackagePath `
+            -experimentalAlToolPackageVersion '30.0.0-test'
+
+        $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH | Should -Be (
+            [System.IO.Path]::GetFullPath((Join-Path $scriptRoot $relativePackagePath))
+        )
+        $ENV:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION | Should -Be '30.0.0-test'
     }
 
     Context 'RunPipeline wiring' {

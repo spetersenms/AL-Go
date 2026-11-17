@@ -31,6 +31,8 @@ Describe 'AlToolHelper.psm1 Tests' {
             BeforeEach {
                 $script:alToolEnvironmentVariables = @(
                     'AlToolPath',
+                    'ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH',
+                    'ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION',
                     'GITHUB_ENV',
                     'GITHUB_REPOSITORY_ID',
                     'GITHUB_RUN_ATTEMPT',
@@ -44,6 +46,8 @@ Describe 'AlToolHelper.psm1 Tests' {
                 $script:previousPath = $env:PATH
 
                 Remove-Item Env:\AlToolPath -ErrorAction SilentlyContinue
+                Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH -ErrorAction SilentlyContinue
+                Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION -ErrorAction SilentlyContinue
                 $env:GITHUB_ENV = Join-Path $TestDrive "$([Guid]::NewGuid()).env"
                 $env:RUNNER_TEMP = Join-Path $TestDrive 'runner-temp'
                 $env:GITHUB_REPOSITORY_ID = '67890'
@@ -164,6 +168,73 @@ Describe 'AlToolHelper.psm1 Tests' {
                     $TypeName -eq 'System.Threading.Mutex'
                 }
                 $env:PATH | Should -Be $pathBefore
+            }
+
+            It 'Installs one exact experimental package version from an isolated local source' {
+                $packagePath = Join-Path $TestDrive 'Microsoft.Dynamics.BusinessCentral.Development.Tools.99.0.0-dev.1.nupkg'
+                Set-Content -LiteralPath $packagePath -Value 'experimental package' -Encoding ASCII
+                $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH = $packagePath
+                $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION = '99.0.0-dev.1'
+                $script:capturedPackageSource = ''
+                $script:capturedPackageFiles = @()
+                Mock Invoke-AlNativeCommand {
+                    if ($FilePath -eq 'dotnet') {
+                        $sourceIndex = [Array]::IndexOf($ArgumentList, '--add-source')
+                        $toolPathIndex = [Array]::IndexOf($ArgumentList, '--tool-path')
+                        $script:capturedPackageSource = $ArgumentList[$sourceIndex + 1]
+                        $script:capturedPackageFiles = @(
+                            Get-ChildItem -LiteralPath $script:capturedPackageSource -File |
+                                ForEach-Object { $_.Name }
+                        )
+                        New-TestAlToolExecutable -Path (
+                            Join-Path $ArgumentList[$toolPathIndex + 1] (Get-AlToolExecutableName)
+                        ) | Out-Null
+                        return [PSCustomObject]@{
+                            StandardOutput = [string[]]@()
+                            StandardError  = [string[]]@()
+                            Output         = [string[]]@()
+                            ExitCode       = [int] 0
+                        }
+                    }
+                    return [PSCustomObject]@{
+                        StandardOutput = [string[]]@('99.0.0-dev.1')
+                        StandardError  = [string[]]@()
+                        Output         = [string[]]@('99.0.0-dev.1')
+                        ExitCode       = [int] 0
+                    }
+                }
+
+                $resolvedPath = GetAlToolPath
+                GetAlToolPath | Should -Be $resolvedPath
+
+                Should -Invoke Invoke-AlNativeCommand -Times 1 -Exactly -ParameterFilter {
+                    $FilePath -eq 'dotnet' -and
+                    $ArgumentList.Count -eq 9 -and
+                    $ArgumentList[0] -eq 'tool' -and
+                    $ArgumentList[1] -eq 'install' -and
+                    $ArgumentList[2] -eq 'Microsoft.Dynamics.BusinessCentral.Development.Tools' -and
+                    $ArgumentList[3] -eq '--version' -and
+                    $ArgumentList[4] -eq '99.0.0-dev.1' -and
+                    $ArgumentList[5] -eq '--add-source' -and
+                    $ArgumentList[6] -eq $script:capturedPackageSource -and
+                    $ArgumentList[7] -eq '--tool-path' -and
+                    $ArgumentList[8] -eq (Split-Path $resolvedPath -Parent)
+                }
+                $script:capturedPackageFiles |
+                    Should -Be @('Microsoft.Dynamics.BusinessCentral.Development.Tools.99.0.0-dev.1.nupkg')
+                Test-Path -LiteralPath $script:capturedPackageSource | Should -BeFalse
+                Split-Path $resolvedPath -Parent | Should -BeLike (
+                    Join-Path $script:expectedToolDirectory 'experimental-*'
+                )
+            }
+
+            It 'Requires both experimental package path and version' {
+                $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH = Join-Path $TestDrive 'tool.nupkg'
+
+                { GetAlToolPath } |
+                    Should -Throw '*ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH*ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION*'
+
+                Should -Invoke Invoke-AlNativeCommand -Times 0 -Exactly
             }
 
             It 'Returns a deterministic directory for the current GitHub run attempt' {

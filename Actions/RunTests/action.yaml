@@ -25,6 +25,14 @@ inputs:
     description: A path to a JSON-formatted list of test apps to run tests in
     required: false
     default: ''
+  experimentalAlToolPackagePath:
+    description: Experimental path to a local AlTool nupkg, relative to this action or absolute
+    required: false
+    default: ''
+  experimentalAlToolPackageVersion:
+    description: Exact experimental AlTool package version
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -36,9 +44,11 @@ runs:
         _projectName: ${{ inputs.projectName }}
         _buildMode: ${{ inputs.buildMode }}
         _installTestAppsJson: ${{ inputs.installTestAppsJson }}
+        _experimentalAlToolPackagePath: ${{ inputs.experimentalAlToolPackagePath }}
+        _experimentalAlToolPackageVersion: ${{ inputs.experimentalAlToolPackageVersion }}
       run: |
         ${{ github.action_path }}/../Invoke-AlGoAction.ps1 -ActionName "RunTests" -Action {
-          ${{ github.action_path }}/RunTests.ps1 -token $ENV:_token -project $ENV:_project -projectName $ENV:_projectName -buildMode $ENV:_buildMode -installTestAppsJson $ENV:_installTestAppsJson
+          ${{ github.action_path }}/RunTests.ps1 -token $ENV:_token -project $ENV:_project -projectName $ENV:_projectName -buildMode $ENV:_buildMode -installTestAppsJson $ENV:_installTestAppsJson -experimentalAlToolPackagePath $ENV:_experimentalAlToolPackagePath -experimentalAlToolPackageVersion $ENV:_experimentalAlToolPackageVersion
         }
 branding:
   icon: terminal

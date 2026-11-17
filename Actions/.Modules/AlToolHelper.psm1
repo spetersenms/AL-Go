@@ -136,25 +136,63 @@ function Get-AlToolExecutableName {
 
 <#
 .SYNOPSIS
-    Resolves the AlTool executable, installing the prerelease dotnet tool when needed.
+    Resolves the AlTool executable, installing the selected dotnet tool when needed.
 .DESCRIPTION
     Reuses a valid path from AlToolPath or the deterministic run-scoped tool directory. Otherwise,
     installs the prerelease package into that directory with dotnet tool install --tool-path.
+    For experimental validation, ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH and
+    ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION select one exact local package and version.
     Newly resolved paths are stored in the current process and GITHUB_ENV for later action steps.
 .OUTPUTS
     [string] The full path to the AlTool executable.
 #>
 function GetAlToolPath {
-    if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath) -and
+    $experimentalPackagePath = "$($env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH)".Trim()
+    $experimentalPackageVersion = "$($env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION)".Trim()
+    $experimentalPackageSelected = (
+        -not [string]::IsNullOrWhiteSpace($experimentalPackagePath) -or
+        -not [string]::IsNullOrWhiteSpace($experimentalPackageVersion)
+    )
+    if ($experimentalPackageSelected -and (
+            [string]::IsNullOrWhiteSpace($experimentalPackagePath) -or
+            [string]::IsNullOrWhiteSpace($experimentalPackageVersion))) {
+        throw "ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH and ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION must both be supplied."
+    }
+
+    if (-not $experimentalPackageSelected -and
+        -not [string]::IsNullOrWhiteSpace($env:AlToolPath) -and
         (Test-Path -LiteralPath $env:AlToolPath -PathType Leaf)) {
         return Confirm-AlToolPath -AlToolPath ([System.IO.Path]::GetFullPath($env:AlToolPath))
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:AlToolPath)) {
+    if (-not $experimentalPackageSelected -and -not [string]::IsNullOrWhiteSpace($env:AlToolPath)) {
         Remove-Item Env:\AlToolPath -ErrorAction SilentlyContinue
     }
 
     $toolDirectory = Get-AlToolInstallDirectory
+    $experimentalPackage = $null
+    if ($experimentalPackageSelected) {
+        $experimentalPackagePath = [System.IO.Path]::GetFullPath($experimentalPackagePath)
+        if (-not (Test-Path -LiteralPath $experimentalPackagePath -PathType Leaf)) {
+            throw "The experimental AlTool package '$experimentalPackagePath' does not exist."
+        }
+        if ([System.IO.Path]::GetExtension($experimentalPackagePath) -ne ".nupkg") {
+            throw "The experimental AlTool package '$experimentalPackagePath' must be a .nupkg file."
+        }
+
+        $experimentalPackage = Get-Item -LiteralPath $experimentalPackagePath
+        $identityText = "$experimentalPackagePath`n$experimentalPackageVersion`n$($experimentalPackage.Length)`n$($experimentalPackage.LastWriteTimeUtc.Ticks)"
+        $identityBytes = [System.Text.Encoding]::UTF8.GetBytes($identityText)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $identity = ([System.BitConverter]::ToString($sha256.ComputeHash($identityBytes))).Replace("-", "").Substring(0, 12).ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+        $toolDirectory = Join-Path $toolDirectory "experimental-$identity"
+    }
+
     $alToolPath = Join-Path $toolDirectory (Get-AlToolExecutableName)
     if (-not (Test-Path -LiteralPath $alToolPath -PathType Leaf)) {
         if (Test-Path -LiteralPath $toolDirectory) {
@@ -163,10 +201,33 @@ function GetAlToolPath {
         }
         New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
 
-        Write-Host "Installing '$alToolPackageId' (prerelease) into '$toolDirectory'..."
-        $installResult = Invoke-AlNativeCommand -FilePath "dotnet" -ArgumentList @(
-            "tool", "install", $alToolPackageId, "--prerelease", "--tool-path", $toolDirectory
-        )
+        if ($experimentalPackageSelected) {
+            $packageSource = Join-Path $toolDirectory "package-source"
+            New-Item -Path $packageSource -ItemType Directory -Force | Out-Null
+            Copy-Item -LiteralPath $experimentalPackage.FullName -Destination $packageSource
+            Write-Host "Installing exact experimental '$alToolPackageId' version '$experimentalPackageVersion' from '$($experimentalPackage.FullName)' into '$toolDirectory'..."
+            $installArguments = @(
+                "tool", "install", $alToolPackageId,
+                "--version", $experimentalPackageVersion,
+                "--add-source", $packageSource,
+                "--tool-path", $toolDirectory
+            )
+        }
+        else {
+            Write-Host "Installing '$alToolPackageId' (prerelease) into '$toolDirectory'..."
+            $installArguments = @(
+                "tool", "install", $alToolPackageId, "--prerelease", "--tool-path", $toolDirectory
+            )
+        }
+
+        try {
+            $installResult = Invoke-AlNativeCommand -FilePath "dotnet" -ArgumentList $installArguments
+        }
+        finally {
+            if ($experimentalPackageSelected) {
+                Remove-Item -LiteralPath $packageSource -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
         $installResult.Output | ForEach-Object { Write-Host $_ }
         if ($installResult.ExitCode -ne 0) {
             throw "Failed to install '$alToolPackageId' into '$toolDirectory'. dotnet tool install exited with code $($installResult.ExitCode). Output: $($installResult.Output -join [Environment]::NewLine)"

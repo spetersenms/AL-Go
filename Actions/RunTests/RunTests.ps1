@@ -8,7 +8,11 @@ Param(
     [Parameter(HelpMessage = "Build mode used for this project", Mandatory = $false)]
     [string] $buildMode = "Default",
     [Parameter(HelpMessage = "A path to a JSON-formatted list of test apps to run tests in", Mandatory = $false)]
-    [string] $installTestAppsJson = ''
+    [string] $installTestAppsJson = '',
+    [Parameter(HelpMessage = "Experimental path to a local AlTool nupkg, relative to this action or absolute", Mandatory = $false)]
+    [string] $experimentalAlToolPackagePath = '',
+    [Parameter(HelpMessage = "Exact experimental AlTool package version", Mandatory = $false)]
+    [string] $experimentalAlToolPackageVersion = ''
 )
 
 <#
@@ -30,6 +34,11 @@ Param(
     Build mode used by this project run.
 .PARAMETER installTestAppsJson
     A path to a JSON-formatted list of test apps (produced by previous jobs) to run tests in.
+.PARAMETER experimentalAlToolPackagePath
+    Experimental path to one local Microsoft.Dynamics.BusinessCentral.Development.Tools nupkg.
+    Relative paths are resolved from the RunTests action directory.
+.PARAMETER experimentalAlToolPackageVersion
+    Exact version of the experimental package. Both experimental parameters must be supplied together.
 .EXAMPLE
     RunTests.ps1 -project 'MyProject'
 #>
@@ -41,6 +50,21 @@ $ENV:_token = $token
 Import-Module (Join-Path $PSScriptRoot '..\TelemetryHelper.psm1' -Resolve)
 Import-Module (Join-Path $PSScriptRoot 'RunTests.psm1' -Resolve) -DisableNameChecking -Force
 Import-Module (Join-Path $PSScriptRoot '..\.Modules\AlToolHelper.psm1' -Resolve) -DisableNameChecking -Force
+
+$experimentalAlToolPackagePath = $experimentalAlToolPackagePath.Trim()
+$experimentalAlToolPackageVersion = $experimentalAlToolPackageVersion.Trim()
+if (-not [string]::IsNullOrWhiteSpace($experimentalAlToolPackagePath) -or
+    -not [string]::IsNullOrWhiteSpace($experimentalAlToolPackageVersion)) {
+    if ([string]::IsNullOrWhiteSpace($experimentalAlToolPackagePath) -or
+        [string]::IsNullOrWhiteSpace($experimentalAlToolPackageVersion)) {
+        throw "experimentalAlToolPackagePath and experimentalAlToolPackageVersion must both be supplied."
+    }
+    if (-not [System.IO.Path]::IsPathRooted($experimentalAlToolPackagePath)) {
+        $experimentalAlToolPackagePath = Join-Path $PSScriptRoot $experimentalAlToolPackagePath
+    }
+    $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_PATH = [System.IO.Path]::GetFullPath($experimentalAlToolPackagePath)
+    $env:ALGO_EXPERIMENTAL_ALTOOL_PACKAGE_VERSION = $experimentalAlToolPackageVersion
+}
 
 function Get-TestRunnerCredential {
     <#
