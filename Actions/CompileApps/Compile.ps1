@@ -20,6 +20,8 @@ Param(
 )
 
 . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
+Import-Module (Join-Path $PSScriptRoot '..\.Modules\BuildResources.psm1' -Resolve) -Force -DisableNameChecking
+Initialize-BuildResources
 Import-Module (Join-Path -Path $PSScriptRoot "..\.Modules\CompileFromWorkspace.psm1" -Resolve)
 Import-Module (Join-Path $PSScriptRoot '..\TelemetryHelper.psm1' -Resolve)
 Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "..\DetermineProjectsToBuild\DetermineProjectsToBuild.psm1" -Resolve) -DisableNameChecking
@@ -39,6 +41,7 @@ if ($settings.appFolders.Count -eq 0 -and $settings.testFolders.Count -eq 0 -and
 }
 
 $projectFolder = Join-Path $baseFolder $project
+$compilerFolder = $null
 Push-Location $projectFolder
 try {
     # Set up output folders
@@ -97,7 +100,7 @@ try {
     }
 
     # Set up a compiler folder
-    $containerName = GetContainerName($project)
+    $containerName = Get-BuildContainerName
     $cacheFolder = ""
     if ($settings.gitHubRunner -like "windows-*" -or $settings.gitHubRunner -like "ubuntu-*") {
         # On GitHub-hosted runners, use a folder in the runner temp directory for caching to speed up subsequent builds
@@ -116,8 +119,19 @@ try {
         & $scriptOverrides['PreNewBcCompilerFolder'] -parameters $newCompilerFolderParameters
     }
 
+    if ($newCompilerFolderParameters.containerName -cne "$($containerName)compiler") {
+        throw "PreNewBcCompilerFolder must preserve the compiler folder name assigned to this build job."
+    }
+    $expectedCompilerFolder = Join-Path $bcContainerHelperConfig.hostHelperFolder "compiler\$($newCompilerFolderParameters.containerName)"
+    if (Test-Path -LiteralPath $expectedCompilerFolder) {
+        throw "Compiler folder '$expectedCompilerFolder' already exists. It will not be replaced."
+    }
+    $compilerFolder = $expectedCompilerFolder
     # Create the compiler folder
-    $compilerFolder = New-BcCompilerFolder @newCompilerFolderParameters
+    $createdCompilerFolder = New-BcCompilerFolder @newCompilerFolderParameters
+    if ($createdCompilerFolder -ne $expectedCompilerFolder) {
+        throw "BcContainerHelper returned an unexpected compiler folder '$createdCompilerFolder'."
+    }
 
     # Run PostNewBcCompilerFolder hook if available
     if ($scriptOverrides['PostNewBcCompilerFolder']) {
@@ -321,5 +335,18 @@ try {
         -baselineWorkflowRunId $baselineWorkflowRunId `
         -prBuildOutputFile (Join-Path $projectFolder "BuildOutput.txt")
 } finally {
-    Pop-Location
+    try {
+        if ($compilerFolder -and (Test-Path -LiteralPath $compilerFolder)) {
+            Remove-BcCompilerFolder -compilerFolder $compilerFolder
+            if (Test-Path -LiteralPath $compilerFolder) {
+                throw "Compiler folder '$compilerFolder' still exists after cleanup."
+            }
+        }
+    }
+    catch {
+        Write-Host "::Warning::Compiler folder cleanup failed: $($_.Exception.Message)"
+    }
+    finally {
+        Pop-Location
+    }
 }

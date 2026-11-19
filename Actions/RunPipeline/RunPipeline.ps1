@@ -117,6 +117,9 @@ $projectPath = $null
 
 try {
     . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
+    Import-Module (Join-Path $PSScriptRoot '..\.Modules\BuildResources.psm1' -Resolve) -Force -DisableNameChecking
+    Initialize-BuildResources
+    $containerName = Get-BuildContainerName
     Import-Module (Join-Path $PSScriptRoot '..\TelemetryHelper.psm1' -Resolve)
     DownloadAndImportBcContainerHelper
     Import-Module (Join-Path -Path $PSScriptRoot -ChildPath "..\DetermineProjectsToBuild\DetermineProjectsToBuild.psm1" -Resolve) -DisableNameChecking
@@ -129,8 +132,6 @@ try {
             docker pull --quiet $using:genericImageName
         } | Out-Null
     }
-
-    $containerName = GetContainerName($project)
 
     $ap = "$ENV:GITHUB_ACTION_PATH".Split('\')
     $branch = $ap[$ap.Count-2]
@@ -155,7 +156,7 @@ try {
         $allVolumes = "{$(((docker volume ls --format "'{{.Name}}': '{{.Mountpoint}}'") -join ",").Replace('\','\\').Replace("'",'"'))}" | ConvertFrom-Json | ConvertTo-HashTable
         $containerBaseFolder = Join-Path $allVolumes.hostHelperFolder $containerName
         if (Test-Path $containerBaseFolder) {
-            Remove-Item -Path $containerBaseFolder -Recurse -Force
+            throw "Build staging folder '$containerBaseFolder' already exists. It will not be replaced."
         }
         Write-Host "Creating temp folder"
         New-Item -Path $containerBaseFolder -ItemType Directory | Out-Null
@@ -385,7 +386,8 @@ try {
         $imageName = $settings.cacheImageName
         if ($imageName) {
             OutputGroupStart -Message "Flush ContainerHelper Cache"
-            Flush-ContainerHelperCache -cache 'all,exitedcontainers' -keepdays $settings.cacheKeepDays
+            # Keep shared cache maintenance, but never sweep containers or compiler folders owned by other jobs.
+            Flush-ContainerHelperCache -cache 'calSourceCache,filesCache,bcartifacts,alSourceCache,applicationCache,bakFolderCache,bcnuget,images' -keepdays $settings.cacheKeepDays
             OutputGroupEnd
         }
     }
@@ -410,22 +412,12 @@ try {
     # even though it won't recompile the prebuilt apps), preserving it for the build output artifact.
     $runAlPipelineBuildOutputFile = if ($settings.workspaceCompilation.enabled) { '' } else { $buildOutputFile }
 
-    Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "containerName=$containerName"
-
     Set-Location $projectPath
     $scriptOverrides = Get-ScriptOverrides -ALGoFolderName $ALGoFolderName -OverrideScriptNames $runAlPipelineOverrides
     $scriptOverrides.Keys | ForEach-Object { Trace-Information -Message "Using override for $_" }
     $runAlPipelineParams += $scriptOverrides
 
-    if ($runAlPipelineParams.Keys -notcontains 'RemoveBcContainer') {
-        $runAlPipelineParams += @{
-            "RemoveBcContainer" = {
-                Param([Hashtable]$parameters)
-                Remove-BcContainerSession -containerName $parameters.ContainerName -killPsSessionProcess
-                Remove-BcContainer @parameters
-            }
-        }
-    }
+    Set-BuildContainerOverrides -runAlPipelineParams $runAlPipelineParams
 
     if ($runAlPipelineParams.Keys -notcontains 'ImportTestDataInBcContainer') {
         if (($settings.configPackages) -or ($settings.Keys | Where-Object { $_ -like 'configPackages.*' })) {
@@ -665,7 +657,7 @@ catch {
 }
 finally {
     try {
-        if (Test-BcContainer -containerName $containerName) {
+        if (Get-OwnedBuildContainer -containerName $containerName) {
             Write-Host "Get Event Log from container"
             $eventlogFile = Get-BcContainerEventLog -containerName $containerName -doNotOpen
             Copy-Item -Path $eventLogFile -Destination $containerEventLogFile

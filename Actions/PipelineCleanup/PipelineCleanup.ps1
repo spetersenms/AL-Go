@@ -5,13 +5,16 @@
 
 try {
     . (Join-Path -Path $PSScriptRoot -ChildPath "..\AL-Go-Helper.ps1" -Resolve)
+    Import-Module (Join-Path $PSScriptRoot '..\.Modules\BuildResources.psm1' -Resolve) -Force -DisableNameChecking
+    if (-not $env:_ALGoBuildId) {
+        Write-Host "::Notice::No AL-Go build resource identity was assigned. Skipping container cleanup."
+        return
+    }
     DownloadAndImportBcContainerHelper
 
-    if ($project -eq ".") { $project = "" }
-
-    $containerName = GetContainerName($project)
-    Remove-Bccontainer $containerName
+    Write-Host "Cleaning up build resources for project '$project'."
+    Remove-BuildContainer -parameters @{ containerName = (Get-BuildContainerName) }
 }
 catch {
-    Write-Host "Pipeline Cleanup failed: $($_.Exception.Message)"
+    Write-Host "::Warning::Pipeline Cleanup failed: $($_.Exception.Message)"
 }

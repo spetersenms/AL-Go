@@ -1427,10 +1427,6 @@ function OptionallyConvertFromBase64 {
     }
 }
 
-function GetContainerName([string] $project) {
-    "bc$($project -replace "[^a-z0-9\-]")$env:GITHUB_RUN_ID"
-}
-
 <#
     .SYNOPSIS
     Ensures that the Docker service is running on Windows.

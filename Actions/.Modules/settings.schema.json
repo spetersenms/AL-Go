@@ -621,7 +621,8 @@
         },
         "cacheKeepDays": {
             "type": "number",
-            "description": "Number of days to keep the cache. See https://aka.ms/ALGoSettings#cachekeepdays"
+            "default": 3,
+            "description": "Number of days of retention passed to BcContainerHelper shared-cache maintenance by RunPipeline in PTE and AppSource build workflows on self-hosted runners when cacheImageName is nonempty. Use nonnegative whole numbers. Zero flushes shared caches before every build and can cause other builds on the same host to fail; some cache categories are flushed regardless of retention. Shared caches include source, extracted files, Business Central artifacts, application, backup-folder, NuGet (when supported), and Docker image caches. Build cache maintenance never sweeps stopped containers or compiler working folders, including with zero days. Job-owned resource cleanup is separate; orphan and legacy resources require explicit operator maintenance. See https://aka.ms/ALGoSettings#cachekeepdays"
         },
         "alwaysBuildAllProjects": {
             "type": "boolean",

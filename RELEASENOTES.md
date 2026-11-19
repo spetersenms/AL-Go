@@ -1,3 +1,9 @@
+### Job-owned cleanup on shared self-hosted runners
+
+Build jobs now use job-specific container and compiler-folder names with a fresh ownership identifier per execution. Containers carry `creator=AL-Go` and `al-go.build-id` labels, and normal cleanup removes only the current job's resources. This addresses parallel-build creation/removal collisions and unrelated stopped-container removal reported in [microsoft/AL-Go#2416](https://github.com/microsoft/AL-Go/issues/2416), [microsoft/AL-Go#2453](https://github.com/microsoft/AL-Go/issues/2453), and [microsoft/AL-Go#1675](https://github.com/microsoft/AL-Go/issues/1675).
+
+RunPipeline retains shared cache maintenance through explicit cache categories, but no longer requests `all`, `exitedcontainers`, or `compilerFolders`, even with `cacheKeepDays: 0`. The default remains 3 days; zero-day shared-cache flushing can still disrupt concurrent builds. There is no automatic orphan cleanup: legacy resources and resources left by hard kills require explicit operator maintenance. Update actions and workflow system files together; older versions remain unsafe on shared hosts. See [shared-host cleanup](Scenarios/SelfHostedGitHubRunner.md#shared-host-resource-ownership-and-cleanup).
+
 ### Optional draft PR build skipping
 
 The new `skipDraftPullRequests` setting (default `false`) lets PTE and AppSource repositories skip AL-Go's built-in PR build jobs while a pull request is draft and build when it is marked ready for review. Custom jobs remain user-managed and are not modified. Default behavior and merge-queue builds are unchanged. Run **Update AL-Go System Files** after changing the setting. See [skipDraftPullRequests](Scenarios/settings.md#skipDraftPullRequests).

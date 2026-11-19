@@ -77,6 +77,41 @@ Describe "RunPipeline Action Tests" {
         YamlTest -scriptRoot $scriptRoot -actionName $actionName -actionScript $actionScript -outputs $outputs
     }
 
+    It 'Maintains only shared caches with <KeepDays> retention days' -Tag 'CacheSelector' -TestCases @(
+        @{ KeepDays = 3 }
+        @{ KeepDays = 0 }
+    ) {
+        param($KeepDays)
+
+        $cacheCommands = @($runPipelineAst.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -eq 'Flush-ContainerHelperCache'
+                }, $true))
+        $cacheCommands.Count | Should -Be 1
+
+        function Flush-ContainerHelperCache {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification = 'The stub matches the BCH command name.')]
+            param([string] $cache, [int] $keepDays)
+            [PSCustomObject]@{ Cache = $cache; KeepDays = $keepDays }
+        }
+
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'settings', Justification = 'Used by the extracted cache maintenance command.')]
+        $settings = @{ cacheKeepDays = $KeepDays }
+        $calls = @(& ([scriptblock]::Create($cacheCommands[0].Extent.Text)))
+        $calls.Count | Should -Be 1
+        $calls[0].KeepDays | Should -Be $KeepDays
+        $selectors = $calls[0].Cache.Split(',')
+        foreach ($excluded in @('all', 'exitedcontainers', 'compilerFolders')) {
+            $selectors | Should -Not -Contain $excluded
+        }
+        $expectedSelectors = (
+            @('calSourceCache', 'filesCache', 'bcartifacts', 'alSourceCache', 'applicationCache', 'bakFolderCache', 'bcnuget', 'images') |
+                Sort-Object
+        ) -join ','
+        ($selectors | Sort-Object) -join ',' | Should -Be $expectedSelectors
+    }
+
     It 'Creates and attaches the container credential before Run-AlPipeline' {
         $newCredentialCommands = @($credentialCommandAsts | Where-Object { $_.GetCommandName() -eq 'New-RunPipelineContainerCredential' })
         $setCredentialCommands = @($credentialCommandAsts | Where-Object { $_.GetCommandName() -eq 'Set-RunPipelineContainerCredential' })

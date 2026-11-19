@@ -60,6 +60,18 @@ You might have noticed that there are two settings in the repository settings fi
 
 `"githubRunner"` is used for build/test jobs, which require more memory and a container.
 
+## Shared-host resource ownership and cleanup
+
+Updated AL-Go build workflows assign a fresh ownership identifier to each build job execution, including reruns. Containers and compiler working folders use job-specific names rather than project-plus-run names, so parallel build modes do not share these resources. Containers carry `creator=AL-Go` and `al-go.build-id` labels; the latter records the owning job's identifier. Repository, workflow run, and run attempt labels provide diagnostic context.
+
+Normal success and failure cleanup targets only the current job's resources. A container with missing or different ownership labels is preserved. Cache maintenance never requests BcContainerHelper's `all`, `exitedcontainers`, or `compilerFolders` selectors, even when `cacheKeepDays` is zero. It retains shared C/AL and AL source caches, extracted files, Business Central artifacts, application caches, backup-folder caches, NuGet caches (when supported by BcContainerHelper), and Docker images. Older supported BcContainerHelper versions ignore the unsupported `bcnuget` selector without falling back to broader cleanup.
+
+There is no automatic orphan cleanup. Hard kills, runner outages, or forcibly terminated jobs can leave containers, compiler folders, or partially created resources for explicit operator maintenance. Legacy containers and folders are intentionally preserved, not adopted or deleted by matching old AL-Go name patterns. Before removing leftovers, operators must verify ownership and ensure no active job needs them; ownership labels help identify resources but do not authorize host-wide pruning.
+
+The `cacheKeepDays` default remains 3. Shared cache maintenance is not fully concurrency-isolated: setting it to zero flushes shared caches before every build and can break other builds on the same host. Some BcContainerHelper cache categories are flushed regardless of retention, so a positive value is not a guarantee of shared-cache isolation.
+
+Update AL-Go system files so the actions and build workflows are upgraded together. Older workflow/action versions remain unsafe on shared hosts and can still remove resources used by updated jobs. This protection also does not constrain deliberately destructive custom script overrides.
+
 ## Additional info on build performance
 
 1. Running 6 CI/CD workflows simultanously, causes 1 workflow to wait as I only had 5 runners.

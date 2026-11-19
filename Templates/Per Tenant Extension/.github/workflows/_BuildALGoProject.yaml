@@ -183,6 +183,11 @@ jobs:
           shell: ${{ inputs.shell }}
           project: ${{ inputs.project }}
 
+      - name: Initialize build resources
+        if: steps.DetermineBuildProject.outputs.BuildIt == 'True'
+        run: |
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_ENV -Value "_ALGoBuildId=$([guid]::NewGuid().ToString('N'))"
+
       - name: Compile Apps
         id: compile
         uses: microsoft/AL-Go-Actions/CompileApps@main
