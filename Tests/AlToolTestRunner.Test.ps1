@@ -550,7 +550,7 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             Should -Invoke -ModuleName AlToolTestRunner OutputDebug -Times 0 -Exactly
         }
 
-        It 'Passes coverage formats, source roots, and app packages to one isolated output folder' {
+        It 'Passes renewal with all coverage arguments to one isolated output folder' {
             $script:coverageOutputPath = Join-Path $TestDrive 'coverage-app-one'
             $script:coverageSourceRootOne = Join-Path $TestDrive 'App'
             $script:coverageSourceRootTwo = Join-Path $TestDrive 'Test'
@@ -605,10 +605,11 @@ Describe 'AlToolTestRunner.psm1 Tests' {
                     -Company 'CRONUS' -Tenant 'default' -Connection $Connection `
                     -CoverageOutputPath $OutputPath -CoverageFormats @('bc-json', 'cobertura') `
                     -CoverageSourceRoots @($SourceRootOne, $SourceRootTwo) `
-                    -CoverageAppPaths @($CoverageAppOne, $CoverageAppTwo, $CoverageAppOne)
+                    -CoverageAppPaths @($CoverageAppOne, $CoverageAppTwo, $CoverageAppOne) -RenewSession
                 $result.Coverage.IsComplete | Should -BeTrue
             }
 
+            @($script:capturedBatchArguments | Where-Object { $_ -eq '--renewsession' }).Count | Should -Be 1
             $coverageIndex = [Array]::IndexOf($script:capturedBatchArguments, '--coverage')
             $script:capturedBatchArguments[$coverageIndex + 1] | Should -Be 'line'
             $coverageOutputIndex = [Array]::IndexOf($script:capturedBatchArguments, '--coverage-output')
@@ -616,6 +617,7 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-format' }).Count | Should -Be 2
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-source-root' }).Count | Should -Be 2
             @($script:capturedBatchArguments | Where-Object { $_ -eq '--coverage-app' }).Count | Should -Be 2
+            $script:capturedBatchArguments | Should -Not -Contain '--coverage-scope'
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootOne))
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageSourceRootTwo))
             $script:capturedBatchArguments -join "`n" | Should -Match ([regex]::Escape($script:coverageAppOne))
@@ -1091,6 +1093,7 @@ Describe 'AlToolTestRunner.psm1 Tests' {
             $command.Parameters.CoverageFormats.ParameterType | Should -Be ([string[]])
             $command.Parameters.CoverageSourceRoots.ParameterType | Should -Be ([string[]])
             $command.Parameters.CoverageAppPaths.ParameterType | Should -Be ([string[]])
+            $command.Parameters.RenewSession.ParameterType | Should -Be ([switch])
             $command.Parameters.CoverageIsComplete.ParameterType | Should -Be ([ref])
         }
 
@@ -1623,6 +1626,53 @@ Invoke-AlToolTestRun $($parameterExpressions.Values -join ' ')
             $suites.Count | Should -Be 2
             $suites[0].OuterXml | Should -Be $firstSuiteXml
             $junit.SelectNodes('testsuites/testsuite/testcase').Count | Should -Be 2
+        }
+
+        It 'Preserves structured coverage artifacts across renewed per-app invocations' {
+            $junitFile = Join-Path $TestDrive 'RenewedCoverageResults.xml'
+            $firstCoveragePath = Join-Path $TestDrive 'coverage-first'
+            $secondCoveragePath = Join-Path $TestDrive 'coverage-second'
+            $script:testRunParameters.JUnitResultFileName = $junitFile
+            $script:testRunParameters.CoverageOutputPath = $firstCoveragePath
+            $script:testRunParameters.CoverageFormats = @('bc-json')
+            $script:testRunParameters.CoverageSourceRoots = @((Join-Path $TestDrive 'App'))
+            $script:testRunParameters.RenewSession = $true
+            $firstCoverageComplete = $null
+            $script:testRunParameters.CoverageIsComplete = [ref] $firstCoverageComplete
+            Mock -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch {
+                New-Item -Path $CoverageOutputPath -ItemType Directory -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $CoverageOutputPath 'coverage.bc.json') `
+                    -Value '{"schemaVersion":"1.0","coverageMode":"line"}' -Encoding UTF8
+                return @{
+                    Results       = @{ '130001' = @(
+                            @{ MethodName = 'TestOne'; Outcome = 'Pass'; Ms = 1; Message = ''; Stacktrace = '' }
+                        ) }
+                    Succeeded     = $true
+                    ElapsedSec    = 0.1
+                    Coverage      = @{ IsComplete = $true; Diagnostics = @() }
+                    Warnings      = @()
+                    CoverageError = ""
+                }
+            }
+
+            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+            $script:testRunParameters.AppName = 'Second Test App'
+            $script:testRunParameters.CoverageOutputPath = $secondCoveragePath
+            $secondCoverageComplete = $null
+            $script:testRunParameters.CoverageIsComplete = [ref] $secondCoverageComplete
+            Invoke-AlToolTestRun @script:testRunParameters | Should -BeTrue
+
+            Should -Invoke -ModuleName AlToolTestRunner Invoke-AlRunTestsBatch -Times 2 -Exactly -ParameterFilter {
+                $RenewSession -and
+                $CoverageFormats -contains 'bc-json' -and
+                @($CoverageSourceRoots).Count -eq 1
+            }
+            $firstCoverageComplete | Should -BeTrue
+            $secondCoverageComplete | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $firstCoveragePath 'coverage.bc.json') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $secondCoveragePath 'coverage.bc.json') | Should -BeTrue
+            [xml] $junit = Get-Content -LiteralPath $junitFile -Raw -Encoding UTF8
+            $junit.SelectNodes('testsuites/testsuite').Count | Should -Be 2
         }
 
         It 'Fails on malformed accumulated JUnit without replacing the file' {

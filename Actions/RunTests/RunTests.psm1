@@ -283,6 +283,8 @@ function Invoke-AlGoTestRun {
         Actual build container platform version exported by RunPipeline.
     .PARAMETER containerPlatformVersionReason
         Non-sensitive reason supplied when RunPipeline could not determine the platform version.
+    .PARAMETER renewSession
+        Uses one fresh AlTool server session for each ordered codeunit group.
     #>
     Param(
         [hashtable] $settings,
@@ -299,7 +301,8 @@ function Invoke-AlGoTestRun {
         [scriptblock] $getAlToolPath = $null,
         [scriptblock] $analyzeRepo = $null,
         [AllowEmptyString()][string] $containerPlatformVersion = $env:containerPlatformVersion,
-        [AllowEmptyString()][string] $containerPlatformVersionReason = $env:containerPlatformVersionReason
+        [AllowEmptyString()][string] $containerPlatformVersionReason = $env:containerPlatformVersionReason,
+        [bool] $renewSession = $false
     )
 
     try {
@@ -312,6 +315,9 @@ function Invoke-AlGoTestRun {
         if (@($testApps).Count -eq 0) {
             Write-Host "No test apps found to run tests in. Skipping test execution."
             return
+        }
+        if ($renewSession -and $runTestsOverride) {
+            throw "Experimental AlTool session renewal is only supported by the built-in AlTool runner."
         }
 
         Write-Host "Running tests against container '$containerName'"
@@ -436,6 +442,7 @@ function Invoke-AlGoTestRun {
                         DisabledTests = @($disabledTests)
                         AlToolPath = $alToolPath
                         JUnitResultFileName = $testResultsFile
+                        RenewSession = $renewSession
                     }
                     if ($currentCoverageRun) {
                         $alToolParameters.CoverageOutputPath = $currentCoverageRun.OutputPath

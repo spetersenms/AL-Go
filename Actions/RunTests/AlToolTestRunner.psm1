@@ -609,6 +609,8 @@ function New-AlToolResponseFile {
     Source directories used by AlTool to resolve repository coverage.
 .PARAMETER CoverageAppPaths
     Optional application package paths for AlTool versions that support package attribution.
+.PARAMETER RenewSession
+    Uses one fresh server session for each ordered codeunit group.
 #>
 function Invoke-AlRunTestsBatch {
     param(
@@ -620,7 +622,8 @@ function Invoke-AlRunTestsBatch {
         [string] $CoverageOutputPath = "",
         [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats = @(),
         [string[]] $CoverageSourceRoots = @(),
-        [string[]] $CoverageAppPaths = @()
+        [string[]] $CoverageAppPaths = @(),
+        [switch] $RenewSession
     )
 
     $testGroupsFile = New-AlTestGroupsFile -Codeunits $Codeunits
@@ -637,6 +640,9 @@ function Invoke-AlRunTestsBatch {
             '--authentication', 'UserPassword',
             '--tenant', $Tenant
         )
+        if ($RenewSession) {
+            $alArgs += '--renewsession'
+        }
 
         if (-not [string]::IsNullOrWhiteSpace($CoverageOutputPath)) {
             Initialize-AlToolCoverageOutput -CoverageOutputPath $CoverageOutputPath `
@@ -921,6 +927,8 @@ function Add-JUnitTestSuite {
     Existing app and test directories used to resolve source paths in coverage artifacts.
 .PARAMETER CoverageAppPaths
     Optional compiled app packages used by AlTool as the executable-line inventory.
+.PARAMETER RenewSession
+    Uses one fresh server session for each ordered codeunit group.
 .PARAMETER CoverageIsComplete
     Optional reference receiving null when coverage was not evaluated, true when complete, or false
     when incomplete.
@@ -943,6 +951,7 @@ function Invoke-AlToolTestRun {
         [ValidateSet("bc-json", "cobertura")][string[]] $CoverageFormats = @(),
         [string[]] $CoverageSourceRoots = @(),
         [string[]] $CoverageAppPaths = @(),
+        [switch] $RenewSession,
         [ref] $CoverageIsComplete = ([ref] $null)
     )
 
@@ -1022,6 +1031,7 @@ function Invoke-AlToolTestRun {
             Company    = $company
             Tenant     = $Tenant
             Connection = $connection
+            RenewSession = $RenewSession
         }
         if (-not [string]::IsNullOrWhiteSpace($CoverageOutputPath)) {
             $batchParameters.CoverageOutputPath = $CoverageOutputPath

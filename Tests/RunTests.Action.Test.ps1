@@ -48,6 +48,8 @@ Describe "RunTests Action Tests" {
         $script:previousTokenObservationPath = $ENV:_runTestsTokenObservationPath
         $script:previousGitHubWorkspace = $ENV:GITHUB_WORKSPACE
         $script:previousSettings = $ENV:Settings
+        $script:previousExperimentalAlToolArchivePath = $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH
+        $script:previousExperimentalAlToolArchiveSha256 = $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256
     }
 
     AfterEach {
@@ -98,6 +100,18 @@ Describe "RunTests Action Tests" {
         }
         else {
             $ENV:Settings = $script:previousSettings
+        }
+        if ($null -eq $script:previousExperimentalAlToolArchivePath) {
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH = $script:previousExperimentalAlToolArchivePath
+        }
+        if ($null -eq $script:previousExperimentalAlToolArchiveSha256) {
+            Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 -ErrorAction SilentlyContinue
+        }
+        else {
+            $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 = $script:previousExperimentalAlToolArchiveSha256
         }
     }
 
@@ -234,6 +248,36 @@ Describe "RunTests Action Tests" {
             $analyzeRepo -is [scriptblock] -and
             $containerPlatformVersion -eq '30.0.56026.0' -and
             $containerPlatformVersionReason -eq ''
+        }
+    }
+
+    It 'Resolves the exact experimental archive identity and renewal input' {
+        $ENV:GITHUB_WORKSPACE = $TestDrive
+        $ENV:Settings = '{}'
+        $ENV:containerName = 'test-container'
+        $ENV:containerPlatformVersion = '30.0.56026.0'
+        $ENV:containerPlatformVersionReason = ''
+        $ENV:containerCredential = [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes('{"username":"test-user","password":"test-password"}')
+        )
+        $relativeArchivePath = '..\..\Experimental\AlTool\minimal-altool-development.zip'
+        $archiveSha256 = '2BA2009908D3EB5596AC02D085318751513EC81F9A1877355ED35261FD24F96F'
+
+        Mock DownloadAndImportBcContainerHelper {}
+        Mock AnalyzeRepo { return @{ testFolders = @() } }
+        Mock Get-ScriptOverrides { return @{} }
+        Mock Invoke-AlGoTestRun {}
+
+        & $scriptPath -experimentalAlToolArchivePath $relativeArchivePath `
+            -experimentalAlToolArchiveSha256 $archiveSha256 `
+            -experimentalAlToolRenewSession 'true'
+
+        $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH | Should -Be (
+            [System.IO.Path]::GetFullPath((Join-Path $scriptRoot $relativeArchivePath))
+        )
+        $ENV:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 | Should -Be $archiveSha256
+        Should -Invoke Invoke-AlGoTestRun -Times 1 -Exactly -ParameterFilter {
+            $renewSession -eq $true
         }
     }
 

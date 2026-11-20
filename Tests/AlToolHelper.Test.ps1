@@ -31,6 +31,8 @@ Describe 'AlToolHelper.psm1 Tests' {
             BeforeEach {
                 $script:alToolEnvironmentVariables = @(
                     'AlToolPath',
+                    'ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH',
+                    'ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256',
                     'GITHUB_ENV',
                     'GITHUB_REPOSITORY_ID',
                     'GITHUB_RUN_ATTEMPT',
@@ -44,6 +46,8 @@ Describe 'AlToolHelper.psm1 Tests' {
                 $script:previousPath = $env:PATH
 
                 Remove-Item Env:\AlToolPath -ErrorAction SilentlyContinue
+                Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH -ErrorAction SilentlyContinue
+                Remove-Item Env:\ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 -ErrorAction SilentlyContinue
                 $env:GITHUB_ENV = Join-Path $TestDrive "$([Guid]::NewGuid()).env"
                 $env:RUNNER_TEMP = Join-Path $TestDrive 'runner-temp'
                 $env:GITHUB_REPOSITORY_ID = '67890'
@@ -164,6 +168,89 @@ Describe 'AlToolHelper.psm1 Tests' {
                     $TypeName -eq 'System.Threading.Mutex'
                 }
                 $env:PATH | Should -Be $pathBefore
+            }
+
+            It 'Extracts one exact hash-pinned experimental archive into its isolated run directory' {
+                $archivePath = Join-Path $TestDrive 'minimal-altool-development.zip'
+                Set-Content -LiteralPath $archivePath -Value 'experimental archive' -Encoding ASCII
+                $archiveSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+                $requiredVersion = '1.0.0+122c0780342781605402d18f2d897ac58eea8308'
+                $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH = $archivePath
+                $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 = $archiveSha256
+                $script:capturedArchiveSource = ''
+                $script:capturedArchiveFiles = @()
+                $script:capturedArchiveDestination = ''
+                Mock Expand-Archive {
+                    $script:capturedArchiveSource = $LiteralPath
+                    $script:capturedArchiveDestination = $DestinationPath
+                    $script:capturedArchiveFiles = @(
+                        Get-ChildItem -LiteralPath (Split-Path $LiteralPath -Parent) -File |
+                            ForEach-Object { $_.Name }
+                    )
+                    New-TestAlToolExecutable -Path (Join-Path $DestinationPath 'altool.exe') | Out-Null
+                }
+                Mock Invoke-AlNativeCommand {
+                    if ($FilePath -eq 'dotnet') {
+                        return [PSCustomObject]@{
+                            StandardOutput = [string[]]@(
+                                'Microsoft.AspNetCore.App 10.0.0 [C:\dotnet\shared\Microsoft.AspNetCore.App]',
+                                'Microsoft.NETCore.App 10.0.0 [C:\dotnet\shared\Microsoft.NETCore.App]'
+                            )
+                            StandardError  = [string[]]@()
+                            Output         = [string[]]@()
+                            ExitCode       = [int] 0
+                        }
+                    }
+                    return [PSCustomObject]@{
+                        StandardOutput = [string[]]@($requiredVersion)
+                        StandardError  = [string[]]@()
+                        Output         = [string[]]@($requiredVersion)
+                        ExitCode       = [int] 0
+                    }
+                }
+
+                $resolvedPath = GetAlToolPath
+                GetAlToolPath | Should -Be $resolvedPath
+
+                Should -Invoke Invoke-AlNativeCommand -Times 2 -Exactly -ParameterFilter {
+                    $FilePath -eq 'dotnet' -and
+                    $ArgumentList.Count -eq 1 -and
+                    $ArgumentList[0] -eq '--list-runtimes'
+                }
+                Should -Invoke Invoke-AlNativeCommand -Times 0 -Exactly -ParameterFilter {
+                    $FilePath -eq 'dotnet' -and $ArgumentList -contains 'tool'
+                }
+                Should -Invoke Expand-Archive -Times 1 -Exactly -ParameterFilter {
+                    $LiteralPath -eq $script:capturedArchiveSource -and
+                    $DestinationPath -eq $script:capturedArchiveDestination
+                }
+                $script:capturedArchiveFiles | Should -Be @('minimal-altool-development.zip')
+                Test-Path -LiteralPath (Split-Path $script:capturedArchiveSource -Parent) | Should -BeFalse
+                $resolvedPath | Should -Be (
+                    Join-Path (
+                        Join-Path $script:expectedToolDirectory "experimental-$($archiveSha256.ToLowerInvariant())"
+                    ) 'altool.exe'
+                )
+            }
+
+            It 'Requires all exact experimental archive identity values' {
+                $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH = Join-Path $TestDrive 'tool.zip'
+
+                { GetAlToolPath } |
+                    Should -Throw '*ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH*ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256*'
+
+                Should -Invoke Invoke-AlNativeCommand -Times 0 -Exactly
+            }
+
+            It 'Rejects an experimental archive when its SHA256 does not match' {
+                $archivePath = Join-Path $TestDrive 'tool.zip'
+                Set-Content -LiteralPath $archivePath -Value 'experimental archive' -Encoding ASCII
+                $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH = $archivePath
+                $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 = ('0' * 64)
+
+                { GetAlToolPath } | Should -Throw '*does not match the required SHA256*'
+
+                Should -Invoke Invoke-AlNativeCommand -Times 0 -Exactly
             }
 
             It 'Returns a deterministic directory for the current GitHub run attempt' {
@@ -287,6 +374,23 @@ Describe 'AlToolHelper.psm1 Tests' {
 
                 { GetAlToolPath } |
                     Should -Throw "*'al --version'*exited with code 11*version stderr*"
+            }
+
+            It 'Rejects an experimental executable whose exact version does not match' {
+                New-TestAlToolExecutable -Path $script:expectedAlToolPath | Out-Null
+                Mock Invoke-AlNativeCommand {
+                    return [PSCustomObject]@{
+                        StandardOutput = [string[]]@('1.0.0+different-build')
+                        StandardError  = [string[]]@()
+                        Output         = [string[]]@('1.0.0+different-build')
+                        ExitCode       = [int] 0
+                    }
+                }
+
+                {
+                    Confirm-AlToolPath -AlToolPath $script:expectedAlToolPath `
+                        -ExpectedVersion '1.0.0+required-build'
+                } | Should -Throw "*does not match the required version '1.0.0+required-build'*"
             }
         }
 

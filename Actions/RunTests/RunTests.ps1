@@ -8,7 +8,14 @@ Param(
     [Parameter(HelpMessage = "Build mode used for this project", Mandatory = $false)]
     [string] $buildMode = "Default",
     [Parameter(HelpMessage = "A path to a JSON-formatted list of test apps to run tests in", Mandatory = $false)]
-    [string] $installTestAppsJson = ''
+    [string] $installTestAppsJson = '',
+    [Parameter(HelpMessage = "Experimental path to an exact AlTool ZIP archive, relative to this action or absolute", Mandatory = $false)]
+    [string] $experimentalAlToolArchivePath = '',
+    [Parameter(HelpMessage = "Exact SHA256 of the experimental AlTool ZIP archive", Mandatory = $false)]
+    [string] $experimentalAlToolArchiveSha256 = '',
+    [Parameter(HelpMessage = "Whether to renew the AlTool server session for each ordered codeunit group", Mandatory = $false)]
+    [ValidateSet('', 'true', 'false')]
+    [string] $experimentalAlToolRenewSession = ''
 )
 
 <#
@@ -30,6 +37,12 @@ Param(
     Build mode used by this project run.
 .PARAMETER installTestAppsJson
     A path to a JSON-formatted list of test apps (produced by previous jobs) to run tests in.
+.PARAMETER experimentalAlToolArchivePath
+    Experimental path to one exact Windows .NET 10 AlTool ZIP distribution.
+.PARAMETER experimentalAlToolArchiveSha256
+    Exact SHA256 required for the experimental archive.
+.PARAMETER experimentalAlToolRenewSession
+    Set to true to pass `--renewsession` together with the existing test and coverage arguments.
 .EXAMPLE
     RunTests.ps1 -project 'MyProject'
 #>
@@ -41,6 +54,39 @@ $ENV:_token = $token
 Import-Module (Join-Path $PSScriptRoot '..\TelemetryHelper.psm1' -Resolve)
 Import-Module (Join-Path $PSScriptRoot 'RunTests.psm1' -Resolve) -DisableNameChecking -Force
 Import-Module (Join-Path $PSScriptRoot '..\.Modules\AlToolHelper.psm1' -Resolve) -DisableNameChecking -Force
+
+$experimentalEnvironmentVariables = @(
+    'ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH',
+    'ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256'
+)
+foreach ($variableName in $experimentalEnvironmentVariables) {
+    Remove-Item "Env:\$variableName" -ErrorAction SilentlyContinue
+}
+
+$experimentalAlToolArchivePath = $experimentalAlToolArchivePath.Trim()
+$experimentalAlToolArchiveSha256 = $experimentalAlToolArchiveSha256.Trim()
+$experimentalInputs = @(
+    $experimentalAlToolArchivePath,
+    $experimentalAlToolArchiveSha256
+)
+$experimentalInputCount = @($experimentalInputs | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    }).Count
+if ($experimentalInputCount -notin @(0, 2)) {
+    throw "experimentalAlToolArchivePath and experimentalAlToolArchiveSha256 must both be supplied."
+}
+if ($experimentalInputCount -eq 2) {
+    if (-not [System.IO.Path]::IsPathRooted($experimentalAlToolArchivePath)) {
+        $experimentalAlToolArchivePath = Join-Path $PSScriptRoot $experimentalAlToolArchivePath
+    }
+    $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_PATH = [System.IO.Path]::GetFullPath($experimentalAlToolArchivePath)
+    $env:ALGO_EXPERIMENTAL_ALTOOL_ARCHIVE_SHA256 = $experimentalAlToolArchiveSha256.ToUpperInvariant()
+}
+
+$renewSession = $experimentalAlToolRenewSession -eq 'true'
+if ($renewSession -and $experimentalInputCount -ne 2) {
+    throw "experimentalAlToolRenewSession requires the experimental AlTool archive path and SHA256."
+}
 
 function Get-TestRunnerCredential {
     <#
@@ -121,4 +167,5 @@ Invoke-AlGoTestRun `
     -getAlToolPath ${function:GetAlToolPath} `
     -analyzeRepo $analyzeRepoForCoverage `
     -containerPlatformVersion $ENV:containerPlatformVersion `
-    -containerPlatformVersionReason $ENV:containerPlatformVersionReason
+    -containerPlatformVersionReason $ENV:containerPlatformVersionReason `
+    -renewSession $renewSession

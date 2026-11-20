@@ -1571,7 +1571,8 @@ Describe 'RunTests.psm1 Tests' {
                     $TestType,
                     [hashtable[]] $DisabledTests,
                     $AlToolPath,
-                    $JUnitResultFileName
+                    $JUnitResultFileName,
+                    $RenewSession
                 )
                 $script:capturedAlToolParams = @{
                     Keys                = @($PSBoundParameters.Keys)
@@ -1585,6 +1586,7 @@ Describe 'RunTests.psm1 Tests' {
                     DisabledTests       = @($DisabledTests)
                     AlToolPath          = $AlToolPath
                     JUnitResultFileName = $JUnitResultFileName
+                    RenewSession        = $RenewSession
                 }
                 return $true
             }
@@ -1601,7 +1603,8 @@ Describe 'RunTests.psm1 Tests' {
                 }
             }
 
-            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'mycontainer' -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe'
+            Invoke-AlGoTestRun -settings $settings -projectPath $projectPath -containerName 'mycontainer' `
+                -credential $testCredential -alToolPath 'C:\dotnet-tools\al.exe' -renewSession $true
 
             Should -Invoke -ModuleName RunTests Invoke-AlToolTestRun -Times 1 -Exactly
             @($script:capturedAlToolParams.Keys | Sort-Object) | Should -Be @(
@@ -1613,6 +1616,7 @@ Describe 'RunTests.psm1 Tests' {
                 'DisabledTests',
                 'ExtensionId',
                 'JUnitResultFileName',
+                'RenewSession',
                 'Tenant',
                 'TestType'
             )
@@ -1626,6 +1630,7 @@ Describe 'RunTests.psm1 Tests' {
             $script:capturedAlToolParams.TestType | Should -Be 'IntegrationTest'
             $script:capturedAlToolParams.DisabledTests.Count | Should -Be 0
             $script:capturedAlToolParams.JUnitResultFileName | Should -Be (Join-Path $projectPath 'TestResults.xml')
+            $script:capturedAlToolParams.RenewSession | Should -BeTrue
             Remove-Item -Path $projectPath -Recurse -Force
         }
 
